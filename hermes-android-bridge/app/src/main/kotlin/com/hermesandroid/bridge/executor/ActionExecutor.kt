@@ -651,7 +651,39 @@ object ActionExecutor {
             // Device wipe / factory reset
             "android.intent.action.MASTER_CLEAR",
             "android.intent.action.FACTORY_RESET",
-            "android.intent.action.ACTION_SHUTDOWN"
+            "android.intent.action.ACTION_SHUTDOWN",
+            // Telephony — direct dial without confirmation
+            "android.intent.action.CALL",
+            "android.intent.action.CALL_PRIVILEGED",
+            // Dangerous settings toggles — permissions, accessibility, dev options
+            "android.settings.ACCESSIBILITY_SETTINGS",
+            "android.settings.APPLICATION_DETAILS_SETTINGS",
+            "android.settings.APPLICATION_DEVELOPMENT_SETTINGS",
+            "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION",
+            "android.settings.MANAGE_UNKNOWN_APP_SOURCES",
+            "android.settings.MANAGE_OVERLAY_PERMISSION",
+            "android.settings.action.MANAGE_OVERLAY_PERMISSION",
+            "android.settings.NOTIFICATION_LISTENER_SETTINGS",
+            "android.settings.USAGE_ACCESS_SETTINGS",
+            "android.settings.VR_LISTENER_SETTINGS",
+            "android.settings.WIFI_SETTINGS",
+            "android.settings.WIRELESS_SETTINGS",
+            "android.settings.AIRPLANE_MODE_SETTINGS",
+            "android.settings.DATA_ROAMING_SETTINGS",
+            "android.settings.SECURITY_SETTINGS",
+            "android.settings.PRIVACY_SETTINGS",
+            "android.settings.BIOMETRIC_ENROLL",
+            "android.settings.ADD_ACCOUNT_SETTINGS",
+            "android.settings.SYNC_SETTINGS",
+            // Unknown app sources (alternate action name)
+            "android.provider.action.MANAGE_UNKNOWN_APP_SOURCES",
+            // App ops — can grant dangerous permissions
+            "android.settings.APP_OPS_SETTINGS"
+        )
+        // Block any android.settings.* action that isn't explicitly allowlisted
+        val blockedPrefixes = listOf(
+            "android.settings.",
+            "android.provider.action."
         )
         if (action.isBlank()) {
             return ActionResult(false, "Intent action is empty")
@@ -659,10 +691,25 @@ object ActionExecutor {
         if (action in blockedIntents) {
             return ActionResult(false, "Intent action '$action' is blocked for safety")
         }
+        if (blockedPrefixes.any { action.startsWith(it) }) {
+            return ActionResult(false, "Intent action '$action' is blocked for safety (settings/provider actions are not allowed)")
+        }
 
         val intent = Intent(action).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             if (dataUri != null) {
+                // Denylist dangerous URI schemes that can bypass the action blocklist.
+                // An attacker can use a benign action like VIEW with a malicious URI
+                // (intent:// redirects, content:// providers, market:// deep links).
+                val blockedUriSchemes = setOf("intent", "market", "smsto", "mmsto", "tel")
+                val blockedUriPrefixes = listOf("content://settings", "content://com.android.contacts")
+                val scheme = dataUri.substringBefore("://").lowercase()
+                if (scheme in blockedUriSchemes) {
+                    return ActionResult(false, "URI scheme '$scheme://' is blocked for safety")
+                }
+                if (blockedUriPrefixes.any { dataUri.lowercase().startsWith(it) }) {
+                    return ActionResult(false, "Content provider URI is blocked for safety")
+                }
                 setData(android.net.Uri.parse(dataUri))
             }
             extras?.forEach { (key, value) ->
