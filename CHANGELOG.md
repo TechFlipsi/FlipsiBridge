@@ -4,9 +4,16 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-03
+
 ### Security
-- pairing code now sent as `Authorization: Bearer` header on the relay WebSocket handshake instead of a `?token=` query parameter (which leaks into reverse-proxy access logs); relay keeps legacy query fallback for older APKs
+- sendIntent: block dangerous activity-launch actions (CALL, CALL_PRIVILEGED, ~20 sensitive settings screens) plus an `android.settings.*` prefix catch-all so new settings actions are denied by default (#89, extended by audit)
+- sendIntent: URI scheme denylist (`intent://`, `market://`, `tel:`, `smsto:`, `mmsto:`) and `content://settings` / contacts provider prefixes close scheme-based bypasses of the action blocklist; fixes single-colon scheme extraction that let `tel:123` through (#91)
+- sendBroadcast: blocklist for dangerous broadcast actions (#80) incl. system-destructive ones (shutdown / master_clear / factory_reset) (#87)
+- searchContacts: URL-encode the query to prevent URI injection (#84)
+- pairing code now sent as `Authorization: *** header on the relay WebSocket handshake instead of a `?token=` query parameter (which leaks into reverse-proxy access logs); `?token=` fallback fully removed from relay WS auth and plugin copy (#78, #83)
 - redact PII-bearing fields (recipient, phone number, message/typed/clipboard text, intent extras) from relay debug body logs
+- unauthenticated `/ping` no longer discloses the bridge version (#81)
 
 ### Fixed
 - recycle intermediate ancestor AccessibilityNodeInfo nodes on the path to a match in ScreenReader.findNodeByTextDfs and ActionExecutor.findNodeByIdInTree — previously leaked on every tap_text/tap-by-id call, exhausting the accessibility node pool over long sessions
