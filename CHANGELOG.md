@@ -4,6 +4,10 @@ All notable changes to this project are documented here. Format based on [Keep a
 
 ## [Unreleased]
 
+### Fixed
+- relay reconnect: an unreachable server address retried forever. Each failed attempt fired `onFailure`, which cancelled the retry coroutine and started a new one with a fresh counter, so the 5-attempt cap was never reached and the UI stayed stuck on "Connecting…". Attempt count and exponential backoff now live in a `ReconnectPolicy` whose budget survives across callbacks. The budget is refilled only by a user-initiated Connect or by a session that stayed up ≥60s — reaching `onOpen` is not enough, so a relay that accepts the socket and immediately drops it (wrong pairing code) also stops instead of flapping forever. Callbacks from superseded sockets are ignored via a generation guard, `onClosed`/`onFailure` for one dead socket can no longer schedule two attempts, and the exhaustion path retires the socket so a late callback can't overwrite the "Tap Connect to retry" status
+- version string on the main view was hardcoded to `v0.2.0` in both portrait and landscape layouts; now `v0.4.0`
+
 ## [0.4.0] - 2026-08-03
 
 ### Security
