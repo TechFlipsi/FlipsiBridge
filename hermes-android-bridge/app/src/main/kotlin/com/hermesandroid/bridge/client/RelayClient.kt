@@ -37,6 +37,20 @@ object RelayClient {
     private var scope: CoroutineScope? = null
     private var reconnectJob: Job? = null
     private var prefs: SharedPreferences? = null
+    private val reconnectPolicy = ReconnectPolicy(maxRetries = MAX_RETRIES, maxBackoffMs = MAX_BACKOFF_MS)
+
+    /** True between scheduling a reconnect and that attempt firing. Guards against
+     *  onClosed + onFailure both scheduling for the same dead connection. */
+    @Volatile
+    private var reconnectPending: Boolean = false
+
+    /** Bumped per connect attempt; callbacks from superseded sockets are ignored. */
+    @Volatile
+    private var generation: Int = 0
+
+    /** `System.nanoTime()` at the last onOpen, or 0 when no session is open. */
+    @Volatile
+    private var sessionStartedNs: Long = 0L
 
     @Volatile
     var isConnected: Boolean = false
@@ -60,21 +74,32 @@ object RelayClient {
         prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     }
 
+    // Shares the monitor with scheduleReconnect/beginReconnectAttempt: these run
+    // on the main thread while callbacks schedule reconnects on OkHttp threads,
+    // and an interleaving there can strand reconnectPending set with no
+    // coroutine left to clear it, killing auto-reconnect for the process.
+    @Synchronized
     fun connect(serverUrl: String, pairingCode: String) {
         disconnect()
 
         this.serverUrl = serverUrl
         this.pairingCode = pairingCode
         shouldReconnect = true
+        reconnectPolicy.reset()
 
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         doConnect(serverUrl, pairingCode)
     }
 
+    @Synchronized
     fun disconnect() {
         shouldReconnect = false
         reconnectJob?.cancel()
         reconnectJob = null
+        reconnectPending = false
+        reconnectPolicy.reset()
+        sessionStartedNs = 0L
+        generation++
         webSocket?.close(1000, "Client disconnecting")
         webSocket = null
         scope?.cancel()
@@ -95,6 +120,7 @@ object RelayClient {
     }
 
     private fun doConnect(serverUrl: String, pairingCode: String) {
+        val myGeneration = ++generation
         val wsUrl = buildWsUrl(serverUrl)
         Log.i(TAG, "Connecting to $wsUrl")
         notifyStatus(false, "Connecting to $wsUrl ...")
@@ -109,8 +135,16 @@ object RelayClient {
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
+                if (myGeneration != generation) {
+                    webSocket.cancel()
+                    return
+                }
                 Log.i(TAG, "WebSocket connected to ${buildWsUrl(serverUrl)}")
                 isConnected = true
+                // NOT a policy reset: the budget is only refilled once this
+                // session proves stable (see endSession), so a relay that
+                // accepts and instantly drops us can't retry forever.
+                sessionStartedNs = System.nanoTime()
                 try {
                     BridgeAccessibilityService.instance?.startForeground()
                 } catch (e: SecurityException) {
@@ -131,57 +165,108 @@ object RelayClient {
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                if (myGeneration != generation) return
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 isConnected = false
+                endSession()
                 notifyStatus(false, "Closed: code=$code $reason")
                 scheduleReconnect()
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                if (myGeneration != generation) return
                 val httpCode = response?.code ?: 0
                 val errorDetail = "Error: ${t.javaClass.simpleName}: ${t.message} (HTTP $httpCode)"
                 Log.e(TAG, "WebSocket failure: $errorDetail", t)
                 isConnected = false
+                endSession()
                 notifyStatus(false, errorDetail)
                 scheduleReconnect()
             }
         })
     }
 
+    // Invoked from OkHttp callback threads; the policy and the pending flag are
+    // read-modify-written together, so serialize the whole decision.
+    @Synchronized
     private fun scheduleReconnect() {
         if (!shouldReconnect) return
         val url = serverUrl ?: return
         val code = pairingCode ?: return
+        // Resolve the scope BEFORE burning budget or raising reconnectPending:
+        // a late callback after disconnect() finds a null scope, and committing
+        // that state with no coroutine to clear it would stall reconnects for good.
+        val activeScope = scope ?: return
 
-        reconnectJob?.cancel()
-        reconnectJob = scope?.launch {
-            var backoff = 1000L
-            var retries = 0
-            while (shouldReconnect && !isConnected && retries < MAX_RETRIES) {
-                retries++
-                Log.i(TAG, "Reconnecting in ${backoff}ms... (attempt $retries/$MAX_RETRIES)")
-                notifyStatus(false, "Reconnecting in ${backoff / 1000}s... (attempt $retries/$MAX_RETRIES)")
-                delay(backoff)
-                if (shouldReconnect && !isConnected) {
-                    // Cancel the previous WebSocket before opening a new one,
-                    // otherwise its listener stays active and can fire
-                    // out-of-order callbacks (onOpen/onFailure) that set
-                    // isConnected or push duplicate status notifications.
-                    webSocket?.cancel()
-                    doConnect(url, code)
-                    delay(3000)
-                    if (!isConnected) {
-                        backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
-                    } else {
-                        break
-                    }
-                }
-            }
-            if (!isConnected && retries >= MAX_RETRIES) {
-                notifyStatus(false, "Failed to connect after $MAX_RETRIES attempts. Tap Connect to retry.")
-                shouldReconnect = false
-            }
+        // onClosed and onFailure can both fire for one dead socket; only one of
+        // them should turn into an attempt. This must come BEFORE the exhausted
+        // check: otherwise the second callback sees the budget the first one
+        // just spent and declares failure while that final attempt is still
+        // waiting out its backoff, silently skipping the last retry.
+        if (reconnectPending) return
+
+        // Each failed attempt fires onFailure/onClosed, which lands back here.
+        // Bail out once the shared attempt budget is spent — otherwise an
+        // unreachable address reconnects forever.
+        if (reconnectPolicy.isExhausted) {
+            shouldReconnect = false
+            reconnectPending = false
+            // Retire the dead socket's listener too, otherwise a late callback
+            // from it overwrites the terminal status the user needs to see.
+            generation++
+            // Its onClosed/onFailure will now be ignored, so drop the session
+            // clock here — a stale start time would otherwise make the NEXT
+            // session look long enough to refill the retry budget.
+            sessionStartedNs = 0L
+            webSocket?.cancel()
+            webSocket = null
+            notifyStatus(false, "Failed to connect after ${reconnectPolicy.limit} attempts. Tap Connect to retry.")
+            return
         }
+
+        reconnectPending = true
+
+        val backoff = reconnectPolicy.nextBackoffMs()
+        val attempt = reconnectPolicy.attempts
+
+        reconnectJob = activeScope.launch {
+            Log.i(TAG, "Reconnecting in ${backoff}ms... (attempt $attempt/${reconnectPolicy.limit})")
+            notifyStatus(false, "Reconnecting in ${backoff / 1000}s... (attempt $attempt/${reconnectPolicy.limit})")
+            delay(backoff)
+            beginReconnectAttempt(url, code)
+        }
+    }
+
+    /**
+     * Clearing [reconnectPending] and starting the attempt must happen as one
+     * step under the same monitor as [scheduleReconnect]; clearing it earlier
+     * lets a callback slip through and launch a second reconnect coroutine.
+     */
+    @Synchronized
+    private fun beginReconnectAttempt(url: String, code: String) {
+        reconnectPending = false
+        if (!shouldReconnect || isConnected) return
+        // Supersede the old listener BEFORE cancelling its socket: cancel()
+        // drives that listener's onFailure, and if it still matched the current
+        // generation it would re-enter scheduleReconnect and burn an attempt on
+        // our own teardown.
+        generation++
+        // Retired listener => no endSession() for it; drop the clock so the
+        // next session is measured from its own start, not this one's.
+        sessionStartedNs = 0L
+        // Cancel the previous WebSocket before opening a new one, otherwise its
+        // listener stays active and can fire out-of-order callbacks
+        // (onOpen/onFailure) that set isConnected or push duplicate statuses.
+        webSocket?.cancel()
+        doConnect(url, code)
+    }
+
+    /** A session that had opened is over — refill the budget only if it was stable. */
+    private fun endSession() {
+        val startedNs = sessionStartedNs
+        if (startedNs == 0L) return
+        sessionStartedNs = 0L
+        reconnectPolicy.onSessionEnded((System.nanoTime() - startedNs) / 1_000_000L)
     }
 
     private fun buildWsUrl(serverUrl: String): String {
