@@ -15,6 +15,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import com.hermesandroid.bridge.auth.PairingManager
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.overlay.StatusOverlay
@@ -45,6 +46,7 @@ class MainActivity : Activity() {
     private lateinit var btnConnect: Button
     private lateinit var btnDisconnect: Button
     private lateinit var tvAddress: TextView
+    private lateinit var tvVersion: TextView
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,6 +70,8 @@ class MainActivity : Activity() {
         btnConnect = findViewById(R.id.btnConnect)
         btnDisconnect = findViewById(R.id.btnDisconnect)
         tvAddress = findViewById(R.id.tvAddress)
+        tvVersion = findViewById(R.id.tvVersion)
+        tvVersion.text = "v${BuildConfig.VERSION_NAME}"
 
         setupPairingCode()
         setupPermissions()

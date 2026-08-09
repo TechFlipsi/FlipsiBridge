@@ -31,9 +31,9 @@
             android:textStyle="bold" />
 
         <TextView
+            android:id="@+id/tvVersion"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="v0.4.0"
             android:textSize="12sp"
             android:textColor="#666666"
             android:fontFamily="monospace" />
