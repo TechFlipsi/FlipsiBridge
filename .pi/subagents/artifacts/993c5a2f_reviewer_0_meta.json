@@ -1,0 +1,165 @@
+{
+  "runId": "993c5a2f",
+  "agent": "reviewer",
+  "task": "You are reviewing an external fork PR on the hermes-android repo: PR #95 'feat: Microphone support Phase 1 (Ambient Sound Recording)' by Thykes3000.\n\nREPO CONTEXT (hard rules from AGENTS.md):\n- hermes-android is a remote-control bridge: Kotlin bridge app (hermes-android-bridge/) + Python toolset (tools/, tests/, hermes-android-plugin/).\n- SECURITY-CRITICAL: once paired, the bridge has full device access. Never expose pairing codes, server IPs, tokens, screen content outside the task.\n- Direct USB/LAN dev -> phone Ktor server port 8765; relay mode -> port 8766.\n- Python tools must strip PII (phone numbers, recipients, locations) from responses/logs (existing convention).\n- Bug-fix regression tests go in tests/ (Python) and bridge unit tests (Kotlin).\n- Destructive/sensitive on-device actions need user confirmation.\n\nPR CONTENTS (already fetched):\n- Worktree: /tmp/pr95-wt  (branch pr-95-review, merge-base with origin/main is 08770ab)\n- Diff: /tmp/pr95.diff (3390 lines)\n- Adds: audio/ package in Kotlin bridge (MicrophoneRecorderService, MicrophoneRecordingFiles, MicrophoneRecordingState, WavFileWriter) + unit tests\n- Modifies: AndroidManifest.xml, BridgeRouter.kt, CommandDispatcher.kt, RelayClient.kt, BridgeApplication.kt, BridgeNotificationListener.kt\n- Modifies Python: tools/android_relay.py (+210/-12), tools/android_tool.py (+142), hermes-android-plugin/* copies, tests/test_android_tool.py (+82/-4), tests/test_android_relay.py\n- Also adds/edits many files that look unrelated to mic support: CODEX-START.md, HANDOVER.md, MILESTONES.md, docs/FALLSTRICKE.md, docs/KI-KOORDINATION.md, docs/cradata/* (German personal experiment reports), edits to README.md, SECURITY.md, CHANGELOG.md, skills/android/SKILL.md, setup.py\n\nREVIEW FOCUS (in priority order):\n1. SECURITY: Are the new mic endpoints (mic_start/mic_stop/mic_status, any audio fetch/download endpoint) authenticated exactly like existing endpoints? Any path traversal in audio file fetch (filename params)? Any unauthenticated routes? Any token/IP leakage in new code paths or logs? Where do recordings land and who can read them? Indefinite recording (duration=0) abuse surface.\n2. CORRECTNESS: WAV writer correctness (header fields, byte counts, little-endian), recording state machine races, foreground service lifecycle (startForeground within timeout, stop handling, process death), relay forwarding correctness (chunking, timeouts), duplicate code between tools/ and hermes-android-plugin/ copies (repo convention: they must stay unified).\n3. CONVENTIONS: commit hygiene, scope creep (are the unrelated docs/SECURITY.md edits acceptable?), PII-stripping convention respected, test quality (do new tests actually cover the new behavior?).\n4. Does the Kotlin code compile conceptually (API usage plausible for the target SDK used in hermes-android-bridge/app/build.gradle.kts)?\n\nWork from /tmp/pr95-wt and /tmp/pr95.diff. Do NOT modify any files. Do NOT run builds that write outside /tmp.\n\nOUTPUT FORMAT:\n## Strengths\n## Critical (must fix, esp. security)\n## Important\n## Minor / nits\n## Scope assessment (which files belong in this PR, which should be dropped)\n## Verdict (merge as-is / request changes / reject, with one-line rationale)",
+  "exitCode": 0,
+  "usage": {
+    "input": 124667,
+    "output": 28824,
+    "cacheRead": 3385472,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 53
+  },
+  "model": "qwen-token-plan/qwen3.8-max:high",
+  "attemptedModels": [
+    "qwen-token-plan/qwen3.8-max:high"
+  ],
+  "modelAttempts": [
+    {
+      "model": "qwen-token-plan/qwen3.8-max:high",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 124667,
+        "output": 28824,
+        "cacheRead": 3385472,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 53
+      }
+    }
+  ],
+  "durationMs": 914936,
+  "toolCount": 61,
+  "launchContractDigest": "c49675aa23f58c17b1b760d961652f1ec286e8a1b4ede571a2e7f4621a045252",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:d231ac2ae1fd2b0f"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:d231ac2ae1fd2b0f"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "Concrete findings with file paths and severity: Critical leak in HANDOVER.md (pairing code 'AHGRAM' + server http://100.116.64.43:8765); Important lifecycle bug in MicrophoneRecorderService.kt (stopSelfResult stale startId after mic_stop); verified auth parity (BridgeServer.kt interceptor covers /mic_file; relay Bearer checks in tools/android_relay.py _handle_ws/_handle_http); verified traversal defenses in MicrophoneRecordingFiles.kt:63-75; verified WAV header correctness field-by-field; scope-creep file list provided."
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [
+        "tests/test_android_relay.py (PR-added: TestMicrophoneBinaryStream, TestPhoneReplacement)",
+        "tests/test_android_tool.py (PR-added: TestMicrophone, plugin-copy registration test)",
+        "hermes-android-bridge/app/src/test/kotlin/com/hermesandroid/bridge/audio/WavFileWriterTest.kt (PR-added)",
+        "hermes-android-bridge/app/src/test/kotlin/com/hermesandroid/bridge/audio/MicrophoneRecordingStateTest.kt (PR-added)"
+      ],
+      "commandsRun": [
+        {
+          "command": "cd hermes-android-bridge && ./gradlew testDebugUnitTest",
+          "result": "not-run",
+          "summary": "No shell tool available in this review session; maintainer/CI must run (build.yml runs it on PRs touching hermes-android-bridge/)."
+        },
+        {
+          "command": "pytest tests/ -q",
+          "result": "not-run",
+          "summary": "No shell tool available in this review session; maintainer must run. New relay/tool tests look structurally sound (autouse stop_relay fixture avoids singleton port collisions)."
+        }
+      ],
+      "validationOutput": [
+        "Read full 3390-line /tmp/pr95.diff; verified PR tree at /home/paseo/projects/hermes-android/.pr95-review (branch pr-95-review, tip 897d4bc from pull/95/head; /tmp/pr95-wt was deleted mid-review).",
+        "Auth: BridgeServer.kt interceptor applies to all routes incl. new GET /mic_file (only /ping exempt); relay _handle_http Bearer check covers /mic_start,/mic_stop,/mic_status,/mic_file; phone WS auth header-only with hmac.compare_digest.",
+        "Traversal: MicrophoneRecordingFiles.resolve regex [A-Za-z0-9._-]+\\.wav + canonical containment; android_mic_fetch basename/.wav validation; relay Content-Disposition sanitized.",
+        "Streaming: uint16-length framed binary chunks, bounded queues, 256MB cap, length+SHA-256 verification; atomic .part->wav finalize.",
+        "Sync: tools/android_relay.py == hermes-android-plugin/android_relay.py (identical blob 662efda post-PR); android_tool.py copies differ only in documented import path; 42 schemas == 42 handlers.",
+        "SDK: minSdk 26 / targetSdk 34 — all used APIs (NotificationChannel, STOP_FOREGROUND_REMOVE, FOREGROUND_SERVICE_MICROPHONE) valid; manifest correct, service exported=false.",
+        "WAV header verified field-by-field against RIFF/PCM16 spec and unit test byte assertions."
+      ],
+      "residualRisks": [
+        "HANDOVER.md leak: pairing code AHGRAM and relay IP 100.116.64.43:8765 are in the PR; if merged they persist in history — author must rotate the code and drop the file.",
+        "MicrophoneRecorderService lingers in started state after the normal mic_stop flow (stopSelfResult stale startId).",
+        "Unbounded recording-file growth in app-external Music/cradata_audio (no retention policy).",
+        "Android 12+ background FGS start restriction for mic_start not verified on-device; code degrades to 500 gracefully.",
+        "Python tests and Kotlin unit tests were not executed in this environment (no shell); commit-message hygiene could not be audited without git access.",
+        "Audio transits cleartext unless relay TLS env vars are set — consistent with existing screenshot/screen-record posture, but recordings are highly sensitive content."
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "3390-line fork PR: Phase-1 microphone support (Kotlin audio package: recorder foreground service, WAV writer, state machine; /mic_start,/mic_stop,/mic_status,/mic_file endpoints over Ktor and relay with framed binary WAV streaming; 4 new Python tools) plus tests, docs/CHANGELOG updates, and unrelated personal fork docs and small security/log fixes.",
+      "reviewFindings": [
+        "blocker: HANDOVER.md (section 0a item 5) - committed live pairing code 'AHGRAM' and relay server http://100.116.64.43:8765; violates SECURITY.md/AGENTS.md; rotate code and remove file (drop all personal docs).",
+        "important: hermes-android-bridge/.../audio/MicrophoneRecorderService.kt (finally block) - stopSelfResult(startId) with stale START startId leaves service started after mic_stop; use stopSelf() after finalization.",
+        "important: scope creep - CODEX-START.md, HANDOVER.md, MILESTONES.md, docs/FALLSTRICKE.md, docs/KI-KOORDINATION.md, docs/cradata/* are personal fork artifacts unrelated to mic support.",
+        "important: no retention/cleanup for completed WAVs (~57.6 MB per 30-min recording) in getExternalFilesDir(Music)/cradata_audio.",
+        "important: Android 12+ background startForegroundService restriction for mic_start needs on-device verification (graceful 500 fallback exists).",
+        "minor: android_mic_fetch scalar requests timeout with stream=True may trip on large files over slow links.",
+        "minor: bundled unrelated fixes (WS replacement race, _mask_token, notification log redaction, aiohttp handler cleanup, version bumps) should be itemized or split.",
+        "no blockers in security of the mic endpoints themselves: auth parity verified, traversal hardened, stream integrity-checked, duration capped, visible foreground notification."
+      ],
+      "manualNotes": "Verdict: request changes. The mic implementation is high quality and well tested; merge is viable after dropping the personal docs (esp. HANDOVER.md with the leaked pairing code + IP) and fixing the service-stop lifecycle. Reviewer had no shell tool: maintainer must run ./gradlew testDebugUnitTest and pytest tests/ -q. The /tmp/pr95-wt worktree disappeared mid-review; the identical checkout at /home/paseo/projects/hermes-android/.pr95-review was used for all file-level verification."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": false
+    }
+  },
+  "transcriptPath": "/home/paseo/projects/hermes-android/.pi/subagents/artifacts/993c5a2f_reviewer_0_transcript.jsonl",
+  "timestamp": 1786525435495
+}

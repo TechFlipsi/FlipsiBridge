@@ -1,0 +1,148 @@
+{
+  "runId": "0fda081c",
+  "agent": "reviewer",
+  "task": "You are reviewing the last (and only) commit of merged PR #95 on hermes-android:\ncommit 5f2f8ab 'feat(bridge): add microphone recording support' — 33 files, +2030/-72, squash-merged to main.\nRepo root: /home/paseo/projects/hermes-android — read AGENTS.md and SECURITY.md there first.\nThis is a security-sensitive remote-control bridge (full device access once paired). Mic recording is a surveillance-grade capability, so review security-first.\n\nThe full commit diff (git show 5f2f8ab) is saved at /home/paseo/projects/hermes-android/.pr-review/pr95.diff (2900 lines).\nThe commit is in HEAD, so you can also read current files directly (only later commit d119721 added a LICENSE, irrelevant).\nDo NOT modify any files. Read-only review. This already shipped — the review is a post-merge audit to catch issues needing follow-up fixes.\n\nSCOPE — what the commit added:\n- MicrophoneRecorderService.kt (292 lines): foreground recorder, VOICE_RECOGNITION source, saturating 2.5x gain, 30-min cap\n- MicrophoneRecordingFiles.kt (keep-last-10 retention), MicrophoneRecordingState.kt, PcmSampleProcessor.kt, WavFileWriter.kt (atomic .part->wav finalization)\n- RelayClient.kt +134: relay WS binary streaming of recordings with SHA-256 verification\n- BridgeRouter.kt +22, CommandDispatcher.kt +80: new /mic_start|stop|status|file endpoints (direct HTTP) + relay command handling\n- AndroidManifest.xml +9: RECORD_AUDIO permission, foreground service declarations\n- Python: tools/android_relay.py + hermes-android-plugin/android_relay.py (+222/+223), android_tool.py both copies (+142/+164): four android_mic_* tools with MEDIA: delivery\n- Kotlin unit tests (4 files) + tests/test_android_relay.py +156 + tests/test_android_tool.py +86\n- Docs: SECURITY.md, docs/architecture.md, docs/manual-tests.md, CHANGELOG\n\nREVIEW PRIORITIES:\n1. ENDPOINT AUTH (highest priority): verify /mic_start, /mic_stop, /mic_status, /mic_file and the relay-command paths all go through the SAME bearer-token verification as the pre-existing endpoints. Look for any route registered without the auth check, or auth checked after partial work.\n2. FILE-SERVING SAFETY: /mic_file serves recording files — verify the requested filename/ID cannot escape the recordings directory (path traversal, .., absolute paths, symlink tricks). Check what happens with unknown IDs.\n3. RELAY WS BINARY STREAMING: verify the SHA-256 verification is done over the full payload before use, that chunk reordering/truncation is handled, and that only authenticated relay sessions can push/request recordings.\n4. PRIVACY GUARDRAILS: foreground notification present (user-visible while recording)? 30-min cap actually enforced? keep-last-10 deletion correct (no orphan .part files)? Are recordings world-readable anywhere (file modes)?\n5. PYTHON TOOLS: android_mic_* tools — do they follow the MEDIA:<path> convention, strip PII from responses, and avoid logging audio content? Any token/URL leakage into tool responses or errors?\n6. RESOURCE SAFETY: AudioRecord released on all paths (crash mid-recording, service kill)? .part files cleaned or finalized on abnormal stop? Gain stage overflow handling (saturating vs clipping)?\n7. TEST COVERAGE: do tests cover auth failures, traversal attempts, cap enforcement, and retention — or only happy paths? Name specific gaps.\n8. COPY PARITY: I already verified tools/android_relay.py == hermes-android-plugin/android_relay.py (identical) and android_tool.py differs only in android_setup import style (intentional). Confirm from the diff that #95 kept that discipline — flag if the diff shows any OTHER divergence introduced.\n9. SECRETS SCAN: grep the diff for anything looking like API keys, tokens, IPs, or personal identifiers.\n\nOutput format (strict):\n1. VERDICT: one of 'clean', 'follow-ups-needed', 'security-fix-needed'\n2. SUMMARY: 3-5 sentence overall assessment\n3. FINDINGS: numbered list, each tagged [BLOCKER]/[MAJOR]/[MINOR]/[NIT] with file path + evidence quote and concrete fix suggestion\n4. POSITIVES: brief list\n5. FOLLOW-UP TASKS: concrete list of fix tasks the maintainer should open (if any)\nBe specific and evidence-based — cite diff/code lines.",
+  "exitCode": 0,
+  "usage": {
+    "input": 74140,
+    "output": 24049,
+    "cacheRead": 862464,
+    "cacheWrite": 0,
+    "cost": 0,
+    "turns": 22
+  },
+  "model": "qwen-token-plan/qwen3.8-max:high",
+  "attemptedModels": [
+    "qwen-token-plan/qwen3.8-max:high"
+  ],
+  "modelAttempts": [
+    {
+      "model": "qwen-token-plan/qwen3.8-max:high",
+      "success": true,
+      "exitCode": 0,
+      "usage": {
+        "input": 74140,
+        "output": 24049,
+        "cacheRead": 862464,
+        "cacheWrite": 0,
+        "cost": 0,
+        "turns": 22
+      }
+    }
+  ],
+  "durationMs": 631495,
+  "toolCount": 28,
+  "launchContractDigest": "c4287b41d2dfcf41b329e7ed32bded07f951f65004decb8fcc8024fa1b38749b",
+  "launchResolvedExtensions": {
+    "version": 1,
+    "source": "launch-resolved",
+    "disableAmbientExtensions": false,
+    "runtime": [
+      "sha256:d231ac2ae1fd2b0f"
+    ],
+    "configured": [],
+    "effective": [
+      "sha256:d231ac2ae1fd2b0f"
+    ],
+    "omitted": {
+      "runtime": 0,
+      "configured": 0,
+      "effective": 0
+    }
+  },
+  "acceptance": {
+    "status": "attested",
+    "evidenceStatus": "attested",
+    "explicit": false,
+    "effectiveAcceptance": {
+      "level": "attested",
+      "explicit": false,
+      "inferredReason": [
+        "read-only/reviewer-style agent"
+      ],
+      "criteria": [
+        {
+          "id": "criterion-1",
+          "must": "Return concrete findings with file paths and severity when applicable",
+          "evidence": [
+            "review-findings",
+            "residual-risks"
+          ],
+          "severity": "required"
+        }
+      ],
+      "evidence": [
+        "review-findings",
+        "residual-risks"
+      ],
+      "verify": [],
+      "stopRules": []
+    },
+    "inferredReason": [
+      "read-only/reviewer-style agent"
+    ],
+    "criteria": [
+      {
+        "id": "criterion-1",
+        "must": "Return concrete findings with file paths and severity when applicable",
+        "evidence": [
+          "review-findings",
+          "residual-risks"
+        ],
+        "severity": "required"
+      }
+    ],
+    "runtimeChecks": [],
+    "verifyRuns": [],
+    "childReport": {
+      "criteriaSatisfied": [
+        {
+          "id": "criterion-1",
+          "status": "satisfied",
+          "evidence": "7 concrete findings with file paths, severity tags, and evidence quotes: stuck-STARTING state (CommandDispatcher.kt /mic_start + MicrophoneRecorderService.kt requestStop), missing resolve() traversal tests (audio test dir inventory), missing relay negative-stream tests (tests/test_android_relay.py TestMicrophoneBinaryStream happy-path only), untested 30-min cap (MicrophoneRecorderService.kt sampleLimit), error-string host exposure (android_mic_fetch both copies), end-of-stream-only SHA verification (_relay_binary_stream), delayed .part cleanup (createPending). Auth/traversal/streaming verified safe from BridgeServer.kt interceptor, MicrophoneRecordingFiles.resolve(), and _handle_http."
+        }
+      ],
+      "changedFiles": [],
+      "testsAddedOrUpdated": [],
+      "commandsRun": [
+        {
+          "command": "pytest tests/",
+          "result": "not-run",
+          "summary": "Read-only review mandate; also no working shell tooling (grep/find binaries corrupted: 'Syntax error' from rg/fd shims). Recommend supervisor runs pytest + ./gradlew testDebugUnitTest."
+        }
+      ],
+      "validationOutput": [
+        "Read full 2901-line .pr-review/pr95.diff plus current files: BridgeServer.kt (auth interceptor covers all routes except /ping, applies before routing), BridgeRouter.kt (/mic_file route), RelayClient.kt (authenticated-WS-only /mic_file branch inside try/catch), android_relay.py (_handle_http auth-first, _relay_binary_stream SHA-256/length guards, per-frame re-lookup prevents stall on aborted downloads), android_tool.py helpers (token header-only), MicrophoneRecordingFiles.kt/State.kt, WavFileWriter.kt, PcmSampleProcessor.kt, Kotlin+Python test files, docs.",
+        "Copy parity: both android_relay.py copies end at identical git blob 662efda; android_tool.py hunks identical apart from intentional android_setup import difference and a net-zero android_read_widgets reorder.",
+        "Secrets scan of full diff: only fixture codes (SECRET123/MICODE/REPLCE), localhost URLs, commit metadata — no real tokens, keys, IPs, or PII."
+      ],
+      "residualRisks": [
+        "Recorder state can stick at 'starting' after abnormal service death, blocking /mic_start with 409 until app restart (robustness, not confidentiality).",
+        "Traversal/symlink defense in resolve() and the SHA-256/length verification branches are correct by inspection but lack automated regression tests.",
+        "Tests were not executed in this read-only review; green status of pytest/Gradle suites is assumed, not verified."
+      ],
+      "noStagedFiles": true,
+      "diffSummary": "Read-only post-merge audit of commit 5f2f8ab (PR #95): microphone recording support — foreground recorder service, WAV writer, retention, /mic_* endpoints (direct HTTP + relay WS binary streaming with SHA-256), four android_mic_* tools, tests, docs. No files modified.",
+      "reviewFindings": [
+        "no blockers: endpoint auth verified uniform across /mic_start|stop|status|file on direct HTTP (BridgeServer.kt Plugins interceptor) and relay (auth-first _handle_http; binary frames only on handshake-authenticated phone WS)",
+        "no blockers: /mic_file traversal-safe (basename regex + File.name check + canonicalFile parent check defeats .., absolute paths, symlinks; unknown ID -> 404)",
+        "minor: MicrophoneRecorderService.requestStop() not-recording branch never resets MicrophoneRecordingState -> possible permanent STARTING/409 lockout (CommandDispatcher.kt /mic_start reserves before service starts)",
+        "minor: no Kotlin unit tests for MicrophoneRecordingFiles.resolve() traversal/symlink/unknown-ID behavior",
+        "minor: no negative relay-stream tests (checksum mismatch, oversize, truncation) — only happy-path end-to-end",
+        "minor: 30-minute cap (sampleLimit) has no automated coverage",
+        "nit: android_mic_fetch error strings can include bridge host:port (existing convention; token never leaks)",
+        "nit: SHA-256 verified at end-of-stream after bytes forwarded; safe for current consumer but document the contract"
+      ],
+      "manualNotes": "Verdict: follow-ups-needed. Environment grep/find tools are broken (rg/fd shims emit shell syntax errors), so all verification was via direct file reads. Supervisor should run `pytest tests/` and `cd hermes-android-bridge && ./gradlew testDebugUnitTest` to confirm suites are green; none of my findings depend on those results. Follow-up task list is in section 5 of the review."
+    }
+  },
+  "effects": {
+    "fileMutation": {
+      "status": "not-applicable",
+      "expected": false,
+      "attempted": false
+    }
+  },
+  "transcriptPath": "/home/paseo/projects/hermes-android/.pi/subagents/artifacts/0fda081c_reviewer_0_transcript.jsonl",
+  "timestamp": 1786970377100
+}
