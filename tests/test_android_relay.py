@@ -329,3 +329,230 @@ class TestPhoneReplacement:
                 await new_ws.close()
 
         asyncio.run(scenario())
+
+
+class TestMicrophoneBinaryStreamNegative:
+    """Negative paths for the binary stream relay (#99).
+
+    The happy path (TestMicrophoneBinaryStream) covers a well-behaved phone.
+    These tests pin the relay's behavior against a hostile or failing phone:
+    checksum mismatch, oversize payloads, length-mismatched end events, an
+    invalid declared size, and a mid-stream disconnect. In every case the
+    HTTP caller must get either an error status or a torn-down connection —
+    never a silent partial file presented as complete.
+    """
+
+    PORT = 19884
+    CODE = "MINEG1"
+
+    @staticmethod
+    def _frame(request_id: str, payload: bytes) -> bytes:
+        request_id_bytes = request_id.encode("utf-8")
+        return len(request_id_bytes).to_bytes(2, "big") + request_id_bytes + payload
+
+    def _run_stream_scenario(self, phone_play, expect):
+        import asyncio
+        import aiohttp
+
+        start_relay(pairing_code=self.CODE, port=self.PORT)
+
+        async def scenario():
+            headers = {"Authorization": f"Bearer {self.CODE}"}
+            async with aiohttp.ClientSession() as session:
+                ws = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers=headers,
+                )
+                download = asyncio.create_task(
+                    session.get(
+                        f"http://127.0.0.1:{self.PORT}/mic_file",
+                        headers=headers,
+                    )
+                )
+                command = await ws.receive_json(timeout=2)
+                assert command["path"] == "/mic_file"
+
+                await phone_play(ws, command["request_id"])
+
+                if expect == "status":
+                    response = await asyncio.wait_for(download, timeout=2)
+                    assert response.status >= 400
+                    await ws.close()
+                    return
+                if expect == "teardown-or-complete":
+                    # Detection happens after the last byte is delivered; the
+                    # client either sees a torn-down body or the full payload.
+                    # Server-side logs are asserted by the caller.
+                    response = await asyncio.wait_for(download, timeout=2)
+                    try:
+                        await asyncio.wait_for(response.read(), timeout=2)
+                    except aiohttp.ClientError:
+                        pass
+                    await ws.close()
+                    return
+                # expect == "teardown": headers may already be sent, but the
+                # body read must fail — never a silent truncated success.
+                try:
+                    response = await asyncio.wait_for(download, timeout=2)
+                    with pytest.raises(aiohttp.ClientError):
+                        await asyncio.wait_for(response.read(), timeout=2)
+                except aiohttp.ClientError:
+                    pass  # connection died before/with headers — also acceptable
+                await ws.close()
+
+        asyncio.run(scenario())
+
+    def test_sha256_mismatch_is_detected_server_side(self, caplog):
+        import hashlib
+        import logging
+
+        wav = b"RIFF" + (b"\x09\x09" * 64)
+
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_bad.wav",
+                        "mimeType": "audio/wav",
+                        "size": len(wav),
+                    },
+                }
+            )
+            await ws.send_bytes(self._frame(request_id, wav))
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "end",
+                        "bytes": len(wav),
+                        # Wrong digest over different content.
+                        "sha256": hashlib.sha256(b"tampered").hexdigest(),
+                    },
+                }
+            )
+
+        # The full body has already been streamed when the checksum is
+        # verified, so the HTTP client cannot observe the abort — pin the
+        # server-side detection instead: the relay must log the mismatch and
+        # force-close rather than complete the stream cleanly.
+        with caplog.at_level(logging.WARNING, logger="tools.android_relay"):
+            self._run_stream_scenario(phone_play, expect="teardown-or-complete")
+        assert any("checksum mismatch" in r.message for r in caplog.records)
+
+    def test_oversize_chunk_aborts_the_download(self):
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_big.wav",
+                        "mimeType": "audio/wav",
+                        "size": 8,  # declare 8 bytes...
+                    },
+                }
+            )
+            # ...then send 48.
+            await ws.send_bytes(self._frame(request_id, b"\x01" * 48))
+
+        self._run_stream_scenario(phone_play, expect="teardown")
+
+    def test_end_bytes_mismatch_is_detected_server_side(self, caplog):
+        import hashlib
+        import logging
+
+        wav = b"RIFF" + (b"\x02\x02" * 32)
+
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_len.wav",
+                        "mimeType": "audio/wav",
+                        "size": len(wav),
+                    },
+                }
+            )
+            await ws.send_bytes(self._frame(request_id, wav))
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "end",
+                        "bytes": len(wav) + 100,  # lies about the total
+                        "sha256": hashlib.sha256(wav).hexdigest(),
+                    },
+                }
+            )
+
+        # Same shape as the checksum case: the payload is fully delivered
+        # before the end event lies, so pin the server-side detection.
+        with caplog.at_level(logging.WARNING, logger="tools.android_relay"):
+            self._run_stream_scenario(phone_play, expect="teardown-or-complete")
+        assert any(
+            "length does not match" in r.message for r in caplog.records
+        )
+
+    def test_declared_size_above_the_cap_is_rejected_up_front(self):
+        from tools.android_relay import _MAX_STREAM_BYTES
+
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_huge.wav",
+                        "mimeType": "audio/wav",
+                        "size": _MAX_STREAM_BYTES + 1,
+                    },
+                }
+            )
+
+        self._run_stream_scenario(phone_play, expect="status")
+
+    def test_negative_declared_size_is_rejected_up_front(self):
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_neg.wav",
+                        "mimeType": "audio/wav",
+                        "size": -1,
+                    },
+                }
+            )
+
+        self._run_stream_scenario(phone_play, expect="status")
+
+    def test_phone_disconnect_mid_stream_tears_down_the_download(self):
+        async def phone_play(ws, request_id):
+            await ws.send_json(
+                {
+                    "request_id": request_id,
+                    "status": 200,
+                    "stream": {
+                        "event": "start",
+                        "filename": "recording_cut.wav",
+                        "mimeType": "audio/wav",
+                        "size": 1024,
+                    },
+                }
+            )
+            await ws.send_bytes(self._frame(request_id, b"\x03" * 48))
+            await ws.close()  # phone vanishes mid-stream
+
+        self._run_stream_scenario(phone_play, expect="teardown")

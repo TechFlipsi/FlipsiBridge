@@ -31,6 +31,16 @@ class MicrophoneRecorderService : Service() {
         private const val CHANNEL_ID = "hermes_bridge_mic"
         private const val NOTIFICATION_ID = 1001
         private const val SAMPLE_RATE = 16_000
+
+        /**
+         * Hard sample budget for one recording. duration=0 means "until
+         * stopped" but is still capped at [MAX_DURATION_SECONDS] so a missing
+         * stop command cannot fill a permanently powered device (#99).
+         */
+        internal fun sampleLimitFor(durationSec: Int): Long {
+            val effectiveDuration = if (durationSec == 0) MAX_DURATION_SECONDS else durationSec
+            return SAMPLE_RATE.toLong() * effectiveDuration.toLong()
+        }
         private const val ACTION_START = "start"
         private const val ACTION_STOP = "stop"
         private const val EXTRA_DURATION = "duration"
@@ -147,8 +157,7 @@ class MicrophoneRecorderService : Service() {
                 // A missing stop command must not fill a permanently powered
                 // device. duration=0 still means "until stopped", but only up
                 // to the same documented Phase-1 safety ceiling.
-                val effectiveDuration = if (durationSec == 0) MAX_DURATION_SECONDS else durationSec
-                val sampleLimit = SAMPLE_RATE.toLong() * effectiveDuration.toLong()
+                val sampleLimit = sampleLimitFor(durationSec)
 
                 while (isActive && isRecording.get() && writer.totalSamples < sampleLimit) {
                     val requested = minOf(samples.size.toLong(), sampleLimit - writer.totalSamples).toInt()
@@ -214,6 +223,13 @@ class MicrophoneRecorderService : Service() {
 
     private fun requestStop() {
         if (!isRecording.get()) {
+            // A STOP that arrives before the record loop starts (or after an
+            // early failure) must not leave the state machine stuck in an
+            // active phase, or every later /mic_start returns 409 until the
+            // app restarts (#98).
+            if (MicrophoneRecordingState.snapshot().isActive) {
+                MicrophoneRecordingState.markError("Recording stopped before it completed")
+            }
             stopForegroundCompat()
             stopSelf()
             return
@@ -280,6 +296,12 @@ class MicrophoneRecorderService : Service() {
     override fun onDestroy() {
         stopRequested.set(true)
         isRecording.set(false)
+        // The system can destroy the service before the record loop starts
+        // (or mid-finalization) with no STOP command. Reset an active phase
+        // so /mic_start does not stay blocked with 409 (#98).
+        if (MicrophoneRecordingState.snapshot().isActive) {
+            MicrophoneRecordingState.markError("Recorder service was destroyed before completion")
+        }
         safelyStop(recorder)
         recordingJob?.cancel()
         if (recordingJob == null) {

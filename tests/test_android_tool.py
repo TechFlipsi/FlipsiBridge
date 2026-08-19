@@ -1412,3 +1412,30 @@ class TestPinch:
         )
         result = json.loads(android_pinch(0, 0))
         assert "error" in result
+
+
+class TestMicFetchErrorRedaction:
+    """#99: requests exception text embeds the bridge host:port, which tool
+    responses must not expose (AGENTS.md convention)."""
+
+    @responses.activate
+    def test_connection_error_does_not_leak_bridge_url(self, monkeypatch):
+        import requests
+
+        leaked_url = "http://192.168.7.42:8766"
+        monkeypatch.setenv("ANDROID_BRIDGE_URL", leaked_url)
+        responses.add(
+            responses.GET,
+            f"{leaked_url}/mic_file",
+            body=requests.exceptions.ConnectionError(
+                "HTTPConnectionPool(host='192.168.7.42', port=8766): "
+                "Max retries exceeded with url: /mic_file"
+            ),
+        )
+
+        result = json.loads(android_mic_fetch())
+
+        assert "error" in result
+        assert "192.168.7.42" not in result["error"]
+        assert "8766" not in result["error"]
+        assert result["error"] == "Could not download microphone recording from the bridge"

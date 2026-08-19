@@ -717,6 +717,15 @@ def android_mic_fetch(remote_path: str = "") -> str:
         if len(prefix) < 12 or prefix[:4] != b"RIFF" or prefix[8:12] != b"WAVE":
             raise IOError("Downloaded microphone recording is not a WAV file")
         return f"Microphone recording fetched ({written} bytes)\nMEDIA:{temp_path}"
+    except requests.exceptions.RequestException:
+        # requests exception text embeds the bridge host:port; tool responses
+        # must not expose device connection details (AGENTS.md convention).
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": "Could not download microphone recording from the bridge"})
     except Exception as e:
         if temp_path:
             try:
