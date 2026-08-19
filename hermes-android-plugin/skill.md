@@ -81,7 +81,7 @@ you exact element text, node IDs, and tap targets — always use it first.
 - `android_scroll(direction, node_id=None)` — scroll a specific element or the whole screen.
 
 ### Keys
-- `android_press_key(key)` — press a key. Options: `back`, `home`, `recents`, `power`, `volume_up`, `volume_down`, `enter`, `delete`, `tab`, `escape`, `search`, `notifications`
+- `android_press_key(key)` — perform a global action. Options: `back`, `home`, `recents`, `notifications`, `quick_settings`, `lock_screen`, `take_screenshot`, `wake` (turn the screen on without unlocking), `power` (opens the long-press power dialog — reboot/emergency; almost never what you want to wake the device). Volume/keyboard keys (`volume_up`, `enter`, etc.) are not supported.
 
 ### Waiting
 - `android_wait(text, class_name, timeout_ms=5000)` — poll until an element appears. Use after navigation or loading.
