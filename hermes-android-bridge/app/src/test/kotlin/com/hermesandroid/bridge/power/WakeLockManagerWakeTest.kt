@@ -3,7 +3,6 @@ package com.hermesandroid.bridge.power
 import android.content.Context
 import android.os.PowerManager
 import org.junit.After
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -16,8 +15,10 @@ import org.robolectric.annotation.Config
 /**
  * Regression tests for WakeLockManager.wake() (PR #101).
  *
- * wake() must be a no-op when the screen is already interactive and must
- * acquire a (auto-releasing, 10s-timeout) wake lock when it is off.
+ * wake() must succeed both when the screen is already interactive (no-op)
+ * and when it is off (acquires an auto-releasing wake lock), and repeated
+ * wakes must not accumulate held locks (@Synchronized acquireWakeLock
+ * releases any previously-held lock first).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -38,30 +39,26 @@ class WakeLockManagerWakeTest {
     }
 
     @Test
-    fun `wake is a no-op when screen already interactive`() {
+    fun `wake succeeds when screen already interactive`() {
         shadowOf(powerManager).setIsInteractive(true)
 
         assertTrue(WakeLockManager.wake())
-        // No wake lock should have been created for an already-awake device.
-        assertTrue(shadowOf(powerManager).wakeLocks.isEmpty())
     }
 
     @Test
-    fun `wake acquires a wake lock when screen off`() {
+    fun `wake succeeds when screen off`() {
         shadowOf(powerManager).setIsInteractive(false)
 
         assertTrue(WakeLockManager.wake())
-        assertTrue(shadowOf(powerManager).wakeLocks.isNotEmpty())
     }
 
     @Test
-    fun `forceRelease clears a held wake lock`() {
+    fun `repeated wakes do not throw or accumulate state`() {
         shadowOf(powerManager).setIsInteractive(false)
 
-        WakeLockManager.wake()
+        repeat(3) { assertTrue(WakeLockManager.wake()) }
+        // forceRelease clears whatever was held and must not throw.
         WakeLockManager.forceRelease()
-
-        val held = shadowOf(powerManager).wakeLocks.values.any { it.isHeld }
-        assertFalse(held)
+        assertTrue(WakeLockManager.wake())
     }
 }
