@@ -419,14 +419,28 @@ class TestMicrophoneBinaryStreamNegative:
                         pass
                     await ws.close()
                     return
-                # expect == "teardown": headers may already be sent, but the
-                # body read must fail — never a silent truncated success.
+                # expect == "teardown": the client must never see a silent
+                # truncated success. Three outcomes all satisfy that, and
+                # which one happens depends on whether the relay processes
+                # the phone's disconnect before it commits the response:
+                #   - the connection dies before or with the headers,
+                #   - the headers arrive and the body read fails,
+                #   - the relay notices first and answers with an error status.
                 try:
                     response = await asyncio.wait_for(download, timeout=2)
-                    with pytest.raises(aiohttp.ClientError):
-                        await asyncio.wait_for(response.read(), timeout=2)
                 except aiohttp.ClientError:
-                    pass  # connection died before/with headers — also acceptable
+                    response = None  # died before/with headers
+                if response is not None:
+                    try:
+                        await asyncio.wait_for(response.read(), timeout=2)
+                    except aiohttp.ClientError:
+                        pass  # torn-down body — the intended outcome
+                    else:
+                        assert response.status >= 400, (
+                            "stream completed cleanly with status "
+                            f"{response.status}; a truncated success is the "
+                            "one outcome this test exists to prevent"
+                        )
                 await ws.close()
 
         asyncio.run(scenario())
