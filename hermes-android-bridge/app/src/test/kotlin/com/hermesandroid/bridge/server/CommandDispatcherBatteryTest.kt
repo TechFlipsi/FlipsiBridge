@@ -3,7 +3,9 @@ package com.hermesandroid.bridge.server
 import android.content.Context
 import android.os.BatteryManager
 import com.google.gson.JsonObject
+import com.hermesandroid.bridge.BridgeApplication
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -36,15 +38,22 @@ class CommandDispatcherBatteryTest {
 
     @Before
     fun setup() {
-        // Instantiating the application runs BridgeApplication.onCreate, which
-        // is what publishes the BridgeApplication.instance the dispatcher
-        // reads. Same arrangement as WakeLockManagerWakeTest.
         val context = RuntimeEnvironment.getApplication()
+        // BridgeApplication.instance is published from Application.onCreate,
+        // which Robolectric does not run — and its setter is private, so it
+        // cannot simply be assigned. That is what the dispatcher's
+        // batteryContext seam is for.
+        CommandDispatcher.batteryContext = { context }
         val manager = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         // Shadow.extract rather than Shadows.shadowOf: it works for any
         // @Implements-annotated shadow without depending on a generated
         // overload existing for this particular type.
         shadowBattery = Shadow.extract<ShadowBatteryManager>(manager)
+    }
+
+    @After
+    fun tearDown() {
+        CommandDispatcher.batteryContext = { BridgeApplication.instance }
     }
 
     private suspend fun battery(): Pair<Any, Int> =

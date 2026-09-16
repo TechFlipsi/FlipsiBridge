@@ -3,6 +3,7 @@
 package com.hermesandroid.bridge.server
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import com.google.gson.JsonObject
 import com.hermesandroid.bridge.BridgeApplication
@@ -35,6 +36,18 @@ import kotlinx.coroutines.withContext
  *   server computes it from the request's Bearer token. Only `/ping` reports it back.
  */
 object CommandDispatcher {
+
+    /**
+     * Where the battery read gets its Context.
+     *
+     * A seam rather than a direct `BridgeApplication.instance` read. That
+     * property is published from `Application.onCreate`, which Robolectric does
+     * not run, and it cannot be assigned from a test because its setter is
+     * private — so without this the endpoint is untestable rather than merely
+     * awkward to test. Tests point it at `RuntimeEnvironment.getApplication()`;
+     * nothing else replaces it.
+     */
+    internal var batteryContext: () -> Context = { BridgeApplication.instance }
 
     suspend fun dispatch(
         method: String,
@@ -286,7 +299,7 @@ object CommandDispatcher {
                 // serializeNulls(): RelayClient serialises results with a
                 // default Gson(), which drops nulls, so a nullable key would
                 // appear over HTTP and vanish over the relay.
-                val app = BridgeApplication.instance
+                val app = batteryContext()
                 val percentage = BatteryMonitor.percentage(app)
                 val charging = BatteryMonitor.charging(app)
                 if (percentage == null || charging == null) {
