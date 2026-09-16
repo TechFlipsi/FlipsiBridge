@@ -16,6 +16,7 @@ import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.model.ScreenNode
 import com.hermesandroid.bridge.notification.NotificationStore
+import com.hermesandroid.bridge.power.BatteryMonitor
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeNotificationListener
 import kotlinx.coroutines.Dispatchers
@@ -264,6 +265,39 @@ object CommandDispatcher {
             method == "GET" && path == "/location" -> {
                 val result = ActionExecutor.location()
                 result to 200
+            }
+
+            method == "GET" && path == "/battery" -> {
+                // Both values come from BatteryManager — percentage via
+                // getIntProperty (API 21), charge state via isCharging (API 23)
+                // — against a minSdk of 26, so there is no version gate and no
+                // dependency on the accessibility service. Reading the level
+                // out of the status-bar node instead would be language- and
+                // OEM-fragile; see BatteryMonitor.
+                //
+                // No auth check here on purpose. The ktor interceptor in
+                // BridgeServer requires a valid Bearer token for every path
+                // except /ping, and the relay authenticates at connect time
+                // before passing `true`. A second gate in the handler would be
+                // unreachable and would only imply the first one is optional.
+                //
+                // The shape is fixed — both keys, always present. Nullable
+                // fields are not an option even though BridgeServer configures
+                // serializeNulls(): RelayClient serialises results with a
+                // default Gson(), which drops nulls, so a nullable key would
+                // appear over HTTP and vanish over the relay.
+                val app = BridgeApplication.instance
+                val percentage = BatteryMonitor.percentage(app)
+                val charging = BatteryMonitor.charging(app)
+                if (percentage == null || charging == null) {
+                    return mapOf(
+                        "error" to "Battery state unavailable on this device",
+                    ) to 503
+                }
+                mapOf(
+                    "batteryPercentage" to percentage,
+                    "charging" to charging,
+                ) to 200
             }
 
             method == "POST" && path == "/send_sms" -> {
