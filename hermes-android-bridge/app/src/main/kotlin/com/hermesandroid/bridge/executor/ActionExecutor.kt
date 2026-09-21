@@ -505,7 +505,7 @@ object ActionExecutor {
             ?: return ActionResult(false, "Accessibility service not running")
         if (!service.hasSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) &&
             !service.hasSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)) {
-            return ActionResult(false, "Location permission not granted. Grant it in Settings > Apps > Hermes Bridge > Permissions.")
+            return ActionResult(false, "Location permission not granted. Grant it in Settings > Apps > FlipsiBridge > Permissions.")
         }
         return try {
             val lm = service.getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
@@ -538,7 +538,7 @@ object ActionExecutor {
         val service = BridgeAccessibilityService.instance
             ?: return ActionResult(false, "Accessibility service not running")
         if (!service.hasSelfPermission(android.Manifest.permission.SEND_SMS)) {
-            return ActionResult(false, "SEND_SMS permission not granted. Grant it in Settings > Apps > Hermes Bridge > Permissions.")
+            return ActionResult(false, "SEND_SMS permission not granted. Grant it in Settings > Apps > FlipsiBridge > Permissions.")
         }
         return try {
             val smsManager = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -597,7 +597,7 @@ object ActionExecutor {
         val service = BridgeAccessibilityService.instance
             ?: return ActionResult(false, "Accessibility service not running")
         if (!service.hasSelfPermission(android.Manifest.permission.READ_CONTACTS)) {
-            return ActionResult(false, "READ_CONTACTS permission not granted. Grant it in Settings > Apps > Hermes Bridge > Permissions.")
+            return ActionResult(false, "READ_CONTACTS permission not granted. Grant it in Settings > Apps > FlipsiBridge > Permissions.")
         }
         return try {
             val results = mutableListOf<Map<String, String?>>()

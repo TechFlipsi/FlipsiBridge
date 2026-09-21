@@ -61,7 +61,7 @@ class BridgeAccessibilityService : AccessibilityService() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = android.app.NotificationChannel(
                 channelId,
-                "Hermes Bridge",
+                "FlipsiBridge",
                 android.app.NotificationManager.IMPORTANCE_LOW
             ).apply {
                 description = "Keeps Hermes Bridge running"
@@ -71,7 +71,7 @@ class BridgeAccessibilityService : AccessibilityService() {
         }
         val notification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             android.app.Notification.Builder(this, channelId)
-                .setContentTitle("Hermes Bridge")
+                .setContentTitle("FlipsiBridge")
                 .setContentText("Connected to server")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setOngoing(true)
@@ -79,7 +79,7 @@ class BridgeAccessibilityService : AccessibilityService() {
         } else {
             @Suppress("DEPRECATION")
             android.app.Notification.Builder(this)
-                .setContentTitle("Hermes Bridge")
+                .setContentTitle("FlipsiBridge")
                 .setContentText("Connected to server")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setOngoing(true)

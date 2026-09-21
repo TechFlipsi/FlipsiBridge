@@ -30,7 +30,7 @@
 
     <application
         android:name=".BridgeApplication"
-        android:label="Hermes Bridge"
+        android:label="FlipsiBridge"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:allowBackup="false"

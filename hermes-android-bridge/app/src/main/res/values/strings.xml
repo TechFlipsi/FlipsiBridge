@@ -1,5 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Hermes Bridge</string>
-    <string name="accessibility_description">Hermes Bridge accessibility service — allows hermes-agent to read and interact with the Android screen.</string>
+    <string name="app_name">FlipsiBridge</string>
+    <string name="tagline">Dein Agent am Handy — Hände, Augen und Stimme.</string>
+
+    <string name="accessibility_description">FlipsiBridge Bedienungshilfe — erlaubt dem J.A.R.V.I.S.-Agent, den Bildschirm zu lesen und das Gerät zu bedienen.</string>
+
+    <string name="section_status">Status</string>
+    <string name="status_a11y">Bedienungshilfe</string>
+    <string name="status_server">Lokaler Server</string>
+    <string name="status_relay">Relay-Verbindung</string>
+    <string name="status_auth">Pairing-Code</string>
+
+    <string name="section_permissions">Berechtigungen</string>
+    <string name="perm_a11y_title">Bedienungshilfe-Dienst</string>
+    <string name="perm_a11y_desc">Erlaubt dem Agent, den Bildschirm zu lesen und zu bedienen (tippen, swipen, Apps öffnen).</string>
+    <string name="perm_overlay_title">Status-Overlay</string>
+    <string name="perm_overlay_desc">Kleine Statusanzeige über allen Apps, solange die Brücke aktiv ist.</string>
+    <string name="perm_screenrec_title">Bildschirmaufnahme</string>
+    <string name="perm_screenrec_desc">Für Screenshots. Bestätigt Android pro Sitzung — Standard-Popup von Android.</string>
+    <string name="perm_revival_title">Termux-Auto-Revival (opt-in)</string>
+    <string name="perm_revival_desc">Startet den lokalen Stack neu, wenn die Verbindung dauerhaft weg ist. Standardmäßig aus.</string>
+
+    <string name="section_connection">Verbindung</string>
+    <string name="conn_hint">Adresse des Relays auf deinem Server. Mit wss:// ist die Verbindung verschlüsselt.</string>
+    <string name="conn_url_hint">relay.<deine-domain>:8766</string>
+    <string name="conn_connect">Verbinden</string>
+    <string name="conn_disconnect">Trennen</string>
+
+    <string name="section_pairing">Pairing</string>
+    <string name="pairing_hint">Antippen kopiert den Code. Der Agent fragt danach beim Telefon-Setup.</string>
+    <string name="pairing_regen">Neuen Code erzeugen</string>
 </resources>
