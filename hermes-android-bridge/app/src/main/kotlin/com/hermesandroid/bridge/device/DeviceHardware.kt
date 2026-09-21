@@ -63,7 +63,13 @@ object DeviceHardware {
                                                     request: android.hardware.camera2.CaptureRequest,
                                                     result: android.hardware.camera2.TotalCaptureResult,
                                                 ) {
-                                                    val img = reader.acquireLatestImage()
+                                                    var img = reader.acquireLatestImage()
+                                                    var tries = 0
+                                                    while (img == null && tries < 20) {
+                                                        Thread.sleep(50)
+                                                        img = reader.acquireLatestImage()
+                                                        tries++
+                                                    }
                                                     if (img == null) { failure = "Kein Bild geliefert"; latch.countDown(); return }
                                                     val buffer = img.planes[0].buffer
                                                     val bytes = ByteArray(buffer.remaining())
