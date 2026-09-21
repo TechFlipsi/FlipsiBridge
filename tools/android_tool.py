@@ -813,6 +813,49 @@ def android_files_search(query: str, limit: int = 200) -> str:
         return json.dumps({"error": str(e)})
 
 
+def android_file_put(local_b64_or_text: str, remote_path: str, overwrite: bool = False) -> str:
+    """
+    Push a file (base64 or plain text content) to the phone's shared storage.
+    Text is UTF-8 encoded unless it looks like valid base64 (heuristic: matches
+    base64 charset and length%4==0) — use data_is_base64 to be explicit.
+    """
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required"})
+    if not isinstance(local_b64_or_text, str) or not local_b64_or_text:
+        return json.dumps({"error": "content required"})
+    import base64 as b64mod
+    try:
+        raw = b64mod.b64decode(local_b64_or_text, validate=True)
+        payload = raw
+    except Exception:
+        payload = local_b64_or_text.encode("utf-8")
+    if len(payload) > 48 * 1024 * 1024:
+        return json.dumps({"error": "payload too large (limit 48 MB after encoding)"})
+    encoded = b64mod.b64encode(payload).decode("ascii")
+    try:
+        data = _post("/files_push", {"path": remote_path.strip(), "data": encoded, "overwrite": bool(overwrite)})
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_file_delete(remote_path: str) -> str:
+    """
+    Delete a file the agent created (name must start with 'jarvis_').
+    Folders and foreign files are refused — protection against mistakes.
+    """
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required"})
+    rel = remote_path.strip()
+    if rel.startswith("/") or ".." in rel.split("/"):
+        return json.dumps({"error": "path must be relative, no '..' allowed"})
+    try:
+        data = _post("/files_delete", {"path": rel})
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def android_files_permission(open_settings: bool = False) -> str:
     """
     Check (or request) the Android 'All files access' special permission
@@ -1701,6 +1744,30 @@ _SCHEMAS = {
             "required": ["query"],
         },
     },
+    "android_file_put": {
+        "name": "android_file_put",
+        "description": "Push a file to the phone's shared storage (text or base64 content; max ~48 MB). Set overwrite=true to replace an existing file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {"type": "string", "description": "Relative destination path like 'Download/jarvis_test.txt'"},
+                "local_b64_or_text": {"type": "string", "description": "File content: plain text OR base64 data"},
+                "overwrite": {"type": "boolean", "description": "Replace existing file (default false)", "default": False},
+            },
+            "required": ["remote_path", "local_b64_or_text"],
+        },
+    },
+    "android_file_delete": {
+        "name": "android_file_delete",
+        "description": "Delete a file on the phone. ONLY files whose name starts with 'jarvis_' can be deleted (agent-created files) — folders and foreign files are refused.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {"type": "string", "description": "Relative path like 'Download/jarvis_test.txt'"},
+            },
+            "required": ["remote_path"],
+        },
+    },
     "android_files_permission": {
         "name": "android_files_permission",
         "description": "Check whether the app has Android 'All files access' (needed for full file search). Set open_settings=true to open the grant dialog on the phone.",
@@ -1934,6 +2001,8 @@ _HANDLERS = {
     "android_mic_fetch": lambda args, **kw: android_mic_fetch(**args),
     "android_files_list": lambda args, **kw: android_files_list(**args),
     "android_files_search": lambda args, **kw: android_files_search(**args),
+    "android_file_put": lambda args, **kw: android_file_put(**args),
+    "android_file_delete": lambda args, **kw: android_file_delete(**args),
     "android_files_permission": lambda args, **kw: android_files_permission(**args),
     "android_files_count": lambda args, **kw: android_files_count(**args),
     "android_file_get": lambda args, **kw: android_file_get(**args),

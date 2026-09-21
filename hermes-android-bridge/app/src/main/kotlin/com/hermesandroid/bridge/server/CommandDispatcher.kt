@@ -543,6 +543,35 @@ object CommandDispatcher {
                 ) to 200
             }
 
+            method == "POST" && path == "/files_push" -> {
+                val rel = body.get("path")?.asString
+                val b64 = body.get("data")?.asString
+                val overwrite = body.get("overwrite")?.asBoolean ?: false
+                if (rel.isNullOrBlank() || b64.isNullOrBlank()) {
+                    return mapOf("error" to "path und data (base64) sind Pflicht") to 400
+                }
+                val bytes = try {
+                    android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                } catch (e: IllegalArgumentException) {
+                    return mapOf("error" to "data ist kein gültiges Base64") to 400
+                }
+                val result = withContext(Dispatchers.IO) {
+                    DeviceFiles.writeBytes(rel, bytes, overwrite)
+                }
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("written" to true, "path" to result.first, "bytes" to bytes.size) to 200
+            }
+
+            method == "POST" && path == "/files_delete" -> {
+                val rel = body.get("path")?.asString
+                if (rel.isNullOrBlank()) return mapOf("error" to "path ist Pflicht") to 400
+                val result = withContext(Dispatchers.IO) {
+                    DeviceFiles.deleteFile(rel)
+                }
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("deleted" to true, "message" to result.first) to 200
+            }
+
             method == "GET" && path == "/files_permission" -> {
                 val app = BridgeApplication.instance
                 val granted = android.os.Environment.isExternalStorageManager()

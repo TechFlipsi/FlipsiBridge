@@ -254,6 +254,8 @@ _ROUTES = {
 "/mic_start":     "POST",
 "/mic_stop":      "POST",
 "/apk_install":   "POST",
+"/files_push":    "POST",
+"/files_delete":  "POST",
 # READ + WRITE
 "/clipboard":     "BOTH",
 }

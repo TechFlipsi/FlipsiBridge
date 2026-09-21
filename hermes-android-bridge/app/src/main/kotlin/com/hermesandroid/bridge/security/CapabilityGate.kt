@@ -70,6 +70,8 @@ object CapabilityGate {
         Pair("POST", "/files_permission") to "files",
         Pair("GET", "/file") to "files",
         // selfupdate (Phase 4) — APK herunterladen + Installer starten
+        Pair("POST", "/files_push") to "files",
+        Pair("POST", "/files_delete") to "files",
         Pair("POST", "/apk_install") to "selfupdate",
         // misc ohne eigene Kategorie
         Pair("POST", "/speak") to "interaction",

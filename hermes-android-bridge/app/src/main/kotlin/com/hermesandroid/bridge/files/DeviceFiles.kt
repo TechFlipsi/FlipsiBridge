@@ -159,6 +159,44 @@ object DeviceFiles {
         return Pair(f, f.name)
     }
 
+    /**
+     * Schreibt (überschreibt nicht ohne Flag) eine Datei aus Bytes in den
+     * gemeinsamen Speicher. Nur unter erlaubten Roots, kein "..", max 64 MB.
+     */
+    fun writeBytes(relative: String, data: ByteArray, allowOverwrite: Boolean): Pair<String, String?> {
+        val clean = sanitize(relative) ?: return Pair("", "Ungültiger Pfad (nur relative Pfade unter Download/Documents/Pictures/Music/Movies/DCIM/root)")
+        val f = clean.first
+        if (f.isDirectory) return Pair("", "Ziel ist ein Ordner: ${clean.second}")
+        if (f.exists() && !allowOverwrite) return Pair("", "Datei existiert bereits: ${clean.second} (allowOverwrite=true nötig)")
+        if (data.size > 64L * 1024 * 1024) return Pair("", "Zu groß (Limit 64 MB)")
+        val parent = f.parentFile
+        if (parent != null && !parent.exists() && !parent.mkdirs()) return Pair("", "Ordner konnte nicht erstellt werden")
+        return try {
+            java.io.FileOutputStream(f).use { it.write(data) }
+            Pair(clean.second, null)
+        } catch (e: Exception) {
+            Pair("", "Schreiben fehlgeschlagen: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Löscht eine Datei (keine Ordner!). Sicherheitsgurt: Dateiname muss
+     * mit dem Prefix "jarvis_" beginnen UND kleiner 64 MB sein — damit
+     * kann der Agent nur selbst erstellte Dateien entfernen.
+     */
+    fun deleteFile(relative: String): Pair<String, String?> {
+        val clean = sanitize(relative) ?: return Pair("", "Ungültiger Pfad")
+        val f = clean.first
+        if (f.isDirectory) return Pair("", "Ordner löschen ist gesperrt (nur Dateien)")
+        if (!f.isFile) return Pair("", "Datei nicht gefunden: ${clean.second}")
+        if (!f.name.startsWith("jarvis_")) return Pair("", "Löschen nur für Dateien mit Prefix 'jarvis_' erlaubt (Schutz vor Fehllöschung)")
+        if (f.length() > 64L * 1024 * 1024) return Pair("", "Zu groß für die Lösch-Regel (64 MB)")
+        val size = f.length()
+        val ok = f.delete()
+        return if (ok) Pair("gelöscht: ${clean.second} ($size Bytes)", null)
+        else Pair("", "Löschen fehlgeschlagen (Datei gesperrt?)")
+    }
+
     /** Zählt Dateien mit Endung rekursiv über alle Roots — für schnelle Übersichten. */
     fun countByExtension(extension: String, maxWalk: Int = 20000): Map<String, Int> {
         val ext = extension.trim().lowercase().removePrefix(".")
