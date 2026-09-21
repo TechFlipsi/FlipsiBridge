@@ -75,10 +75,21 @@ object DeviceHardware {
                                                     val bytes = ByteArray(buffer.remaining())
                                                     buffer.get(bytes)
                                                     img.close()
-                                                    // Sensor-Bytes wie geliefert schreiben (kein Rotation-Raten mehr):
-                                                    // Empirie 21.09. (4 Fotos): Rohbild war aufrecht, EXIF-Tags machten
-                                                    // die Viewern-Drehung kaputt.
-                                                    java.io.FileOutputStream(out).use { it.write(bytes) }
+                                                    // Empirie 21.09., Foto 5 (roh): Rohbild ist 90 Grad gegen den
+                                                    // Uhrzeigersinn gedreht -> deterministisch +90 (CW) drehen,
+                                                    // OHNE EXIF-Tag (der war der Störfaktor in allen Vorversionen).
+                                                    val rotated = try {
+                                                        val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                                        val m = android.graphics.Matrix()
+                                                        m.postRotate(90f)
+                                                        val bmp = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+                                                        java.io.ByteArrayOutputStream().use { bo ->
+                                                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, bo)
+                                                            bmp.recycle()
+                                                            bo.toByteArray()
+                                                        }
+                                                    } catch (_: Exception) { bytes }
+                                                    java.io.FileOutputStream(out).use { it.write(rotated) }
                                                     reader.close()
                                                     camera.close()
                                                     latch.countDown()
