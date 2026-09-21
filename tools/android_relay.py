@@ -269,6 +269,47 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
 
     app.router.add_get("/ws", websocket_handler)
 
+    # Authenticated APK distribution for /apk_install self-update (FlipsiBridge).
+    # Serves the newest APK in the relay's apk_dir; refuses without valid token.
+    apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR", "/opt/flipsibridge")
+
+    async def apk_latest(request: web.Request) -> web.StreamResponse:
+        token = os.environ.get("ANDROID_BRIDGE_TOKEN", "")
+        auth = request.headers.get("Authorization", "")
+        if not token or auth != f"Bearer {token}":
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        try:
+            candidates = sorted(
+                (f for f in os.listdir(apk_dir) if f.endswith(".apk")),
+                key=lambda name: os.path.getmtime(os.path.join(apk_dir, name)),
+                reverse=True,
+            )
+        except FileNotFoundError:
+            candidates = []
+        if not candidates:
+            return web.json_response({"error": "No APK available"}, status=404)
+        path = os.path.join(apk_dir, candidates[0])
+        stream = web.StreamResponse(
+            status=200,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Type": "application/vnd.android.package-archive",
+                "Content-Disposition": f'attachment; filename="{candidates[0]}"',
+                "Content-Length": str(os.path.getsize(path)),
+            },
+        )
+        await stream.prepare(request)
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(64 * 1024)
+                if not chunk:
+                    break
+                await stream.write(chunk)
+        await stream.write_eof()
+        return stream
+
+    app.router.add_get("/apk/latest", apk_latest)
+
 
     for path, method in _ROUTES.items():
         async def handler(request: web.Request, route_path: str = path) -> web.StreamResponse:
