@@ -51,10 +51,7 @@ object DeviceHardware {
                         val surface = reader.surface
                         val builder = camera.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_STILL_CAPTURE)
                         builder.addTarget(surface)
-                        // Sensor-Drehung ins JPEG: Sensor liefert Querformat, Handy-Halterung ist Hochformat
-                        // -> +90 drehen, damit das Foto aufrecht aus der Kamera kommt.
-                        val upright = (orientation + 90) % 360
-                        builder.set(android.hardware.camera2.CaptureRequest.JPEG_ORIENTATION, upright)
+                        builder.set(android.hardware.camera2.CaptureRequest.JPEG_ORIENTATION, orientation)
                         camera.createCaptureSession(listOf(surface),
                             object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: android.hardware.camera2.CameraCaptureSession) {
@@ -72,7 +69,20 @@ object DeviceHardware {
                                                     val bytes = ByteArray(buffer.remaining())
                                                     buffer.get(bytes)
                                                     img.close()
-                                                    java.io.FileOutputStream(out).use { it.write(bytes) }
+                                                    // Sensor schreibt Querformat-JPEG -> deterministisch um -90 drehen
+                                                    // (Portrait-Handy), damit es aufrecht ankommt.
+                                                    val rotated = try {
+                                                        val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                                        val m = android.graphics.Matrix()
+                                                        m.postRotate(90f)
+                                                        val bmp = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+                                                        java.io.ByteArrayOutputStream().use { bo ->
+                                                            bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, bo)
+                                                            bmp.recycle()
+                                                            bo.toByteArray()
+                                                        }
+                                                    } catch (_: Exception) { bytes }
+                                                    java.io.FileOutputStream(out).use { it.write(rotated) }
                                                     reader.close()
                                                     camera.close()
                                                     latch.countDown()
