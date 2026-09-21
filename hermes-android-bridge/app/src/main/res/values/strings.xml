@@ -23,7 +23,7 @@
 
     <string name="section_connection">Verbindung</string>
     <string name="conn_hint">Adresse des Relays auf deinem Server. Mit wss:// ist die Verbindung verschlüsselt.</string>
-    <string name="conn_url_hint">relay.<deine-domain>:8766</string>
+    <string name="conn_url_hint">mein-relay.example.com:8766</string>
     <string name="conn_connect">Verbinden</string>
     <string name="conn_disconnect">Trennen</string>
 

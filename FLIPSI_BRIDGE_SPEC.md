@@ -11,7 +11,7 @@ Handy (FlipsiBridge-App)  ──wss://+mTLS──>  Server (Relay :8766)  ──
 ```
 
 - Handy verbindet sich **ausgehend** (funktioniert in jedem Netz, kein Port-Forward am Handy).
-- Erreichbar unterwegs **ohne VPN** über `relay.<deine-domain>` (NPM → wss://, Let's Encrypt).
+- Erreichbar unterwegs **ohne VPN** über eine private `relay.<deine-domain>`-Subdomain (NPM → wss://, Let's Encrypt). Realer Hostname wird im Server-Env/den Zugangsdaten gepflegt, nicht im Repo.
 - **Zugang nur mit Client-Zertifikat (mTLS):** NPM verlangt ein von unserer Server-CA ausgestelltes Zertifikat. Ohne Zertifikat → Abweisung vor dem HTTP-Dialog. Zwei Faktoren: Zertifikat + Pairing-Code.
 - Das Hermes-Dashboard bleibt wie gehabt hinter NPM + IP-Allowlist — wird NICHT geöffnet.
 
