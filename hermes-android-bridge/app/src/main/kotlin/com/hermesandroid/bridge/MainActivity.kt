@@ -75,6 +75,11 @@ class MainActivity : Activity() {
         tvVersion = findViewById(R.id.tvVersion)
         tvVersion.text = "v${BuildConfig.VERSION_NAME}"
 
+        // FlipsiBridge: Chat öffnen
+        findViewById<Button>(R.id.btnChat).setOnClickListener {
+            startActivity(Intent(this, com.hermesandroid.bridge.chat.ChatActivity::class.java))
+        }
+
         setupPairingCode()
         setupPermissions()
         setupRelayConnection()
@@ -142,9 +147,11 @@ class MainActivity : Activity() {
                     ))
                 } else {
                     StatusOverlay.show(this)
+                    com.hermesandroid.bridge.overlay.ChatBubble.show(this)
                 }
             } else {
                 StatusOverlay.hide(this)
+                com.hermesandroid.bridge.overlay.ChatBubble.hide(this)
             }
         }
 

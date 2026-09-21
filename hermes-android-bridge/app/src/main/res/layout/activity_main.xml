@@ -54,6 +54,19 @@
             android:textColor="@color/text_secondary"
             android:fontFamily="sans-serif" />
 
+        <Button
+            android:id="@+id/btnChat"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:layout_marginTop="16dp"
+            android:background="@drawable/bg_button_orange"
+            android:text="@string/open_chat"
+            android:textColor="@color/text_on_accent"
+            android:textSize="16sp"
+            android:fontFamily="sans-serif-medium"
+            android:textAllCaps="false"
+            android:stateListAnimator="@null" />
+
         <!-- ── Status ───────────────────────────────────────────── -->
         <LinearLayout
             style="@style/Card"

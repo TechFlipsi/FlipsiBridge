@@ -9,6 +9,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.hermesandroid.bridge.audio.MicrophoneRecordingFiles
+import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.CommandDispatcher
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import kotlinx.coroutines.*
@@ -44,9 +45,11 @@ object RelayClient {
     private const val KEY_REVIVAL_ENABLED = "termux_revival_enabled"
 
     private val gson = Gson()
-    private val client = OkHttpClient.Builder()
-        .pingInterval(java.time.Duration.ofSeconds(20))
-        .build()
+    private val client = MtlsSupport.decorate(
+        OkHttpClient.Builder()
+            .pingInterval(java.time.Duration.ofSeconds(20))
+            .build()
+    )
 
     private var webSocket: WebSocket? = null
     private var scope: CoroutineScope? = null

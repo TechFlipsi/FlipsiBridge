@@ -1,0 +1,3 @@
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.hermesandroid.bridge.assistant.BridgeVoiceSessionService"
+    android:recognitionService="com.hermesandroid.bridge.assistant.BridgeVoiceSessionService" />

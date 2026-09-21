@@ -2,6 +2,7 @@
 <resources>
     <string name="app_name">FlipsiBridge</string>
     <string name="tagline">Dein Agent am Handy — Hände, Augen und Stimme.</string>
+    <string name="open_chat">Chat mit J.A.R.V.I.S.</string>
 
     <string name="accessibility_description">FlipsiBridge Bedienungshilfe — erlaubt dem J.A.R.V.I.S.-Agent, den Bildschirm zu lesen und das Gerät zu bedienen.</string>
 

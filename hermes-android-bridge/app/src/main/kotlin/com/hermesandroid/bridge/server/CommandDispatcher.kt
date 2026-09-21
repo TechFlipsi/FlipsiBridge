@@ -17,6 +17,7 @@ import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.model.ScreenNode
 import com.hermesandroid.bridge.notification.NotificationStore
+import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.power.BatteryMonitor
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeNotificationListener
@@ -56,6 +57,10 @@ object CommandDispatcher {
         body: JsonObject,
         authenticated: Boolean
     ): Pair<Any, Int> {
+        // FlipsiBridge: Capability-Gating VOR jeder Ausführung (letzte Verteidigungslinie).
+        CapabilityGate.checkEndpoint(method, path)?.let { msg ->
+            return Pair(mapOf("error" to msg), 403)
+        }
         return when {
             method == "GET" && path == "/ping" -> {
                 val serviceRunning = BridgeAccessibilityService.instance != null
