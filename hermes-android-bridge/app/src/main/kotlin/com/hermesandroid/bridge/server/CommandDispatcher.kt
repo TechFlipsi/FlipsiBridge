@@ -608,6 +608,62 @@ object CommandDispatcher {
                 mapOf("ext" to ext, "total" to total, "byRoot" to counts) to 200
             }
 
+            method == "POST" && path == "/photo" -> {
+                val fileName = body.get("filename")?.asString ?: ""
+                val result = withContext(Dispatchers.IO) {
+                    com.hermesandroid.bridge.device.DeviceHardware.capturePhoto(BridgeApplication.instance, fileName)
+                }
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("path" to result.first, "saved" to "Pictures/Jarvis") to 200
+            }
+
+            method == "POST" && path == "/torch" -> {
+                val on = body.get("on")?.asBoolean ?: true
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setTorch(BridgeApplication.instance, on)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "GET" && path == "/network" -> {
+                com.hermesandroid.bridge.device.DeviceHardware.networkStatus(BridgeApplication.instance) to 200
+            }
+
+            method == "POST" && path == "/volume" -> {
+                val stream = body.get("stream")?.asString ?: "media"
+                val set = body.get("set")?.asInt
+                com.hermesandroid.bridge.device.DeviceHardware.volume(BridgeApplication.instance, stream, set) to 200
+            }
+
+            method == "POST" && path == "/alarm" -> {
+                val hour = body.get("hour")?.asInt ?: return mapOf("error" to "hour fehlt") to 400
+                val minute = body.get("minute")?.asInt ?: 0
+                val label = body.get("label")?.asString ?: ""
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setAlarm(BridgeApplication.instance, hour, minute, label)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "POST" && path == "/timer" -> {
+                val seconds = body.get("seconds")?.asInt ?: return mapOf("error" to "seconds fehlt") to 400
+                val label = body.get("label")?.asString ?: ""
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setTimer(BridgeApplication.instance, seconds, label)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "POST" && path == "/notify_reply" -> {
+                val text = body.get("text")?.asString ?: return mapOf("error" to "text fehlt") to 400
+                val key = body.get("key")?.asString ?: ""
+                val pkg = body.get("package")?.asString ?: ""
+                val err = when {
+                    key.isNotBlank() -> com.hermesandroid.bridge.service.NotificationReplier.reply(key, text)
+                    pkg.isNotBlank() -> com.hermesandroid.bridge.service.NotificationReplier.replyLatestForPackage(pkg, text)
+                    else -> "key oder package ist Pflicht"
+                }
+                if (err != null) return mapOf("error" to err) to 400
+                mapOf("replied" to true) to 200
+            }
+
             method == "POST" && path == "/apk_install" -> {
                 val url = body.get("url")?.asString
                 val sha = body.get("sha256")?.asString

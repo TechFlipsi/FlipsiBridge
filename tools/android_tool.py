@@ -813,6 +813,85 @@ def android_files_search(query: str, limit: int = 200) -> str:
         return json.dumps({"error": str(e)})
 
 
+def android_photo(filename: str = "") -> str:
+    """
+    Take a photo with the phone's back camera (no preview UI), saved to
+    Pictures/Jarvis/<filename or jarvis_foto_<ts>.jpg>. Requires CAMERA
+    permission granted in the app's capabilities screen.
+    """
+    try:
+        return json.dumps(_post("/photo", {"filename": filename or ""}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_torch(on: bool = True) -> str:
+    """Flashlight on/off."""
+    try:
+        return json.dumps(_post("/torch", {"on": bool(on)}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_network_status() -> str:
+    """WiFi/Bluetooth/cellular status: enabled, SSID, IP, internet, metered, transport."""
+    try:
+        return json.dumps(_get("/network"))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_volume(stream: str = "media", set_level=None) -> str:
+    """
+    Query or set a volume stream. stream: media|ring|alarm|notification.
+    set_level null = only read. Range 0..max (max is returned).
+    """
+    body = {"stream": stream}
+    if set_level is not None:
+        body["set"] = int(set_level)
+    try:
+        return json.dumps(_post("/volume", body))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_alarm(hour: int, minute: int = 0, label: str = "") -> str:
+    """Set an alarm in the phone's clock app (skips UI)."""
+    try:
+        return json.dumps(_post("/alarm", {"hour": int(hour), "minute": int(minute), "label": label}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_timer(seconds: int, label: str = "") -> str:
+    """Set a countdown timer in the phone's clock app (skips UI)."""
+    try:
+        return json.dumps(_post("/timer", {"seconds": int(seconds), "label": label}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_notify_reply(text: str, key: str = "", package_name: str = "") -> str:
+    """
+    Reply into a notification's direct-reply action (WhatsApp/Telegram/...).
+    Pass either the notification key (from android_get_notifications) or a
+    package_name to answer the newest reply-able notification of that app.
+    """
+    if not text:
+        return json.dumps({"error": "text required"})
+    body = {"text": text}
+    if key:
+        body["key"] = key
+    if package_name:
+        body["package"] = package_name
+    if not key and not package_name:
+        return json.dumps({"error": "key or package_name required"})
+    try:
+        return json.dumps(_post("/notify_reply", body))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def android_file_put(local_b64_or_text: str, remote_path: str, overwrite: bool = False) -> str:
     """
     Push a file (base64 or plain text content) to the phone's shared storage.
@@ -1758,6 +1837,83 @@ _SCHEMAS = {
             "required": ["query"],
         },
     },
+    "android_photo": {
+        "name": "android_photo",
+        "description": "Take a photo with the phone's back camera (no preview), saved to Pictures/Jarvis/. Returns the file path. Optionally fetch it afterwards with android_file_get.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Optional file name (default: jarvis_foto_<timestamp>.jpg)"},
+            },
+            "required": [],
+        },
+    },
+    "android_torch": {
+        "name": "android_torch",
+        "description": "Flashlight on/off.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "on": {"type": "boolean", "description": "true = on, false = off", "default": True},
+            },
+            "required": [],
+        },
+    },
+    "android_network_status": {
+        "name": "android_network_status",
+        "description": "Network status: WiFi enabled/SSID/IP, Bluetooth, internet reachable, metered, WiFi vs cellular.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    "android_volume": {
+        "name": "android_volume",
+        "description": "Query or set volume. stream: media|ring|alarm|notification. Omit set_level to just read.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stream": {"type": "string", "enum": ["media", "ring", "alarm", "notification"], "default": "media"},
+                "set_level": {"type": "integer", "description": "0..max (max comes from the read response); omit to read only"},
+            },
+            "required": [],
+        },
+    },
+    "android_alarm": {
+        "name": "android_alarm",
+        "description": "Set an alarm in the phone's clock app.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hour": {"type": "integer", "description": "Hour 0-23"},
+                "minute": {"type": "integer", "description": "Minute 0-59", "default": 0},
+                "label": {"type": "string", "description": "Optional alarm label"},
+            },
+            "required": ["hour"],
+        },
+    },
+    "android_timer": {
+        "name": "android_timer",
+        "description": "Set a countdown timer in the phone's clock app.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "integer", "description": "Duration in seconds"},
+                "label": {"type": "string", "description": "Optional timer label"},
+            },
+            "required": ["seconds"],
+        },
+    },
+    "android_notify_reply": {
+        "name": "android_notify_reply",
+        "description": "Reply into a notification via its direct-reply action (WhatsApp, Telegram, SMS...). Pass key (exact notification key) OR package_name (newest reply-able notification of that app).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Reply text to send"},
+                "key": {"type": "string", "description": "Exact notification key from the notifications list"},
+                "package_name": {"type": "string", "description": "App package like com.whatsapp - answers the newest reply-able notification"},
+            },
+            "required": ["text"],
+        },
+    },
     "android_file_put": {
         "name": "android_file_put",
         "description": "Push a file to the phone's shared storage (text or base64 content; max ~48 MB). Set overwrite=true to replace an existing file.",
@@ -2020,6 +2176,13 @@ _HANDLERS = {
     "android_mic_fetch": lambda args, **kw: android_mic_fetch(**args),
     "android_files_list": lambda args, **kw: android_files_list(**args),
     "android_files_search": lambda args, **kw: android_files_search(**args),
+    "android_photo": lambda args, **kw: android_photo(**args),
+    "android_torch": lambda args, **kw: android_torch(**args),
+    "android_network_status": lambda args, **kw: android_network_status(**args),
+    "android_volume": lambda args, **kw: android_volume(**args),
+    "android_alarm": lambda args, **kw: android_alarm(**args),
+    "android_timer": lambda args, **kw: android_timer(**args),
+    "android_notify_reply": lambda args, **kw: android_notify_reply(**args),
     "android_file_put": lambda args, **kw: android_file_put(**args),
     "android_file_delete": lambda args, **kw: android_file_delete(**args),
     "android_files_permission": lambda args, **kw: android_files_permission(**args),

@@ -255,6 +255,13 @@ _ROUTES = {
 "/mic_stop":      "POST",
 "/apk_install":   "POST",
 "/files_push":    "POST",
+"/photo":         "POST",
+"/torch":         "POST",
+"/network":       "GET",
+"/volume":        "POST",
+"/alarm":         "POST",
+"/timer":         "POST",
+"/notify_reply":  "POST",
 "/files_delete":  "POST",
 # READ + WRITE
 "/clipboard":     "BOTH",

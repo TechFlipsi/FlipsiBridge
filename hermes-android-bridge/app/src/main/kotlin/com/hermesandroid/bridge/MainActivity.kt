@@ -6,6 +6,8 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.media.projection.MediaProjectionManager
 import android.net.Uri
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.provider.Settings
 import android.view.View
@@ -49,9 +51,26 @@ class MainActivity : Activity() {
     private lateinit var tvAddress: TextView
     private lateinit var tvVersion: TextView
 
+    /** Kamera-Laufzeitrecht einmalig beim App-Start anfragen (für Foto-auf-Befehl). */
+    private fun requestCameraIfNeeded() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), 4101)
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Ergebnis reicht - DeviceHardware prüft vor jedem Foto selbst.
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        requestCameraIfNeeded()
 
         tvA11yStatus = findViewById(R.id.tvA11yStatus)
         tvServerStatus = findViewById(R.id.tvServerStatus)
