@@ -564,12 +564,22 @@ object CommandDispatcher {
 
             method == "POST" && path == "/files_delete" -> {
                 val rel = body.get("path")?.asString
-                if (rel.isNullOrBlank()) return mapOf("error" to "path ist Pflicht") to 400
-                val result = withContext(Dispatchers.IO) {
-                    DeviceFiles.deleteFile(rel)
+                val pathsArr = body.get("paths")?.asJsonArray
+                if (pathsArr != null && pathsArr.size() > 0) {
+                    val list = pathsArr.mapNotNull { (it as? com.google.gson.JsonPrimitive)?.takeIf { p -> p.isString }?.asString }.take(200)
+                    val results = withContext(Dispatchers.IO) { DeviceFiles.deleteMany(list) }
+                    mapOf(
+                        "requested" to list.size,
+                        "results" to results,
+                        "okCount" to results.count { it["ok"] == "true" },
+                        "failCount" to results.count { it["ok"] == "false" },
+                    ) to 200
+                } else {
+                    if (rel.isNullOrBlank()) return mapOf("error" to "path oder paths ist Pflicht") to 400
+                    val result = withContext(Dispatchers.IO) { DeviceFiles.deleteFile(rel) }
+                    if (result.second != null) return mapOf("error" to result.second) to 400
+                    mapOf("deleted" to true, "message" to result.first) to 200
                 }
-                if (result.second != null) return mapOf("error" to result.second) to 400
-                mapOf("deleted" to true, "message" to result.first) to 200
             }
 
             method == "GET" && path == "/files_permission" -> {

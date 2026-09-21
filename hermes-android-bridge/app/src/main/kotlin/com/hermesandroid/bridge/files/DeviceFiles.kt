@@ -180,21 +180,29 @@ object DeviceFiles {
     }
 
     /**
-     * Löscht eine Datei (keine Ordner!). Sicherheitsgurt: Dateiname muss
-     * mit dem Prefix "jarvis_" beginnen UND kleiner 64 MB sein — damit
-     * kann der Agent nur selbst erstellte Dateien entfernen.
+     * Löscht eine Datei (keine Ordner). Sir-Freigabe 21.09.2026: generelles
+     * Löschen gewünscht ("lösche alle PDFs am Gerät" muss funktionieren).
+     * Verbleibende Gurte: Whitelist-Roots, kein "..", nur Dateien, Batch-Cap.
      */
     fun deleteFile(relative: String): Pair<String, String?> {
         val clean = sanitize(relative) ?: return Pair("", "Ungültiger Pfad")
         val f = clean.first
         if (f.isDirectory) return Pair("", "Ordner löschen ist gesperrt (nur Dateien)")
         if (!f.isFile) return Pair("", "Datei nicht gefunden: ${clean.second}")
-        if (!f.name.startsWith("jarvis_")) return Pair("", "Löschen nur für Dateien mit Prefix 'jarvis_' erlaubt (Schutz vor Fehllöschung)")
-        if (f.length() > 64L * 1024 * 1024) return Pair("", "Zu groß für die Lösch-Regel (64 MB)")
         val size = f.length()
         val ok = f.delete()
         return if (ok) Pair("gelöscht: ${clean.second} ($size Bytes)", null)
         else Pair("", "Löschen fehlgeschlagen (Datei gesperrt?)")
+    }
+
+    /** Löscht mehrere Dateien in einem Aufruf; max 200 pro Call (Batch-Cap gegen Massen-Dummy-Zugriffe). */
+    fun deleteMany(relatives: List<String>): List<Map<String, String?>> {
+        require(relatives.size <= 200) { "max 200 Dateien pro Aufruf" }
+        return relatives.map { rel ->
+            val (msg, err) = deleteFile(rel)
+            if (err == null) mapOf("path" to rel, "ok" to "true", "message" to msg)
+            else mapOf("path" to rel, "ok" to "false", "error" to err)
+        }
     }
 
     /** Zählt Dateien mit Endung rekursiv über alle Roots — für schnelle Übersichten. */

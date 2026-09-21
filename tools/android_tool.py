@@ -839,11 +839,25 @@ def android_file_put(local_b64_or_text: str, remote_path: str, overwrite: bool =
         return json.dumps({"error": str(e)})
 
 
-def android_file_delete(remote_path: str) -> str:
+def android_file_delete(remote_path) -> str:
     """
-    Delete a file the agent created (name must start with 'jarvis_').
-    Folders and foreign files are refused — protection against mistakes.
+    Delete file(s) on the phone. Pass one relative path OR a list of paths
+    (max 200 per call). Folders are refused. Sir granted general deletion
+    (21.09.2026) — use carefully, double-check the list before sending.
     """
+    if isinstance(remote_path, list):
+        paths = [p.strip() for p in remote_path if isinstance(p, str) and p.strip()]
+        if not paths:
+            return json.dumps({"error": "empty path list"})
+        if any(p.startswith("/") or ".." in p.split("/") for p in paths):
+            return json.dumps({"error": "paths must be relative, no '..' allowed"})
+        if len(paths) > 200:
+            return json.dumps({"error": "max 200 files per call"})
+        try:
+            data = _post("/files_delete", {"paths": paths})
+            return json.dumps(data)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
     if not isinstance(remote_path, str) or not remote_path.strip():
         return json.dumps({"error": "remote_path required"})
     rel = remote_path.strip()
@@ -1759,11 +1773,16 @@ _SCHEMAS = {
     },
     "android_file_delete": {
         "name": "android_file_delete",
-        "description": "Delete a file on the phone. ONLY files whose name starts with 'jarvis_' can be deleted (agent-created files) — folders and foreign files are refused.",
+        "description": "Delete file(s) on the phone: one relative path or a list (max 200/call). Folders are refused. DESTRUCTIVE — confirm lists with the user before mass deletes.",
         "parameters": {
             "type": "object",
             "properties": {
-                "remote_path": {"type": "string", "description": "Relative path like 'Download/jarvis_test.txt'"},
+                "remote_path": {
+                    "oneOf": [
+                        {"type": "string", "description": "Relative path like 'Download/old.pdf'"},
+                        {"type": "array", "items": {"type": "string"}, "description": "List of relative paths (max 200)"},
+                    ],
+                },
             },
             "required": ["remote_path"],
         },
