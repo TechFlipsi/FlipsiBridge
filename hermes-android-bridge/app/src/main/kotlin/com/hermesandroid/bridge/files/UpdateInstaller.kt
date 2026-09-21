@@ -59,7 +59,8 @@ object UpdateInstaller {
             .url(trimmed)
             // Der eigene Pairing-Code als Bearer — erlaubt dem Phone, das eigene
             // Update vom token-geschützten Relay-/apk/latest zu laden.
-            .header("Authorization", "Bearer " + com.hermesandroid.bridge.auth.PairingManager.getCode())
+            .header("Authorization", "Bearer " + (com.hermesandroid.bridge.client.RelayClient.pairingCode
+                ?: com.hermesandroid.bridge.auth.PairingManager.getCode()))
             .build()
         val tempFile: File
         val digest: String
