@@ -1,3 +1,12 @@
+## [0.10.0-0.10.7-flipsi] - 21.09.2026
+### Neu (Phase 10 - Geräte-Hardware)
+- **device-Capability**: Foto auf Befehl (CameraX-frei, CameraManager + ImageReader, Retry-Loop, aufrecht: +90° CW byte-rotation ohne EXIF-Tag - Empirie über 5 Testfotos), Taschenlampe, Netz-Status (WiFi/BT/Internet/metered/transport, Permissions ACCESS_NETWORK_STATE + ACCESS_WIFI_STATE), Lautstärke lesen/setzen (media/ring/alarm/notification), Wecker & Timer (SET_ALARM-Permission, System-Clock-Intent).
+- **notifications erweitert**: /notify_reply - Direkt-Antwort in Benachrichtigungen (RemoteInput, WhatsApp/Telegram/SMSe), Antwort über key oder package.
+- CAMERA-Laufzeitrecht wird beim App-Start angefragt.
+- Python-Tools: android_photo, android_torch, android_network_status, android_volume, android_alarm, android_timer, android_notify_reply.
+### Fix
+- Foto-Orientierung: 4 Versuche (EXIF-Override, +90, -90, roh) - finale Lösung: byte-level +90° CW, kein EXIF-Tag. Live verifiziert.
+
 ## [0.9.6-flipsi] - 21.09.2026
 ### Kritisch
 - **Installer-Start schlug stumm fehl**: REQUEST_INSTALL_PACKAGES + canRequestPackageInstalls()-Check mit Auto-ffnung der "Apps aus unbekannten Quellen"-Einstellungsseite.
