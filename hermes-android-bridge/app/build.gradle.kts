@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,11 +10,11 @@ android {
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "com.hermesandroid.bridge"
+        applicationId = "at.flipsi.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.5.0"
+        versionCode = 5
+        versionName = "0.6.0-flipsi"
     }
 
     buildFeatures {
@@ -22,6 +24,21 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Release-Signierung nur, wenn der Keystore lokal vorhanden ist.
+            // Props liegen außerhalb des Repos (/root/keystores/flipsibridge.signing.properties)
+            // und werden NIEMALS committet. Ohne Keystore: Release bleibt unsigniert.
+            val signingPropsFile = file("/root/keystores/flipsibridge.signing.properties")
+            if (signingPropsFile.exists()) {
+                val signingProps = Properties().apply {
+                    signingPropsFile.inputStream().use { load(it) }
+                }
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(signingProps["storeFile"] as String)
+                    storePassword = signingProps["storePassword"] as String
+                    keyAlias = signingProps["keyAlias"] as String
+                    keyPassword = signingProps["keyPassword"] as String
+                }
+            }
         }
     }
 
@@ -31,7 +48,7 @@ android {
         val variant = this
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "hermes-android-${variant.versionName}.apk"
+                .outputFileName = "flipsibridge-${variant.versionName}.apk"
         }
     }
 
