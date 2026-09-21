@@ -1,3 +1,12 @@
+## [0.9.6-flipsi] - 21.09.2026
+### Kritisch
+- **Installer-Start schlug stumm fehl**: REQUEST_INSTALL_PACKAGES + canRequestPackageInstalls()-Check mit Auto-ffnung der "Apps aus unbekannten Quellen"-Einstellungsseite.
+
+## [0.9.5-flipsi] - 21.09.2026
+### Neu
+- **Generelles Löschen** (Sir-Freigabe 21.09.): /files_delete akzeptiert path ODER paths[] (max 200/Call). Ordner bleiben gesperrt.
+- UpdateInstaller sendet Pairing-Code als Bearer (RelayClient.pairingCode zuerst), Relay /apk/latest akzeptiert Token auch als Query-Param.
+
 # Changelog
 
 All notable changes to this project are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/); this project adheres to Conventional Commits.
