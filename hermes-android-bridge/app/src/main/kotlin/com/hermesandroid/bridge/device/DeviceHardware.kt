@@ -40,6 +40,8 @@ object DeviceHardware {
             val out = java.io.File(dir, fileName.ifBlank { "jarvis_foto_${System.currentTimeMillis()}.jpg" })
             val latch = java.util.concurrent.CountDownLatch(1)
             var failure: String? = null
+            val handlerThread = android.os.HandlerThread("BridgeCamera").apply { start() }
+            val handler = android.os.Handler(handlerThread.looper)
 
             val listener = object : android.hardware.camera2.CameraDevice.StateCallback() {
                 override fun onOpened(camera: android.hardware.camera2.CameraDevice) {
@@ -73,7 +75,7 @@ object DeviceHardware {
                                                     camera.close()
                                                     latch.countDown()
                                                 }
-                                            }, null)
+                                            }, handler)
                                     } catch (e: Exception) {
                                         failure = "Capture fehlgeschlagen: ${e.javaClass.simpleName}"
                                         camera.close(); latch.countDown()
@@ -83,9 +85,9 @@ object DeviceHardware {
                                     failure = "Session-Config fehlgeschlagen"
                                     camera.close(); latch.countDown()
                                 }
-                            }, null)
-                    } catch (e: Exception) {
-                        failure = "CaptureRequest fehlgeschlagen: ${e.javaClass.simpleName}"
+                            }, handler)
+                            } catch (e: Exception) {
+                            failure = "CaptureRequest fehlgeschlagen: ${e.javaClass.simpleName}"
                         camera.close(); latch.countDown()
                     }
                 }
@@ -99,8 +101,14 @@ object DeviceHardware {
                 != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 return Pair("", "Kamera-Berechtigung fehlt (CAMERA) - bitte in der App freigeben")
             }
-            cm.openCamera(backId, listener, null)
-            latch.await(15, java.util.concurrent.TimeUnit.SECONDS)
+            try {
+                cm.openCamera(backId, listener, handler)
+            } catch (e: Exception) {
+                handlerThread.quitSafely()
+                return Pair("", "Kamera-ffnung fehlgeschlagen: ${e.javaClass.simpleName}")
+            }
+            latch.await(20, java.util.concurrent.TimeUnit.SECONDS)
+            handlerThread.quitSafely()
             if (failure != null) Pair("", failure!!)
             else if (out.exists() && out.length() > 0) Pair(out.absolutePath, null)
             else Pair("", "Timeout beim Foto")
