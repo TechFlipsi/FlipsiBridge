@@ -225,6 +225,7 @@ _ROUTES = {
 "/files":         "GET",
 "/files_search":  "GET",
 "/files_count":   "GET",
+"/files_permission": "BOTH",
 "/file":          "GET",
 # POST-only
 "/tap":           "POST",

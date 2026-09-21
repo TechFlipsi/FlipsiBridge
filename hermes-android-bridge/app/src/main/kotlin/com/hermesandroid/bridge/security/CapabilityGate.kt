@@ -66,6 +66,8 @@ object CapabilityGate {
         Pair("GET", "/files") to "files",
         Pair("GET", "/files_search") to "files",
         Pair("GET", "/files_count") to "files",
+        Pair("GET", "/files_permission") to "files",
+        Pair("POST", "/files_permission") to "files",
         Pair("GET", "/file") to "files",
         // selfupdate (Phase 4) — APK herunterladen + Installer starten
         Pair("POST", "/apk_install") to "selfupdate",

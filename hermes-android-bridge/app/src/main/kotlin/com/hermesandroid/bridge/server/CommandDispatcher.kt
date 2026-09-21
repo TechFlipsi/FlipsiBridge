@@ -4,6 +4,8 @@ package com.hermesandroid.bridge.server
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import com.google.gson.JsonObject
 import com.hermesandroid.bridge.BridgeApplication
@@ -539,6 +541,25 @@ object CommandDispatcher {
                         )
                     },
                 ) to 200
+            }
+
+            method == "GET" && path == "/files_permission" -> {
+                val app = BridgeApplication.instance
+                val granted = android.os.Environment.isExternalStorageManager()
+                mapOf("allFilesAccess" to granted) to 200
+            }
+
+            method == "POST" && path == "/files_permission" -> {
+                val app = BridgeApplication.instance
+                if (android.os.Environment.isExternalStorageManager()) {
+                    mapOf("allFilesAccess" to true, "message" to "All-files access already granted") to 200
+                } else {
+                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                        .setData(Uri.parse("package:" + app.packageName))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    app.startActivity(intent)
+                    mapOf("allFilesAccess" to false, "message" to "Settings opened - please grant 'Alle Dateien zugreifen' for FlipsiBridge") to 200
+                }
             }
 
             method == "GET" && path == "/files_count" -> {

@@ -813,6 +813,22 @@ def android_files_search(query: str, limit: int = 200) -> str:
         return json.dumps({"error": str(e)})
 
 
+def android_files_permission(open_settings: bool = False) -> str:
+    """
+    Check (or request) the Android 'All files access' special permission
+    that the file endpoints need on Android 11+. open_settings=true opens
+    the settings page; the user flips the switch once.
+    """
+    try:
+        if open_settings:
+            data = _post("/files_permission", {})
+        else:
+            data = _get("/files_permission")
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
 def android_files_count(ext: str = "pdf") -> str:
     """
     Count files with the given extension across all allowed roots.
@@ -1685,6 +1701,17 @@ _SCHEMAS = {
             "required": ["query"],
         },
     },
+    "android_files_permission": {
+        "name": "android_files_permission",
+        "description": "Check whether the app has Android 'All files access' (needed for full file search). Set open_settings=true to open the grant dialog on the phone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "open_settings": {"type": "boolean", "description": "Open the permission settings screen on the phone (default false = only check)", "default": False},
+            },
+            "required": [],
+        },
+    },
     "android_files_count": {
         "name": "android_files_count",
         "description": "Count files with a given extension across all allowed roots. Returns total and per-root counts.",
@@ -1907,6 +1934,7 @@ _HANDLERS = {
     "android_mic_fetch": lambda args, **kw: android_mic_fetch(**args),
     "android_files_list": lambda args, **kw: android_files_list(**args),
     "android_files_search": lambda args, **kw: android_files_search(**args),
+    "android_files_permission": lambda args, **kw: android_files_permission(**args),
     "android_files_count": lambda args, **kw: android_files_count(**args),
     "android_file_get": lambda args, **kw: android_file_get(**args),
     "android_apk_install": lambda args, **kw: android_apk_install(**args),

@@ -54,7 +54,13 @@ object DeviceFiles {
         val rootMap = roots()
         val root = rootMap[first] ?: rootMap["root"] ?: return null
         // "root/Download/x.pdf" erlauben (root-Prefix), sonst Root = Basisordner des Segments
-        val rest = if (first == "root") raw.removePrefix("root").removePrefix("/") else raw
+        // Named roots: der Segmentname IST das Verzeichnis - nur Rest hinter dem Segment anhängen,
+        // sonst verdoppelt sich der Pfad (base/Download/Download -> "existiert nicht") [v0.9.3-Fix].
+        val rest = if (first == "root") {
+            raw.removePrefix("root").removePrefix("/")
+        } else {
+            raw.removePrefix(first).removePrefix("/")
+        }
         val target = if (rest.isEmpty()) root else File(root, rest)
         // Doppelte Sicherung: kein Escape aus dem External-Storage
         val basePath = Environment.getExternalStorageDirectory().canonicalPath

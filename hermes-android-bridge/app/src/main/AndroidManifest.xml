@@ -19,6 +19,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Screenshots via MediaProjection (Phase 2 enhancement) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Phase 4 Datei-Zugriff: voller Lesezugriff auf den gemeinsamen Speicher
+         ("Alle Dateien zugreifen" - vom Nutzer in den Einstellungen zu erteilen,
+         weil MANAGE_EXTERNAL_STORAGE ein Sonderrecht ohne Laufzeit-Dialog ist) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
     <!-- Query all installed apps (Android 11+) -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
