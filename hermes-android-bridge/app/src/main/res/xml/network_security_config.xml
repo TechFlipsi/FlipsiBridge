@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FlipsiBridge Netzwerk-Härtung:
+  - Standard: Klartext (HTTP/ws) VERBOTEN — auch im LAN.
+  - Ausnahme: direkte LAN-Verbindung zum Agent-Host (jarvis.lan:9119),
+    weil das Hermes-Dashboard lokal nur HTTP spricht. Alles andere
+    (relay.<deine-domain> & Co) läuft über HTTPS/WSS mit echtem Zertifikat.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">jarvis.lan</domain>
+    </domain-config>
+</network-security-config>

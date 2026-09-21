@@ -358,6 +358,8 @@ object CommandDispatcher {
             method == "POST" && path == "/events/stream" -> {
                 val enabled = body.get("enabled")?.asBoolean ?: false
                 EventStore.setStreaming(enabled)
+                // Hochfrequenz-Events (Tastendruck etc.) nur bei aktivem Stream
+                EventStore.highVolumeEvents = enabled
                 mapOf("success" to true, "streaming" to enabled) to 200
             }
 

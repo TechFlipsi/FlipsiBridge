@@ -34,7 +34,9 @@ class ChatActivity : android.app.Activity() {
         val prefs = getSharedPreferences("flipsibridge_chat", MODE_PRIVATE)
         gatewayUrl = prefs.getString("gateway_url", "") ?: ""
         chatUser = prefs.getString("chat_user", "fabian") ?: "fabian"
-        chatPass = prefs.getString("chat_pass", "") ?: ""
+        chatPass = prefs.getString("chat_pass_enc", null)
+            ?.let { com.hermesandroid.bridge.security.KeystoreCrypto.decrypt(it) }
+            ?: prefs.getString("chat_pass", "") ?: ""
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -204,11 +206,17 @@ class ChatActivity : android.app.Activity() {
             .setTitle("Gateway einrichten")
             .setView(wrap)
             .setPositiveButton("Speichern") { _, _ ->
-                getSharedPreferences("flipsibridge_chat", MODE_PRIVATE).edit()
+                val p = getSharedPreferences("flipsibridge_chat", MODE_PRIVATE).edit()
                     .putString("gateway_url", etUrl.text.toString().trim())
                     .putString("chat_user", etUser.text.toString().trim())
-                    .putString("chat_pass", etPass.text.toString())
-                    .apply()
+                // Passwort verschlüsselt ablegen (Android-Keystore, AES-GCM)
+                val enc = com.hermesandroid.bridge.security.KeystoreCrypto.encrypt(etPass.text.toString())
+                if (enc != null) {
+                    p.putString("chat_pass_enc", enc).remove("chat_pass")
+                } else {
+                    p.putString("chat_pass", etPass.text.toString())
+                }
+                p.apply()
                 recreate()
             }
             .setNegativeButton("Abbrechen", null)
