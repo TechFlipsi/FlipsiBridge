@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/); this project adheres to Conventional Commits.
 
+## [0.9.2-flipsi] - 21.09.2026
+### Kritisch
+- **CapabilityGate.init() wurde NIE aufgerufen** — SharedPreferences blieb null: alle Agent-Fähigkeiten-Schalter waren funktionslos (das 403-Gate konnte nie offen sein) und alles fiel nach App-Neustart auf AUS zurück. Jetzt korrekt in BridgeApplication.onCreate initialisiert.
+### Hinweis
+- Bildschirmaufnahme-Berechtigung gilt laut Android nur pro Sitzung — nach App-Neustart fragt das Consent-Dialogfeld einmal neu (Android-Sicherheit, absichtlich kein Umweg). Der Schalter zeigt den echten Zustand.
+
+## [0.9.0-flipsi] - 21.09.2026
+### Neu (Phase 4 — Dateien + Selbstupdate)
+- **Datei-Zugriff (Capability "files")**: /files (listen), /files_search (rekursiv), /files_count (Zähler je Endung), /file (Binär-Stream). Lese-only, Pfad-Whitelist, max 512 MB.
+- **APK-Selbstupdate (Capability "selfupdate")**: /apk_install mit SHA-256-Pflicht, Installer-Start mit Nutzerbestätigung; Relay /apk/latest (token-geschützt).
+- **Python-Tools**: android_files_list/search/count, android_file_get, android_apk_install.
+
 ## [0.9.1-flipsi] - 21.09.2026
 ### Fix
 - **Duplikat-Bug:** Die Agent-Faehigkeiten-Liste wuchs bei jedem App-FFnen um einen kompletten Satz (bind() lief in onResume erneut, ohne die alte Liste zu entfernen). Jetzt idempotent ueber getaggten Container.
