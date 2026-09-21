@@ -80,7 +80,7 @@ object DeviceHardware {
                                                     val rotated = try {
                                                         val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                                                         val m = android.graphics.Matrix()
-                                                        m.postRotate(90f)
+                                                        m.postRotate(-90f)
                                                         val bmp = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
                                                         java.io.ByteArrayOutputStream().use { bo ->
                                                             bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, bo)
