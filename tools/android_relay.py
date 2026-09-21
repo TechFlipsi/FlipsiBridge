@@ -279,7 +279,8 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     async def apk_latest(request: web.Request) -> web.StreamResponse:
         token = os.environ.get("ANDROID_BRIDGE_TOKEN", "")
         auth = request.headers.get("Authorization", "")
-        if not token or auth != f"Bearer {token}":
+        supplied = auth.removeprefix("Bearer ").strip() or str(request.query.get("token", ""))
+        if not token or supplied != token:
             return web.json_response({"error": "Unauthorized"}, status=401)
         try:
             candidates = sorted(
