@@ -23,7 +23,7 @@ object PairingManager {
 
     private const val PREFS_NAME = "hermes_bridge_prefs"
     private const val KEY_PAIRING_CODE = "pairing_code"
-    private const val CODE_LENGTH = 6
+    private const val CODE_LENGTH = 12
 
     private val secureRandom = SecureRandom()
 

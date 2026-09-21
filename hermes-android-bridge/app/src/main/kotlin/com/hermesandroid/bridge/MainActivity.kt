@@ -75,10 +75,6 @@ class MainActivity : Activity() {
         tvVersion = findViewById(R.id.tvVersion)
         tvVersion.text = "v${BuildConfig.VERSION_NAME}"
 
-        // FlipsiBridge: Chat öffnen
-        findViewById<Button>(R.id.btnChat).setOnClickListener {
-            startActivity(Intent(this, com.hermesandroid.bridge.chat.ChatActivity::class.java))
-        }
 
         setupPairingCode()
         setupPermissions()
@@ -132,6 +128,11 @@ class MainActivity : Activity() {
     }
 
     private fun setupPermissions() {
+        // FlipsiBridge: Agent-Fähigkeiten-Schalter (alles default AUS)
+        val permCard = findViewById<View>(R.id.switchAccessibility).parent.parent as android.widget.LinearLayout
+        com.hermesandroid.bridge.security.CapabilitySwitches.bind(permCard) {
+            // optional: UI-Rückmeldung, Dispatcher fragt CapabilityGate live ab
+        }
         switchAccessibility.setOnCheckedChangeListener { _, isChecked ->
             if (isChecked && BridgeAccessibilityService.instance == null) {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
@@ -147,11 +148,9 @@ class MainActivity : Activity() {
                     ))
                 } else {
                     StatusOverlay.show(this)
-                    com.hermesandroid.bridge.overlay.ChatBubble.show(this)
                 }
             } else {
                 StatusOverlay.hide(this)
-                com.hermesandroid.bridge.overlay.ChatBubble.hide(this)
             }
         }
 

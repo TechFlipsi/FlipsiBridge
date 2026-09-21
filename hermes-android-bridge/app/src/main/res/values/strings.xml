@@ -2,7 +2,6 @@
 <resources>
     <string name="app_name">FlipsiBridge</string>
     <string name="tagline">Dein Agent am Handy — Hände, Augen und Stimme.</string>
-    <string name="open_chat">Chat mit J.A.R.V.I.S.</string>
 
     <string name="accessibility_description">FlipsiBridge Bedienungshilfe — erlaubt dem J.A.R.V.I.S.-Agent, den Bildschirm zu lesen und das Gerät zu bedienen.</string>
 
@@ -27,6 +26,8 @@
     <string name="conn_url_hint">mein-relay.example.com:8766</string>
     <string name="conn_connect">Verbinden</string>
     <string name="conn_disconnect">Trennen</string>
+    <string name="caps_section_title">Agent-Fähigkeiten</string>
+    <string name="caps_section_hint">Was J.A.R.V.I.S. am Handy tun darf — alles standardmäßig aus.</string>
 
     <string name="section_pairing">Pairing</string>
     <string name="pairing_hint">Antippen kopiert den Code. Der Agent fragt danach beim Telefon-Setup.</string>

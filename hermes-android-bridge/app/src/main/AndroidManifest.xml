@@ -48,12 +48,6 @@
             </intent-filter>
         </activity>
 
-        <!-- FlipsiBridge Chat: direkter Draht zum Agent -->
-        <activity
-            android:name=".chat.ChatActivity"
-            android:exported="false"
-            android:label="J.A.R.V.I.S. Chat" />
-
         <!-- Accessibility service declaration -->
         <service
             android:name=".service.BridgeAccessibilityService"
@@ -76,20 +70,6 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
-        </service>
-
-        <!-- FlipsiBridge Assistenten-Rolle (Phase 2): Ecken-Swipe → Chat -->
-        <service
-            android:name=".assistant.BridgeVoiceSessionService"
-            android:exported="true"
-            android:label="FlipsiBridge Assistent"
-            android:permission="android.permission.BIND_VOICE_INTERACTION">
-            <intent-filter>
-                <action android:name="android.service.voice.VoiceInteractionService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.service.voice"
-                android:resource="@xml/bridge_assistant" />
         </service>
 
         <!-- Microphone recorder service (Phase 1 Ohren) -->
