@@ -120,6 +120,21 @@ object UpdateInstaller {
             )
         }
 
+        // "Apps aus unbekannten Quellen" für diese App gesetzt? Wenn nicht:
+        // Einstellungsseite öffnen (einmalige Freigabe, Android-Pflicht).
+        val appCtx = context.applicationContext
+        if (android.os.Build.VERSION.SDK_INT >= 26 &&
+            !appCtx.packageManager.canRequestPackageInstalls()) {
+            val perm = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                .setData(Uri.parse("package:" + appCtx.packageName))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try { appCtx.startActivity(perm) } catch (_: Exception) {}
+            return Result(
+                false, 403,
+                "Bitte 'Apps aus unbekannten Quellen' für FlipsiBridge erlauben (Einstellungsseite geöffnet) — dann Update erneut anstoßen",
+            )
+        }
+
         // Installations-Intent (User-Dialog, kein stiller Pfad)
         return try {
             val fileToInstall = File(context.cacheDir, "flipsibridge-update.apk")
