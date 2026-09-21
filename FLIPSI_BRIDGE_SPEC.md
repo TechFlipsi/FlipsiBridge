@@ -45,7 +45,7 @@ Original-UI: Terminal/Cyberpunk-Stil (Pixel-Font, Neon-Grün/Orange, Circuit-Hin
 - [ ] **Phase 1 — Baseline:** Rebranding (FlipsiBridge), neue UI, mTLS-Support im Client (OkHttp + Client-Zertifikat), signierter Build, Relay auf Server (systemd), Capability-Gating Grundgerüst
 - [ ] **Phase 2 — Assistent:** VoiceInteractionService, Assistenz-Rolle (Ecken-Swipe öffnet uns), AssistStructure-Screen-Kontext
 - [ ] **Phase 3 — Overlay:** Gemini-artiges Overlay-Panel über jeder App, Chat mit dem Agent
-- [ ] **Phase 4 — Kamera + Dateien:** CameraX-Foto auf Befehl, Datei-Zugriff
+- [~] **Phase 4 — Kamera + Dateien:** Datei-Zugriff (lesen/suchen/zählen/downloaden) ERLEDIGT v0.9.0; APK-Selbstupdate ERLEDIGT v0.9.0; CameraX-Foto noch offen
 - [ ] **Phase 5 — Sprache:** Porcupine-Wake-Word lokal, Streaming-Sprachdialog
 - [ ] **Phase 6 — Polish:** HyperOS-3-Batterie-/Autostart-Tuning, Overlay-Polish, Icons (textfrei, Flipsi-Stil)
 
