@@ -25,7 +25,7 @@ object HermesChatClient {
 
     private const val TAG = "HermesChat"
 
-    var gatewayUrl: String? = null      // z.B. "http://jarvis.lan:9119"
+    var gatewayUrl: String? = null      // z.B. "http://<heim-lan-ip>:9119"
     private var password: String? = null
     private var cookies: MutableMap<String, String> = mutableMapOf()
 

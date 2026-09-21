@@ -2,9 +2,10 @@
 <!--
   FlipsiBridge Netzwerk-Härtung:
   - Standard: Klartext (HTTP/ws) VERBOTEN — auch im LAN.
-  - Ausnahme: direkte LAN-Verbindung zum Agent-Host (jarvis.lan:9119),
+  - Ausnahme: direkte LAN-Verbindung zum Agent-Host im Heim-LAN
+    (private IP-Range, im Setup-Dialog der App konfigurierbar),
     weil das Hermes-Dashboard lokal nur HTTP spricht. Alles andere
-    (relay.<deine-domain> & Co) läuft über HTTPS/WSS mit echtem Zertifikat.
+    (eigene Relay-Domain & Co) läuft über HTTPS/WSS mit echtem Zertifikat.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -13,6 +14,7 @@
         </trust-anchors>
     </base-config>
     <domain-config cleartextTrafficPermitted="true">
+        <!-- Heim-LAN-IP des Agent-Servers (RFC1918, nicht identifizierend) -->
         <domain includeSubdomains="false">jarvis.lan</domain>
     </domain-config>
 </network-security-config>

@@ -33,7 +33,7 @@ class ChatActivity : android.app.Activity() {
 
         val prefs = getSharedPreferences("flipsibridge_chat", MODE_PRIVATE)
         gatewayUrl = prefs.getString("gateway_url", "") ?: ""
-        chatUser = prefs.getString("chat_user", "fabian") ?: "fabian"
+        chatUser = prefs.getString("chat_user", "") ?: ""
         chatPass = prefs.getString("chat_pass_enc", null)
             ?.let { com.hermesandroid.bridge.security.KeystoreCrypto.decrypt(it) }
             ?: prefs.getString("chat_pass", "") ?: ""
