@@ -40,6 +40,11 @@ Tools registered:
   - android_mic_stop         stop and finalize microphone recording
   - android_mic_status       inspect microphone recorder state
   - android_mic_fetch        stream a WAV to a local MEDIA file
+  - android_files_list       list a directory in phone shared storage
+  - android_files_search     recursive file-name search
+  - android_files_count      count files by extension per root
+  - android_file_get         stream any file to a local MEDIA path
+  - android_apk_install      FlipsiBridge self-update (https+sha256, user confirms)
   - android_read_widgets     read home-screen widgets
   - android_find_nodes       search UI nodes by text/class/clickable
   - android_diff_screen      diff screen against a previous hash
@@ -53,6 +58,7 @@ Tools registered:
 import json
 import os
 import time
+import urllib.parse
 import requests
 from typing import Optional
 from urllib.parse import quote
@@ -775,6 +781,139 @@ def android_mic_fetch(remote_path: str = "") -> str:
                 os.unlink(temp_path)
             except OSError:
                 pass
+        return json.dumps({"error": str(e)})
+
+
+def android_files_list(path: str = "root", hidden: bool = False) -> str:
+    """
+    List a directory in the phone's shared storage.
+    Allowed roots: Download, Documents, Pictures, Music, Movies, DCIM, root.
+    Returns entries with name, path (relative, reusable), isDir, size, modifiedMs.
+    """
+    try:
+        params = {"path": path}
+        if hidden:
+            params["hidden"] = "true"
+        data = _get("/files?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_files_search(query: str, limit: int = 200) -> str:
+    """
+    Recursively search file names across the allowed roots
+    (Download, Documents, Pictures, Music, Movies, DCIM). Case-insensitive.
+    """
+    try:
+        params = {"query": query, "limit": str(max(1, min(int(limit), 1000)))}
+        data = _get("/files_search?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_files_count(ext: str = "pdf") -> str:
+    """
+    Count files with the given extension across all allowed roots.
+    Returns total plus per-root counts (Download/Documents/...).
+    """
+    try:
+        params = {"ext": ext}
+        data = _get("/files_count?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_file_get(remote_path: str, save_to: str = "") -> str:
+    """
+    Download a file from the phone (path from android_files_list /
+    android_files_search, relative like 'Download/scan.pdf').
+    Returns MEDIA:<path> so the file is delivered to the user.
+    """
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required (relative path from files list/search)"})
+    rel = remote_path.strip()
+    if rel.startswith("/") or ".." in rel.split("/"):
+        return json.dumps({"error": "path must be relative, no '..' allowed"})
+
+    import tempfile
+    import mimetypes
+
+    temp_path = None
+    try:
+        with requests.get(
+            f"{_bridge_url()}/file",
+            params={"path": rel},
+            headers=_auth_headers(),
+            timeout=_timeout(),
+            stream=True,
+        ) as response:
+            if response.status_code >= 400:
+                try:
+                    return json.dumps(response.json())
+                except ValueError:
+                    return json.dumps({"error": f"File download failed (HTTP {response.status_code})"})
+
+            expected = response.headers.get("Content-Length")
+            expected_size = int(expected) if expected and expected.isdigit() else None
+            if expected_size is not None and expected_size > 512 * 1024 * 1024:
+                return json.dumps({"error": "File exceeds the download limit (512 MB)"})
+
+            suffix = os.path.splitext(rel)[1][:10] or ".bin"
+            written = 0
+            with tempfile.NamedTemporaryFile(
+                suffix=suffix,
+                prefix="android_file_",
+                delete=False,
+            ) as output:
+                temp_path = output.name
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > 512 * 1024 * 1024:
+                        raise ValueError("File exceeds the download limit (512 MB)")
+                    output.write(chunk)
+
+        if expected_size is not None and written != expected_size:
+            raise IOError("File download was incomplete")
+        return f"File fetched ({written} bytes)\nMEDIA:{temp_path}"
+    except requests.exceptions.RequestException:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": "Could not download the file from the bridge"})
+    except Exception as e:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": str(e)})
+
+
+def android_apk_install(url: str, sha256: str) -> str:
+    """
+    Have the phone download a new APK (https URL + mandatory SHA-256),
+    verify the checksum and start the Android installer.
+    The user MUST confirm the installation on the device — nothing is
+    installed silently. Use for FlipsiBridge app updates.
+    """
+    if not isinstance(url, str) or not url.strip().lower().startswith("https://"):
+        return json.dumps({"error": "url must be https://"})
+    if not isinstance(sha256, str) or len(sha256.strip()) != 64:
+        return json.dumps({"error": "sha256 must be the 64-char hex digest of the APK"})
+    try:
+        data = _post(
+            "/apk_install",
+            {"url": url.strip(), "sha256": sha256.strip().lower()},
+        )
+        return json.dumps(data)
+    except Exception as e:
         return json.dumps({"error": str(e)})
 
 
@@ -1514,6 +1653,76 @@ _SCHEMAS = {
         },
     },
 
+    "android_files_list": {
+        "name": "android_files_list",
+        "description": "List a directory in the phone's shared storage. Allowed roots: Download, Documents, Pictures, Music, Movies, DCIM, root.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path (e.g. 'Download' or 'Download/sub'). 'root' lists the top level of shared storage.",
+                    "default": "root",
+                },
+                "hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files (default false)",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    },
+    "android_files_search": {
+        "name": "android_files_search",
+        "description": "Recursively search file names across Download/Documents/Pictures/Music/Movies/DCIM. Case-insensitive contains-match.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search string for file names"},
+                "limit": {"type": "integer", "description": "Max results (1-1000, default 200)", "default": 200},
+            },
+            "required": ["query"],
+        },
+    },
+    "android_files_count": {
+        "name": "android_files_count",
+        "description": "Count files with a given extension across all allowed roots. Returns total and per-root counts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ext": {"type": "string", "description": "File extension without dot (e.g. 'pdf')", "default": "pdf"},
+            },
+            "required": [],
+        },
+    },
+    "android_file_get": {
+        "name": "android_file_get",
+        "description": "Download a file from the phone (relative path from android_files_list/android_files_search) as a local MEDIA file. Read-only; max 512 MB.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Relative path like 'Download/scan.pdf' (from files list/search results)",
+                },
+            },
+            "required": ["remote_path"],
+        },
+    },
+    "android_apk_install": {
+        "name": "android_apk_install",
+        "description": "FlipsiBridge self-update: phone downloads the APK from an https URL, verifies the mandatory SHA-256 and starts the Android installer. The user confirms installation on the device.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Direct https:// URL to the .apk file"},
+                "sha256": {"type": "string", "description": "SHA-256 hex digest of the APK file (64 chars, mandatory integrity check)"},
+            },
+            "required": ["url", "sha256"],
+        },
+    },
+
     "android_read_widgets": {
         "name": "android_read_widgets",
         "description": "Read home screen widgets (weather, calendar, tasks, etc.). Goes to home screen and reads widget content without opening apps.",
@@ -1696,6 +1905,11 @@ _HANDLERS = {
     "android_mic_stop": lambda args, **kw: android_mic_stop(),
     "android_mic_status": lambda args, **kw: android_mic_status(),
     "android_mic_fetch": lambda args, **kw: android_mic_fetch(**args),
+    "android_files_list": lambda args, **kw: android_files_list(**args),
+    "android_files_search": lambda args, **kw: android_files_search(**args),
+    "android_files_count": lambda args, **kw: android_files_count(**args),
+    "android_file_get": lambda args, **kw: android_file_get(**args),
+    "android_apk_install": lambda args, **kw: android_apk_install(**args),
     "android_read_widgets": lambda args, **kw: android_read_widgets(),
     "android_find_nodes": lambda args, **kw: android_find_nodes(**args),
     "android_diff_screen": lambda args, **kw: android_diff_screen(**args),

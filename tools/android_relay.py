@@ -222,6 +222,10 @@ _ROUTES = {
 "/widgets":       "GET",
 "/mic_status":    "GET",
 "/mic_file":      "GET",
+"/files":         "GET",
+"/files_search":  "GET",
+"/files_count":   "GET",
+"/file":          "GET",
 # POST-only
 "/tap":           "POST",
 "/tap_text":      "POST",
@@ -248,6 +252,7 @@ _ROUTES = {
 "/events/stream": "POST",
 "/mic_start":     "POST",
 "/mic_stop":      "POST",
+"/apk_install":   "POST",
 # READ + WRITE
 "/clipboard":     "BOTH",
 }
@@ -634,7 +639,7 @@ async def _handle_http(
     logger.debug(">>> %s %s body=%s", method, path, _safe_body_repr(body))
 
     # Register the response target *before* sending so we never miss a reply.
-    is_binary_stream = path == "/mic_file"
+    is_binary_stream = path in ("/mic_file", "/file")
     future = None
     stream_queue = None
     if is_binary_stream:
@@ -662,7 +667,7 @@ async def _handle_http(
         )
 
     if is_binary_stream:
-        return await _relay_binary_stream(request, state, request_id, stream_queue)
+        return await _relay_binary_stream(request, state, request_id, stream_queue, stream_path=path)
 
     # Wait for the phone's response
     try:
@@ -697,6 +702,7 @@ async def _relay_binary_stream(
     state: _RelayState,
     request_id: str,
     queue: asyncio.Queue,
+    stream_path: str = "/mic_file",
 ) -> web.StreamResponse:
     """Stream binary phone frames to the authenticated HTTP caller with backpressure."""
     response = None
@@ -719,11 +725,15 @@ async def _relay_binary_stream(
 
         raw_filename = os.path.basename(str(stream.get("filename", "recording.wav")))
         filename = re.sub(r"[^A-Za-z0-9._-]", "_", raw_filename)
-        if not filename.lower().endswith(".wav"):
-            filename = "recording.wav"
         mime_type = str(stream.get("mimeType", "audio/wav"))
-        if mime_type != "audio/wav":
-            mime_type = "application/octet-stream"
+        if stream_path == "/file":
+            if not filename or filename == "_":
+                filename = "device_file"
+        else:
+            if not filename.lower().endswith(".wav"):
+                filename = "recording.wav"
+            if mime_type != "audio/wav":
+                mime_type = "application/octet-stream"
 
         response = web.StreamResponse(
             status=200,

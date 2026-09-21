@@ -62,6 +62,13 @@ object CapabilityGate {
         Pair("POST", "/mic_stop") to "microphone",
         Pair("GET", "/mic_status") to "microphone",
         Pair("GET", "/mic_file") to "microphone",
+        // files (Phase 4) — lesen/suchen im gemeinsamen Speicher
+        Pair("GET", "/files") to "files",
+        Pair("GET", "/files_search") to "files",
+        Pair("GET", "/files_count") to "files",
+        Pair("GET", "/file") to "files",
+        // selfupdate (Phase 4) — APK herunterladen + Installer starten
+        Pair("POST", "/apk_install") to "selfupdate",
         // misc ohne eigene Kategorie
         Pair("POST", "/speak") to "interaction",
         Pair("POST", "/stop_speaking") to "interaction",
@@ -80,6 +87,8 @@ object CapabilityGate {
         "calls" to "Anrufe (invasiv)",
         "contacts" to "Kontakte lesen (invasiv)",
         "microphone" to "Mikrofon (invasiv)",
+        "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
+        "selfupdate" to "App-Update installieren (mit Bestätigung)",
     )
 
     private const val PREFS = "flipsibridge_caps"

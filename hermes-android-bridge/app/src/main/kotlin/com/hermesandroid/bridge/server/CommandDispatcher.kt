@@ -13,6 +13,8 @@ import com.hermesandroid.bridge.audio.MicrophoneRecordingState
 import com.hermesandroid.bridge.event.EventStore
 import com.hermesandroid.bridge.executor.ActionExecutor
 import com.hermesandroid.bridge.executor.ScreenReader
+import com.hermesandroid.bridge.files.DeviceFiles
+import com.hermesandroid.bridge.files.UpdateInstaller
 import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.model.ScreenNode
@@ -498,6 +500,69 @@ object CommandDispatcher {
                     ActionExecutor.readWidgets()
                 }
                 result to 200
+            }
+
+            method == "GET" && path == "/files" -> {
+                val rel = params.get("path")?.asString ?: ""
+                val showHidden = params.get("hidden")?.asString == "true"
+                val (entries, error) = DeviceFiles.list(rel, showHidden)
+                if (error != null) return mapOf("error" to error) to 400
+                mapOf(
+                    "path" to rel,
+                    "count" to entries!!.size,
+                    "entries" to entries.map { e ->
+                        mapOf(
+                            "name" to e.name,
+                            "path" to e.path,
+                            "isDir" to e.isDir,
+                            "size" to e.sizeBytes,
+                            "modifiedMs" to e.modifiedMs,
+                        )
+                    },
+                ) to 200
+            }
+
+            method == "GET" && path == "/files_search" -> {
+                val query = params.get("query")?.asString ?: ""
+                val maxFiles = (params.get("limit")?.asString?.toIntOrNull() ?: 200).coerceIn(1, 1000)
+                val (entries, error) = DeviceFiles.search(query, maxFiles)
+                if (error != null) return mapOf("error" to error) to 400
+                mapOf(
+                    "query" to query,
+                    "count" to entries!!.size,
+                    "entries" to entries.map { e ->
+                        mapOf(
+                            "name" to e.name,
+                            "path" to e.path,
+                            "size" to e.sizeBytes,
+                            "modifiedMs" to e.modifiedMs,
+                        )
+                    },
+                ) to 200
+            }
+
+            method == "GET" && path == "/files_count" -> {
+                val ext = params.get("ext")?.asString ?: "pdf"
+                val counts = DeviceFiles.countByExtension(ext)
+                val total = counts.values.sum()
+                mapOf("ext" to ext, "total" to total, "byRoot" to counts) to 200
+            }
+
+            method == "POST" && path == "/apk_install" -> {
+                val url = body.get("url")?.asString
+                val sha = body.get("sha256")?.asString
+                if (url.isNullOrBlank() || sha.isNullOrBlank()) {
+                    return mapOf("error" to "url und sha256 sind Pflicht") to 400
+                }
+                val result = withContext(Dispatchers.IO) {
+                    UpdateInstaller.start(BridgeApplication.instance, url, sha)
+                }
+                mapOf(
+                    "ok" to result.ok,
+                    "message" to result.message,
+                    "bytes" to result.bytesDownloaded,
+                    "sha256" to result.sha256,
+                ) to result.status
             }
 
             else -> {

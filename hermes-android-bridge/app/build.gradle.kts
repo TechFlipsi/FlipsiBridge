@@ -13,8 +13,8 @@ android {
         applicationId = "at.flipsi.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 7
-        versionName = "0.8.0-flipsi"
+        versionCode = 8
+        versionName = "0.9.0-flipsi"
     }
 
     buildFeatures {
@@ -79,6 +79,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.androidx.core)
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)

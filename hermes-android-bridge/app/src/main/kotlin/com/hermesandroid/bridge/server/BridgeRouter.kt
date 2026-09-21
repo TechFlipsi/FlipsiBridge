@@ -41,6 +41,41 @@ fun Application.configureRouting() {
             call.respondFile(file)
         }
 
+        get("/file") {
+            // Capability-Gate manuell (Route liefert Binärdaten, kein Dispatcher-JSON)
+            com.hermesandroid.bridge.security.CapabilityGate.checkEndpoint("GET", "/file")?.let { msg ->
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to msg))
+                return@get
+            }
+            val rel = call.request.queryParameters["path"] ?: ""
+            val resolved = com.hermesandroid.bridge.files.DeviceFiles.resolveForRead(rel)
+            if (resolved == null) {
+                call.respond(HttpStatusCode.NotFound, mapOf("error" to "Datei nicht lesbar: $rel"))
+                return@get
+            }
+            val (file, fileName) = resolved
+            val mime = when (fileName.substringAfterLast('.', "").lowercase()) {
+                "pdf" -> "application/pdf"
+                "jpg", "jpeg" -> "image/jpeg"
+                "png" -> "image/png"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "txt", "log", "csv" -> "text/plain"
+                "zip", "apk" -> "application/zip"
+                "mp3" -> "audio/mpeg"
+                "mp4", "mov", "mkv", "webm" -> "video/mp4"
+                "wav" -> "audio/wav"
+                else -> "application/octet-stream"
+            }
+            call.response.header(HttpHeaders.CacheControl, "no-store")
+            call.response.header(HttpHeaders.ContentType, mime)
+            call.response.header(
+                HttpHeaders.ContentDisposition,
+                "attachment; filename=\"${fileName}\"",
+            )
+            call.respondFile(file)
+        }
+
         route("{path...}") {
             handle {
                 val method = call.request.httpMethod.value.uppercase()

@@ -9,6 +9,8 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.hermesandroid.bridge.audio.MicrophoneRecordingFiles
+import com.hermesandroid.bridge.files.DeviceFiles
+import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.CommandDispatcher
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
@@ -396,6 +398,22 @@ object RelayClient {
                 )
                 return
             }
+            if (method == "GET" && path == "/file") {
+                streamDeviceFile(
+                    ws,
+                    requestId,
+                    params.get("path")?.asString ?: "",
+                )
+                return
+            }
+            if (method == "GET" && path == "/files" || method == "GET" && path == "/files_search" || method == "GET" && path == "/files_count") {
+                // Capability-Gate auch hier — die Datei-Routen umgehen den Dispatcher-Pfad absichtlich nicht,
+                // aber /files* laufen NUR hier durch (WS), daher Gate manuell vorab prüfen.
+                CapabilityGate.checkEndpoint(method, path)?.let { msg ->
+                    sendCommandResult(ws, requestId, mapOf("error" to msg), status = 403)
+                    return
+                }
+            }
 
             // The relay connection is authenticated at connect time (Bearer token on the WS handshake),
             // so commands arriving here are already authenticated.
@@ -419,6 +437,112 @@ object RelayClient {
                 }
                 ws.send(errorResponse.toString())
             } catch (_: Exception) {}
+        }
+    }
+
+    /**
+     * Streamt eine Datei aus dem gemeinsamen Speicher (Capability "files") über
+     * das WebSocket-Streaming-Protokoll (start/chunks/end wie mic_file).
+     * MIME-Typ anhand der Endung, SHA-256 mitgeliefert.
+     */
+    private suspend fun streamDeviceFile(
+        ws: WebSocket,
+        requestId: String,
+        relativePath: String,
+    ) {
+        // Capability-Gate auch hier (Dispatcher umgeht den Normalpfad absichtlich)
+        CapabilityGate.checkEndpoint("GET", "/file")?.let { msg ->
+            sendCommandResult(ws, requestId, mapOf("error" to msg), status = 403)
+            return
+        }
+        val resolved = withContext(Dispatchers.IO) {
+            DeviceFiles.resolveForRead(relativePath)
+        }
+        if (resolved == null) {
+            sendCommandResult(
+                ws,
+                requestId,
+                mapOf("error" to "Datei nicht lesbar: $relativePath (nicht gefunden, Ordner oder zu groß)"),
+                status = 404,
+            )
+            return
+        }
+        val (file, fileName) = resolved
+
+        val mime = when (fileName.substringAfterLast('.', "").lowercase()) {
+            "pdf" -> "application/pdf"
+            "jpg", "jpeg" -> "image/jpeg"
+            "png" -> "image/png"
+            "webp" -> "image/webp"
+            "gif" -> "image/gif"
+            "txt", "log", "csv" -> "text/plain"
+            "zip", "apk" -> "application/zip"
+            "mp3" -> "audio/mpeg"
+            "mp4", "mov", "mkv", "webm" -> "video/mp4"
+            "wav" -> "audio/wav"
+            else -> "application/octet-stream"
+        }
+
+        val startMessage = JsonObject().apply {
+            addProperty("request_id", requestId)
+            addProperty("status", 200)
+            add("stream", JsonObject().apply {
+                addProperty("event", "start")
+                addProperty("filename", fileName)
+                addProperty("mimeType", mime)
+                addProperty("size", file.length())
+            })
+        }
+        if (!ws.send(startMessage.toString())) return
+
+        val digest = MessageDigest.getInstance("SHA-256")
+        var bytesSent = 0L
+        try {
+            FileInputStream(file).use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    if (read == 0) continue
+
+                    while (ws.queueSize() > 1024L * 1024L) {
+                        delay(10L)
+                    }
+                    digest.update(buffer, 0, read)
+                    if (!ws.send(buildStreamFrame(requestId, buffer, read))) {
+                        throw IllegalStateException("WebSocket rejected file stream data")
+                    }
+                    bytesSent += read
+                }
+            }
+
+            val endMessage = JsonObject().apply {
+                addProperty("request_id", requestId)
+                addProperty("status", 200)
+                add("stream", JsonObject().apply {
+                    addProperty("event", "end")
+                    addProperty("bytes", bytesSent)
+                    addProperty(
+                        "sha256",
+                        digest.digest().joinToString("") { byte ->
+                            "%02x".format(byte.toInt() and 0xff)
+                        },
+                    )
+                })
+            }
+            ws.send(endMessage.toString())
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            val errorMessage = JsonObject().apply {
+                addProperty("request_id", requestId)
+                addProperty("status", 500)
+                add("stream", JsonObject().apply {
+                    addProperty("event", "error")
+                    addProperty("message", "File stream failed (${error.javaClass.simpleName})")
+                })
+            }
+            ws.send(errorMessage.toString())
         }
     }
 
