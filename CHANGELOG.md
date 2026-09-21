@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented here. Format based on [Keep a Changelog](https://keepachangelog.com/); this project adheres to Conventional Commits.
 
+## [0.9.1-flipsi] - 21.09.2026
+### Fix
+- **Duplikat-Bug:** Die Agent-Faehigkeiten-Liste wuchs bei jedem App-FFnen um einen kompletten Satz (bind() lief in onResume erneut, ohne die alte Liste zu entfernen). Jetzt idempotent ueber getaggten Container.
+
 ## [Unreleased]
 
 ### Added
