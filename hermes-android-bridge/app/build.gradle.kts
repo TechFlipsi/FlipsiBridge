@@ -13,8 +13,8 @@ android {
         applicationId = "at.flipsi.bridge"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "0.9.0-flipsi"
+        versionCode = 9
+        versionName = "0.9.1-flipsi"
     }
 
     buildFeatures {
