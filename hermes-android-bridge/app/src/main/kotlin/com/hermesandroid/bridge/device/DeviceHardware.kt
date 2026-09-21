@@ -51,8 +51,10 @@ object DeviceHardware {
                         val surface = reader.surface
                         val builder = camera.createCaptureRequest(android.hardware.camera2.CameraDevice.TEMPLATE_STILL_CAPTURE)
                         builder.addTarget(surface)
-                        // Sensor-Drehung korrekt ins JPEG schreiben
-                        builder.set(android.hardware.camera2.CaptureRequest.JPEG_ORIENTATION, orientation)
+                        // Sensor-Drehung ins JPEG: Sensor liefert Querformat, Handy-Halterung ist Hochformat
+                        // -> +90 drehen, damit das Foto aufrecht aus der Kamera kommt.
+                        val upright = (orientation + 90) % 360
+                        builder.set(android.hardware.camera2.CaptureRequest.JPEG_ORIENTATION, upright)
                         camera.createCaptureSession(listOf(surface),
                             object : android.hardware.camera2.CameraCaptureSession.StateCallback() {
                                 override fun onConfigured(session: android.hardware.camera2.CameraCaptureSession) {

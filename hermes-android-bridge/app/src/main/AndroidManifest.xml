@@ -37,6 +37,7 @@
     <!-- Phase 10 Geräte-Hardware: Kamera-Foto auf Befehl, Taschenlampe, Netz-Status -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-feature android:name="android.hardware.telephony.gsm" android:required="false" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
