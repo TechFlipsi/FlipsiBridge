@@ -9,7 +9,7 @@ read_when:
 
 ## 1. Install the bridge app on your phone
 
-Easiest: download the prebuilt APK from the [Latest Build release](https://github.com/raulvidis/hermes-android/releases/tag/latest-build) and install it (enable "Install unknown apps" when prompted, or `adb install hermes-android-*.apk`).
+Easiest: download the prebuilt APK from the [Latest Build release](https://github.com/TechFlipsi/FlipsiBridge/releases/tag/latest-build) and install it (enable "Install unknown apps" when prompted, or `adb install hermes-android-*.apk`).
 
 It is an unsigned debug build, so Play Protect may warn on install.
 

@@ -7,7 +7,7 @@
 set -euo pipefail
 
 PLUGIN_DIR="$HOME/.hermes/plugins/hermes-android"
-REPO="https://github.com/raulvidis/hermes-android.git"
+REPO="https://github.com/TechFlipsi/FlipsiBridge.git"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 

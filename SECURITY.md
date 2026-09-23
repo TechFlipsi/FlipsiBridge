@@ -30,11 +30,21 @@ hermes-android gives a remote AI agent full control of an Android device via Acc
 
 ## Known Limitations (Prototype)
 
-### No Encryption
-WebSocket connections use `ws://` (plaintext), not `wss://` (TLS). This means:
-- Commands, screen content, and screenshots travel unencrypted
-- Anyone on the network path between phone and server can intercept traffic
-- **Mitigation**: Use over a trusted network, or set up a reverse proxy with TLS (nginx/caddy)
+### Encryption (FlipsiBridge fork)
+The upstream app connects over plaintext `ws://` by default. **FlipsiBridge hardened this**
+(GitHub issue raulvidis/hermes-android#108):
+
+- `network_security_config.xml` forbids cleartext for everything except one explicitly
+  configured LAN host (e.g. `jarvis.lan`). Remote access runs over `wss://` (TLS 1.3) via a
+  reverse proxy with a real certificate.
+- **mTLS is supported end-to-end**: the app offers client certificates from the Android
+  keystore (alias prefix `flipsibridge-`, see `MtlsSupport.kt`), and the reverse proxy can
+  enforce `ssl_verify_client` against your own CA (`contrib/flipsibridge-ca.sh`).
+  Two factors: client certificate + 12-character pairing code.
+- If you run the relay on the public internet without TLS/mTLS, that is your own risk —
+  see `docs/AGENT_SETUP.md` for the hardened setup.
+- Plain `ws://` LAN setups (the upstream default) are still acceptable on a trusted home
+  network, but the app makes the difference visible instead of silently falling back.
 
 ### Full Device Access
 Once paired, the agent has unrestricted access to:

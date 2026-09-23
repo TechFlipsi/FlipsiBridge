@@ -13,7 +13,7 @@ read_when:
 One-liner (`install.sh`):
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/raulvidis/hermes-android/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/main/install.sh | bash
 ```
 
 What it does:
@@ -32,7 +32,7 @@ cp -r hermes-android-plugin ~/.hermes/plugins/hermes-android
 
 ## Bridge APK
 
-**Option A — prebuilt:** download `hermes-android-<version>.apk` from the [Latest Build release](https://github.com/raulvidis/hermes-android/releases/tag/latest-build); install on-device or `adb install hermes-android-*.apk`.
+**Option A — prebuilt:** download `hermes-android-<version>.apk` from the [Latest Build release](https://github.com/TechFlipsi/FlipsiBridge/releases/tag/latest-build); install on-device or `adb install hermes-android-*.apk`.
 
 **Option B — build from source:**
 ```bash
