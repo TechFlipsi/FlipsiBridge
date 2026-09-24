@@ -1,9 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- HTTP server -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
+    <!-- Termux-Watchdog: Nur nach explizitem Opt-in in der UI (RUN_COMMAND) -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" tools:ignore="ProtectedPermissions" />
     <!-- Wake screen for background actions -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Overlay HUD -->
@@ -17,6 +19,14 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <!-- Screenshots via MediaProjection (Phase 2 enhancement) -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Phase 4 Datei-Zugriff: voller Lesezugriff auf den gemeinsamen Speicher
+         ("Alle Dateien zugreifen" - vom Nutzer in den Einstellungen zu erteilen,
+         weil MANAGE_EXTERNAL_STORAGE ein Sonderrecht ohne Laufzeit-Dialog ist) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- APK-Selbstupdate: App darf Installations-Prompt anzeigen ("Apps aus unbekannten Quellen
+         installieren" - wird beim ersten Update einmalig in den Einstellungen freigegeben) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Query all installed apps (Android 11+) -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
@@ -24,6 +34,11 @@
     <uses-permission android:name="android.permission.SEND_SMS" />
     <uses-permission android:name="android.permission.CALL_PHONE" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Phase 10 Geräte-Hardware: Kamera-Foto auf Befehl, Taschenlampe, Netz-Status -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
     <uses-feature android:name="android.hardware.telephony" android:required="false" />
     <uses-feature android:name="android.hardware.telephony.gsm" android:required="false" />
     <uses-feature android:name="android.hardware.location.gps" android:required="false" />
@@ -45,6 +60,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- FileProvider für APK-Selbstupdate (nur Cache-Ordner) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Accessibility service declaration -->
         <service

@@ -222,6 +222,11 @@ _ROUTES = {
 "/widgets":       "GET",
 "/mic_status":    "GET",
 "/mic_file":      "GET",
+"/files":         "GET",
+"/files_search":  "GET",
+"/files_count":   "GET",
+"/files_permission": "BOTH",
+"/file":          "GET",
 # POST-only
 "/tap":           "POST",
 "/tap_text":      "POST",
@@ -248,6 +253,16 @@ _ROUTES = {
 "/events/stream": "POST",
 "/mic_start":     "POST",
 "/mic_stop":      "POST",
+"/apk_install":   "POST",
+"/files_push":    "POST",
+"/photo":         "POST",
+"/torch":         "POST",
+"/network":       "GET",
+"/volume":        "POST",
+"/alarm":         "POST",
+"/timer":         "POST",
+"/notify_reply":  "POST",
+"/files_delete":  "POST",
 # READ + WRITE
 "/clipboard":     "BOTH",
 }
@@ -263,6 +278,48 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
         return await _handle_ws(request, state)
 
     app.router.add_get("/ws", websocket_handler)
+
+    # Authenticated APK distribution for /apk_install self-update.
+    # Serves the newest APK in the relay's apk_dir; refuses without valid token.
+    apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR", os.path.expanduser("~/.hermes/android-apk"))
+
+    async def apk_latest(request: web.Request) -> web.StreamResponse:
+        token = os.environ.get("ANDROID_BRIDGE_TOKEN", "")
+        auth = request.headers.get("Authorization", "")
+        supplied = auth.removeprefix("Bearer ").strip()
+        if not token or supplied != token:
+            return web.json_response({"error": "Unauthorized"}, status=401)
+        try:
+            candidates = sorted(
+                (f for f in os.listdir(apk_dir) if f.endswith(".apk")),
+                key=lambda name: os.path.getmtime(os.path.join(apk_dir, name)),
+                reverse=True,
+            )
+        except FileNotFoundError:
+            candidates = []
+        if not candidates:
+            return web.json_response({"error": "No APK available"}, status=404)
+        path = os.path.join(apk_dir, candidates[0])
+        stream = web.StreamResponse(
+            status=200,
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Type": "application/vnd.android.package-archive",
+                "Content-Disposition": f'attachment; filename="{candidates[0]}"',
+                "Content-Length": str(os.path.getsize(path)),
+            },
+        )
+        await stream.prepare(request)
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(64 * 1024)
+                if not chunk:
+                    break
+                await stream.write(chunk)
+        await stream.write_eof()
+        return stream
+
+    app.router.add_get("/apk/latest", apk_latest)
 
 
     for path, method in _ROUTES.items():
@@ -634,7 +691,7 @@ async def _handle_http(
     logger.debug(">>> %s %s body=%s", method, path, _safe_body_repr(body))
 
     # Register the response target *before* sending so we never miss a reply.
-    is_binary_stream = path == "/mic_file"
+    is_binary_stream = path in ("/mic_file", "/file")
     future = None
     stream_queue = None
     if is_binary_stream:
@@ -662,7 +719,7 @@ async def _handle_http(
         )
 
     if is_binary_stream:
-        return await _relay_binary_stream(request, state, request_id, stream_queue)
+        return await _relay_binary_stream(request, state, request_id, stream_queue, stream_path=path)
 
     # Wait for the phone's response
     try:
@@ -697,6 +754,7 @@ async def _relay_binary_stream(
     state: _RelayState,
     request_id: str,
     queue: asyncio.Queue,
+    stream_path: str = "/mic_file",
 ) -> web.StreamResponse:
     """Stream binary phone frames to the authenticated HTTP caller with backpressure."""
     response = None
@@ -719,11 +777,15 @@ async def _relay_binary_stream(
 
         raw_filename = os.path.basename(str(stream.get("filename", "recording.wav")))
         filename = re.sub(r"[^A-Za-z0-9._-]", "_", raw_filename)
-        if not filename.lower().endswith(".wav"):
-            filename = "recording.wav"
         mime_type = str(stream.get("mimeType", "audio/wav"))
-        if mime_type != "audio/wav":
-            mime_type = "application/octet-stream"
+        if stream_path == "/file":
+            if not filename or filename == "_":
+                filename = "device_file"
+        else:
+            if not filename.lower().endswith(".wav"):
+                filename = "recording.wav"
+            if mime_type != "audio/wav":
+                mime_type = "application/octet-stream"
 
         response = web.StreamResponse(
             status=200,

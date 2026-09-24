@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  OPTIONAL hardening template (issue #108): deny cleartext everywhere except
+  an explicitly configured LAN host. To activate:
+    1. Copy to app/src/main/res/xml/network_security_config.xml
+    2. Replace the example host below with YOUR agent server's LAN hostname/IP
+       (one <domain> entry per host you want to allow plaintext to).
+    3. Reference it in AndroidManifest.xml:
+         android:networkSecurityConfig="@xml/network_security_config"
+    4. Remove android:usesCleartextTraffic="true" from the <application> tag.
+
+  With this config, remote connections MUST use https/wss (TLS) while the
+  local LAN host keeps working over plain http/ws.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- your agent server's LAN host(s), e.g. -->
+        <!-- <domain includeSubdomains="false">agent-server.lan</domain> -->
+    </domain-config>
+</network-security-config>

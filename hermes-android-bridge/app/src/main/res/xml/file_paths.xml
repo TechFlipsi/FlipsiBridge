@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider paths:
+  cache-path: update APKs (UpdateInstaller) — only app-cache files are
+  shared with the installer.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <cache-path name="updates" path="." />
+</paths>

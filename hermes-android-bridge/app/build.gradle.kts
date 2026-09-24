@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -22,6 +24,23 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // Release-Signing: path to a .properties file (storeFile/storePassword/
+            // keyAlias/keyPassword) passed via the BRIDGE_SIGNING_PROPS env var or the
+            // bridgeSigningProps gradle property. Never committed. Without it the
+            // release build stays unsigned (CI can set the env var).
+            val signingPropsFile = (System.getenv("BRIDGE_SIGNING_PROPS")
+                ?: findProperty("bridgeSigningProps"))?.let { file(it) }
+            if (signingPropsFile != null && signingPropsFile.exists()) {
+                val signingProps = Properties().apply {
+                    signingPropsFile.inputStream().use { load(it) }
+                }
+                signingConfig = signingConfigs.create("release") {
+                    storeFile = file(signingProps["storeFile"] as String)
+                    storePassword = signingProps["storePassword"] as String
+                    keyAlias = signingProps["keyAlias"] as String
+                    keyPassword = signingProps["keyPassword"] as String
+                }
+            }
         }
     }
 
@@ -62,6 +81,7 @@ android {
 }
 
 dependencies {
+    implementation(libs.androidx.core)
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.netty)
     implementation(libs.ktor.server.content.negotiation)

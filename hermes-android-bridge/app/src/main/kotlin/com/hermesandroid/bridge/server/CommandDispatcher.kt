@@ -4,6 +4,8 @@ package com.hermesandroid.bridge.server
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.content.pm.PackageManager
 import com.google.gson.JsonObject
 import com.hermesandroid.bridge.BridgeApplication
@@ -13,10 +15,13 @@ import com.hermesandroid.bridge.audio.MicrophoneRecordingState
 import com.hermesandroid.bridge.event.EventStore
 import com.hermesandroid.bridge.executor.ActionExecutor
 import com.hermesandroid.bridge.executor.ScreenReader
+import com.hermesandroid.bridge.files.DeviceFiles
+import com.hermesandroid.bridge.files.UpdateInstaller
 import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.model.ScreenNode
 import com.hermesandroid.bridge.notification.NotificationStore
+import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.power.BatteryMonitor
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeNotificationListener
@@ -56,6 +61,10 @@ object CommandDispatcher {
         body: JsonObject,
         authenticated: Boolean
     ): Pair<Any, Int> {
+        // Capability gating BEFORE any execution (last line of defense).
+        CapabilityGate.checkEndpoint(method, path)?.let { msg ->
+            return Pair(mapOf("error" to msg), 403)
+        }
         return when {
             method == "GET" && path == "/ping" -> {
                 val serviceRunning = BridgeAccessibilityService.instance != null
@@ -353,6 +362,8 @@ object CommandDispatcher {
             method == "POST" && path == "/events/stream" -> {
                 val enabled = body.get("enabled")?.asBoolean ?: false
                 EventStore.setStreaming(enabled)
+                // Hochfrequenz-Events (Tastendruck etc.) nur bei aktivem Stream
+                EventStore.highVolumeEvents = enabled
                 mapOf("success" to true, "streaming" to enabled) to 200
             }
 
@@ -491,6 +502,183 @@ object CommandDispatcher {
                     ActionExecutor.readWidgets()
                 }
                 result to 200
+            }
+
+            method == "GET" && path == "/files" -> {
+                val rel = params.get("path")?.asString ?: ""
+                val showHidden = params.get("hidden")?.asString == "true"
+                val (entries, error) = DeviceFiles.list(rel, showHidden)
+                if (error != null) return mapOf("error" to error) to 400
+                mapOf(
+                    "path" to rel,
+                    "count" to entries!!.size,
+                    "entries" to entries.map { e ->
+                        mapOf(
+                            "name" to e.name,
+                            "path" to e.path,
+                            "isDir" to e.isDir,
+                            "size" to e.sizeBytes,
+                            "modifiedMs" to e.modifiedMs,
+                        )
+                    },
+                ) to 200
+            }
+
+            method == "GET" && path == "/files_search" -> {
+                val query = params.get("query")?.asString ?: ""
+                val maxFiles = (params.get("limit")?.asString?.toIntOrNull() ?: 200).coerceIn(1, 1000)
+                val (entries, error) = DeviceFiles.search(query, maxFiles)
+                if (error != null) return mapOf("error" to error) to 400
+                mapOf(
+                    "query" to query,
+                    "count" to entries!!.size,
+                    "entries" to entries.map { e ->
+                        mapOf(
+                            "name" to e.name,
+                            "path" to e.path,
+                            "size" to e.sizeBytes,
+                            "modifiedMs" to e.modifiedMs,
+                        )
+                    },
+                ) to 200
+            }
+
+            method == "POST" && path == "/files_push" -> {
+                val rel = body.get("path")?.asString
+                val b64 = body.get("data")?.asString
+                val overwrite = body.get("overwrite")?.asBoolean ?: false
+                if (rel.isNullOrBlank() || b64.isNullOrBlank()) {
+                    return mapOf("error" to "path und data (base64) sind Pflicht") to 400
+                }
+                val bytes = try {
+                    android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+                } catch (e: IllegalArgumentException) {
+                    return mapOf("error" to "data ist kein gültiges Base64") to 400
+                }
+                val result = withContext(Dispatchers.IO) {
+                    DeviceFiles.writeBytes(rel, bytes, overwrite)
+                }
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("written" to true, "path" to result.first, "bytes" to bytes.size) to 200
+            }
+
+            method == "POST" && path == "/files_delete" -> {
+                val rel = body.get("path")?.asString
+                val pathsArr = body.get("paths")?.asJsonArray
+                if (pathsArr != null && pathsArr.size() > 0) {
+                    val list = pathsArr.mapNotNull { (it as? com.google.gson.JsonPrimitive)?.takeIf { p -> p.isString }?.asString }.take(200)
+                    val results = withContext(Dispatchers.IO) { DeviceFiles.deleteMany(list) }
+                    mapOf(
+                        "requested" to list.size,
+                        "results" to results,
+                        "okCount" to results.count { it["ok"] == "true" },
+                        "failCount" to results.count { it["ok"] == "false" },
+                    ) to 200
+                } else {
+                    if (rel.isNullOrBlank()) return mapOf("error" to "path oder paths ist Pflicht") to 400
+                    val result = withContext(Dispatchers.IO) { DeviceFiles.deleteFile(rel) }
+                    if (result.second != null) return mapOf("error" to result.second) to 400
+                    mapOf("deleted" to true, "message" to result.first) to 200
+                }
+            }
+
+            method == "GET" && path == "/files_permission" -> {
+                val app = BridgeApplication.instance
+                val granted = android.os.Environment.isExternalStorageManager()
+                mapOf("allFilesAccess" to granted) to 200
+            }
+
+            method == "POST" && path == "/files_permission" -> {
+                val app = BridgeApplication.instance
+                if (android.os.Environment.isExternalStorageManager()) {
+                    mapOf("allFilesAccess" to true, "message" to "All-files access already granted") to 200
+                } else {
+                    val intent = Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                        .setData(Uri.parse("package:" + app.packageName))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    app.startActivity(intent)
+                    mapOf("allFilesAccess" to false, "message" to "Settings opened - please grant 'All files access' for the app") to 200
+                }
+            }
+
+            method == "GET" && path == "/files_count" -> {
+                val ext = params.get("ext")?.asString ?: "pdf"
+                val counts = DeviceFiles.countByExtension(ext)
+                val total = counts.values.sum()
+                mapOf("ext" to ext, "total" to total, "byRoot" to counts) to 200
+            }
+
+            method == "POST" && path == "/photo" -> {
+                val fileName = body.get("filename")?.asString ?: ""
+                val result = withContext(Dispatchers.IO) {
+                    com.hermesandroid.bridge.device.DeviceHardware.capturePhoto(BridgeApplication.instance, fileName)
+                }
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("path" to result.first, "saved" to "Pictures/Bridge") to 200
+            }
+
+            method == "POST" && path == "/torch" -> {
+                val on = body.get("on")?.asBoolean ?: true
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setTorch(BridgeApplication.instance, on)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "GET" && path == "/network" -> {
+                com.hermesandroid.bridge.device.DeviceHardware.networkStatus(BridgeApplication.instance) to 200
+            }
+
+            method == "POST" && path == "/volume" -> {
+                val stream = body.get("stream")?.asString ?: "media"
+                val set = body.get("set")?.asInt
+                com.hermesandroid.bridge.device.DeviceHardware.volume(BridgeApplication.instance, stream, set) to 200
+            }
+
+            method == "POST" && path == "/alarm" -> {
+                val hour = body.get("hour")?.asInt ?: return mapOf("error" to "hour fehlt") to 400
+                val minute = body.get("minute")?.asInt ?: 0
+                val label = body.get("label")?.asString ?: ""
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setAlarm(BridgeApplication.instance, hour, minute, label)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "POST" && path == "/timer" -> {
+                val seconds = body.get("seconds")?.asInt ?: return mapOf("error" to "seconds fehlt") to 400
+                val label = body.get("label")?.asString ?: ""
+                val result = com.hermesandroid.bridge.device.DeviceHardware.setTimer(BridgeApplication.instance, seconds, label)
+                if (result.second != null) return mapOf("error" to result.second) to 400
+                mapOf("message" to result.first) to 200
+            }
+
+            method == "POST" && path == "/notify_reply" -> {
+                val text = body.get("text")?.asString ?: return mapOf("error" to "text fehlt") to 400
+                val key = body.get("key")?.asString ?: ""
+                val pkg = body.get("package")?.asString ?: ""
+                val err = when {
+                    key.isNotBlank() -> com.hermesandroid.bridge.service.NotificationReplier.reply(key, text)
+                    pkg.isNotBlank() -> com.hermesandroid.bridge.service.NotificationReplier.replyLatestForPackage(pkg, text)
+                    else -> "key oder package ist Pflicht"
+                }
+                if (err != null) return mapOf("error" to err) to 400
+                mapOf("replied" to true) to 200
+            }
+
+            method == "POST" && path == "/apk_install" -> {
+                val url = body.get("url")?.asString
+                val sha = body.get("sha256")?.asString
+                if (url.isNullOrBlank() || sha.isNullOrBlank()) {
+                    return mapOf("error" to "url und sha256 sind Pflicht") to 400
+                }
+                val result = withContext(Dispatchers.IO) {
+                    UpdateInstaller.start(BridgeApplication.instance, url, sha)
+                }
+                mapOf(
+                    "ok" to result.ok,
+                    "message" to result.message,
+                    "bytes" to result.bytesDownloaded,
+                    "sha256" to result.sha256,
+                ) to result.status
             }
 
             else -> {

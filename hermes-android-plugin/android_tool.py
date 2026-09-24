@@ -1,9 +1,8 @@
 """
-hermes-android tool — 42 android_* tool handlers + schemas.
+hermes-android tool — android_* tool handlers + schemas.
 
 NOTE: This file must be kept in sync with tools/android_tool.py.
       The only difference is the import path for android_relay (see android_setup).
-      Apply any bug fixes or feature changes to BOTH files.
 
 Used by the plugin's __init__.py to register tools into hermes-agent
 via ctx.register_tool().
@@ -12,6 +11,7 @@ via ctx.register_tool().
 import json
 import os
 import time
+import urllib.parse
 import requests
 from typing import Optional
 from urllib.parse import quote
@@ -734,6 +734,291 @@ def android_mic_fetch(remote_path: str = "") -> str:
                 os.unlink(temp_path)
             except OSError:
                 pass
+        return json.dumps({"error": str(e)})
+
+
+def android_files_list(path: str = "root", hidden: bool = False) -> str:
+    """
+    List a directory in the phone's shared storage.
+    Allowed roots: Download, Documents, Pictures, Music, Movies, DCIM, root.
+    Returns entries with name, path (relative, reusable), isDir, size, modifiedMs.
+    """
+    try:
+        params = {"path": path}
+        if hidden:
+            params["hidden"] = "true"
+        data = _get("/files?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_files_search(query: str, limit: int = 200) -> str:
+    """
+    Recursively search file names across the allowed roots
+    (Download, Documents, Pictures, Music, Movies, DCIM). Case-insensitive.
+    """
+    try:
+        params = {"query": query, "limit": str(max(1, min(int(limit), 1000)))}
+        data = _get("/files_search?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_photo(filename: str = "") -> str:
+    """
+    Take a photo with the phone's back camera (no preview UI), saved to
+    Pictures/Bridge/<filename or bridge_foto_<ts>.jpg>. Requires CAMERA
+    permission granted in the app's capabilities screen.
+    """
+    try:
+        return json.dumps(_post("/photo", {"filename": filename or ""}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_torch(on: bool = True) -> str:
+    """Flashlight on/off."""
+    try:
+        return json.dumps(_post("/torch", {"on": bool(on)}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_network_status() -> str:
+    """WiFi/Bluetooth/cellular status: enabled, SSID, IP, internet, metered, transport."""
+    try:
+        return json.dumps(_get("/network"))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_volume(stream: str = "media", set_level=None) -> str:
+    """
+    Query or set a volume stream. stream: media|ring|alarm|notification.
+    set_level null = only read. Range 0..max (max is returned).
+    """
+    body = {"stream": stream}
+    if set_level is not None:
+        body["set"] = int(set_level)
+    try:
+        return json.dumps(_post("/volume", body))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_alarm(hour: int, minute: int = 0, label: str = "") -> str:
+    """Set an alarm in the phone's clock app (skips UI)."""
+    try:
+        return json.dumps(_post("/alarm", {"hour": int(hour), "minute": int(minute), "label": label}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_timer(seconds: int, label: str = "") -> str:
+    """Set a countdown timer in the phone's clock app (skips UI)."""
+    try:
+        return json.dumps(_post("/timer", {"seconds": int(seconds), "label": label}))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_notify_reply(text: str, key: str = "", package_name: str = "") -> str:
+    """
+    Reply into a notification's direct-reply action (WhatsApp/Telegram/...).
+    Pass either the notification key (from android_get_notifications) or a
+    package_name to answer the newest reply-able notification of that app.
+    """
+    if not text:
+        return json.dumps({"error": "text required"})
+    body = {"text": text}
+    if key:
+        body["key"] = key
+    if package_name:
+        body["package"] = package_name
+    if not key and not package_name:
+        return json.dumps({"error": "key or package_name required"})
+    try:
+        return json.dumps(_post("/notify_reply", body))
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_file_put(local_b64_or_text: str, remote_path: str, overwrite: bool = False) -> str:
+    """
+    Push a file (base64 or plain text content) to the phone's shared storage.
+    Text is UTF-8 encoded unless it looks like valid base64 (heuristic: matches
+    base64 charset and length%4==0) — use data_is_base64 to be explicit.
+    """
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required"})
+    if not isinstance(local_b64_or_text, str) or not local_b64_or_text:
+        return json.dumps({"error": "content required"})
+    import base64 as b64mod
+    try:
+        raw = b64mod.b64decode(local_b64_or_text, validate=True)
+        payload = raw
+    except Exception:
+        payload = local_b64_or_text.encode("utf-8")
+    if len(payload) > 48 * 1024 * 1024:
+        return json.dumps({"error": "payload too large (limit 48 MB after encoding)"})
+    encoded = b64mod.b64encode(payload).decode("ascii")
+    try:
+        data = _post("/files_push", {"path": remote_path.strip(), "data": encoded, "overwrite": bool(overwrite)})
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_file_delete(remote_path) -> str:
+    """
+    Delete file(s) on the phone. Pass one relative path OR a list of paths
+    (max 200 per call). Folders are refused. Sir granted general deletion
+    (21.09.2026) — use carefully, double-check the list before sending.
+    """
+    if isinstance(remote_path, list):
+        paths = [p.strip() for p in remote_path if isinstance(p, str) and p.strip()]
+        if not paths:
+            return json.dumps({"error": "empty path list"})
+        if any(p.startswith("/") or ".." in p.split("/") for p in paths):
+            return json.dumps({"error": "paths must be relative, no '..' allowed"})
+        if len(paths) > 200:
+            return json.dumps({"error": "max 200 files per call"})
+        try:
+            data = _post("/files_delete", {"paths": paths})
+            return json.dumps(data)
+        except Exception as e:
+            return json.dumps({"error": str(e)})
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required"})
+    rel = remote_path.strip()
+    if rel.startswith("/") or ".." in rel.split("/"):
+        return json.dumps({"error": "path must be relative, no '..' allowed"})
+    try:
+        data = _post("/files_delete", {"path": rel})
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_files_permission(open_settings: bool = False) -> str:
+    """
+    Check (or request) the Android 'All files access' special permission
+    that the file endpoints need on Android 11+. open_settings=true opens
+    the settings page; the user flips the switch once.
+    """
+    try:
+        if open_settings:
+            data = _post("/files_permission", {})
+        else:
+            data = _get("/files_permission")
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_files_count(ext: str = "pdf") -> str:
+    """
+    Count files with the given extension across all allowed roots.
+    Returns total plus per-root counts (Download/Documents/...).
+    """
+    try:
+        params = {"ext": ext}
+        data = _get("/files_count?" + urllib.parse.urlencode(params))
+        return json.dumps(data)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def android_file_get(remote_path: str, save_to: str = "") -> str:
+    """
+    Download a file from the phone (path from android_files_list /
+    android_files_search, relative like 'Download/scan.pdf').
+    Returns MEDIA:<path> so the file is delivered to the user.
+    """
+    if not isinstance(remote_path, str) or not remote_path.strip():
+        return json.dumps({"error": "remote_path required (relative path from files list/search)"})
+    rel = remote_path.strip()
+    if rel.startswith("/") or ".." in rel.split("/"):
+        return json.dumps({"error": "path must be relative, no '..' allowed"})
+
+    import tempfile
+    import mimetypes
+
+    temp_path = None
+    try:
+        with requests.get(
+            f"{_bridge_url()}/file",
+            params={"path": rel},
+            headers=_auth_headers(),
+            timeout=_timeout(),
+            stream=True,
+        ) as response:
+            if response.status_code >= 400:
+                try:
+                    return json.dumps(response.json())
+                except ValueError:
+                    return json.dumps({"error": f"File download failed (HTTP {response.status_code})"})
+
+            expected = response.headers.get("Content-Length")
+            expected_size = int(expected) if expected and expected.isdigit() else None
+            if expected_size is not None and expected_size > 512 * 1024 * 1024:
+                return json.dumps({"error": "File exceeds the download limit (512 MB)"})
+
+            suffix = os.path.splitext(rel)[1][:10] or ".bin"
+            written = 0
+            with tempfile.NamedTemporaryFile(
+                suffix=suffix,
+                prefix="android_file_",
+                delete=False,
+            ) as output:
+                temp_path = output.name
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > 512 * 1024 * 1024:
+                        raise ValueError("File exceeds the download limit (512 MB)")
+                    output.write(chunk)
+
+        if expected_size is not None and written != expected_size:
+            raise IOError("File download was incomplete")
+        return f"File fetched ({written} bytes)\nMEDIA:{temp_path}"
+    except requests.exceptions.RequestException:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": "Could not download the file from the bridge"})
+    except Exception as e:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+        return json.dumps({"error": str(e)})
+
+
+def android_apk_install(url: str, sha256: str) -> str:
+    """
+    Have the phone download a new APK (https URL + mandatory SHA-256),
+    verify the checksum and start the Android installer.
+    The user MUST confirm the installation on the device — nothing is
+    installed silently. Use for app updates.
+    """
+    if not isinstance(url, str) or not url.strip().lower().startswith("https://"):
+        return json.dumps({"error": "url must be https://"})
+    if not isinstance(sha256, str) or len(sha256.strip()) != 64:
+        return json.dumps({"error": "sha256 must be the 64-char hex digest of the APK"})
+    try:
+        data = _post(
+            "/apk_install",
+            {"url": url.strip(), "sha256": sha256.strip().lower()},
+        )
+        return json.dumps(data)
+    except Exception as e:
         return json.dumps({"error": str(e)})
 
 
@@ -1470,6 +1755,193 @@ _SCHEMAS = {
         },
     },
 
+    "android_files_list": {
+        "name": "android_files_list",
+        "description": "List a directory in the phone's shared storage. Allowed roots: Download, Documents, Pictures, Music, Movies, DCIM, root.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Relative path (e.g. 'Download' or 'Download/sub'). 'root' lists the top level of shared storage.",
+                    "default": "root",
+                },
+                "hidden": {
+                    "type": "boolean",
+                    "description": "Include hidden files (default false)",
+                    "default": False,
+                },
+            },
+            "required": [],
+        },
+    },
+    "android_files_search": {
+        "name": "android_files_search",
+        "description": "Recursively search file names across Download/Documents/Pictures/Music/Movies/DCIM. Case-insensitive contains-match.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search string for file names"},
+                "limit": {"type": "integer", "description": "Max results (1-1000, default 200)", "default": 200},
+            },
+            "required": ["query"],
+        },
+    },
+    "android_photo": {
+        "name": "android_photo",
+        "description": "Take a photo with the phone's back camera (no preview), saved to Pictures/Bridge/. Returns the file path. Optionally fetch it afterwards with android_file_get.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "filename": {"type": "string", "description": "Optional file name (default: bridge_foto_<timestamp>.jpg)"},
+            },
+            "required": [],
+        },
+    },
+    "android_torch": {
+        "name": "android_torch",
+        "description": "Flashlight on/off.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "on": {"type": "boolean", "description": "true = on, false = off", "default": True},
+            },
+            "required": [],
+        },
+    },
+    "android_network_status": {
+        "name": "android_network_status",
+        "description": "Network status: WiFi enabled/SSID/IP, Bluetooth, internet reachable, metered, WiFi vs cellular.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    "android_volume": {
+        "name": "android_volume",
+        "description": "Query or set volume. stream: media|ring|alarm|notification. Omit set_level to just read.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "stream": {"type": "string", "enum": ["media", "ring", "alarm", "notification"], "default": "media"},
+                "set_level": {"type": "integer", "description": "0..max (max comes from the read response); omit to read only"},
+            },
+            "required": [],
+        },
+    },
+    "android_alarm": {
+        "name": "android_alarm",
+        "description": "Set an alarm in the phone's clock app.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hour": {"type": "integer", "description": "Hour 0-23"},
+                "minute": {"type": "integer", "description": "Minute 0-59", "default": 0},
+                "label": {"type": "string", "description": "Optional alarm label"},
+            },
+            "required": ["hour"],
+        },
+    },
+    "android_timer": {
+        "name": "android_timer",
+        "description": "Set a countdown timer in the phone's clock app.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "integer", "description": "Duration in seconds"},
+                "label": {"type": "string", "description": "Optional timer label"},
+            },
+            "required": ["seconds"],
+        },
+    },
+    "android_notify_reply": {
+        "name": "android_notify_reply",
+        "description": "Reply into a notification via its direct-reply action (WhatsApp, Telegram, SMS...). Pass key (exact notification key) OR package_name (newest reply-able notification of that app).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "text": {"type": "string", "description": "Reply text to send"},
+                "key": {"type": "string", "description": "Exact notification key from the notifications list"},
+                "package_name": {"type": "string", "description": "App package like com.whatsapp - answers the newest reply-able notification"},
+            },
+            "required": ["text"],
+        },
+    },
+    "android_file_put": {
+        "name": "android_file_put",
+        "description": "Push a file to the phone's shared storage (text or base64 content; max ~48 MB). Set overwrite=true to replace an existing file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {"type": "string", "description": "Relative destination path like 'Download/bridge_test.txt'"},
+                "local_b64_or_text": {"type": "string", "description": "File content: plain text OR base64 data"},
+                "overwrite": {"type": "boolean", "description": "Replace existing file (default false)", "default": False},
+            },
+            "required": ["remote_path", "local_b64_or_text"],
+        },
+    },
+    "android_file_delete": {
+        "name": "android_file_delete",
+        "description": "Delete file(s) on the phone: one relative path or a list (max 200/call). Folders are refused. DESTRUCTIVE — confirm lists with the user before mass deletes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "oneOf": [
+                        {"type": "string", "description": "Relative path like 'Download/old.pdf'"},
+                        {"type": "array", "items": {"type": "string"}, "description": "List of relative paths (max 200)"},
+                    ],
+                },
+            },
+            "required": ["remote_path"],
+        },
+    },
+    "android_files_permission": {
+        "name": "android_files_permission",
+        "description": "Check whether the app has Android 'All files access' (needed for full file search). Set open_settings=true to open the grant dialog on the phone.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "open_settings": {"type": "boolean", "description": "Open the permission settings screen on the phone (default false = only check)", "default": False},
+            },
+            "required": [],
+        },
+    },
+    "android_files_count": {
+        "name": "android_files_count",
+        "description": "Count files with a given extension across all allowed roots. Returns total and per-root counts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ext": {"type": "string", "description": "File extension without dot (e.g. 'pdf')", "default": "pdf"},
+            },
+            "required": [],
+        },
+    },
+    "android_file_get": {
+        "name": "android_file_get",
+        "description": "Download a file from the phone (relative path from android_files_list/android_files_search) as a local MEDIA file. Read-only; max 512 MB.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "remote_path": {
+                    "type": "string",
+                    "description": "Relative path like 'Download/scan.pdf' (from files list/search results)",
+                },
+            },
+            "required": ["remote_path"],
+        },
+    },
+    "android_apk_install": {
+        "name": "android_apk_install",
+        "description": "app self-update: phone downloads the APK from an https URL, verifies the mandatory SHA-256 and starts the Android installer. The user confirms installation on the device.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "Direct https:// URL to the .apk file"},
+                "sha256": {"type": "string", "description": "SHA-256 hex digest of the APK file (64 chars, mandatory integrity check)"},
+            },
+            "required": ["url", "sha256"],
+        },
+    },
+
     "android_read_widgets": {
         "name": "android_read_widgets",
         "description": "Read home screen widgets (weather, calendar, tasks, etc.). Goes to home screen and reads widget content without opening apps.",
@@ -1652,6 +2124,21 @@ _HANDLERS = {
     "android_mic_stop": lambda args, **kw: android_mic_stop(),
     "android_mic_status": lambda args, **kw: android_mic_status(),
     "android_mic_fetch": lambda args, **kw: android_mic_fetch(**args),
+    "android_files_list": lambda args, **kw: android_files_list(**args),
+    "android_files_search": lambda args, **kw: android_files_search(**args),
+    "android_photo": lambda args, **kw: android_photo(**args),
+    "android_torch": lambda args, **kw: android_torch(**args),
+    "android_network_status": lambda args, **kw: android_network_status(**args),
+    "android_volume": lambda args, **kw: android_volume(**args),
+    "android_alarm": lambda args, **kw: android_alarm(**args),
+    "android_timer": lambda args, **kw: android_timer(**args),
+    "android_notify_reply": lambda args, **kw: android_notify_reply(**args),
+    "android_file_put": lambda args, **kw: android_file_put(**args),
+    "android_file_delete": lambda args, **kw: android_file_delete(**args),
+    "android_files_permission": lambda args, **kw: android_files_permission(**args),
+    "android_files_count": lambda args, **kw: android_files_count(**args),
+    "android_file_get": lambda args, **kw: android_file_get(**args),
+    "android_apk_install": lambda args, **kw: android_apk_install(**args),
     "android_read_widgets": lambda args, **kw: android_read_widgets(),
     "android_find_nodes": lambda args, **kw: android_find_nodes(**args),
     "android_diff_screen": lambda args, **kw: android_diff_screen(**args),
@@ -1661,3 +2148,4 @@ _HANDLERS = {
     "android_send_intent": lambda args, **kw: android_send_intent(**args),
     "android_broadcast": lambda args, **kw: android_broadcast(**args),
 }
+

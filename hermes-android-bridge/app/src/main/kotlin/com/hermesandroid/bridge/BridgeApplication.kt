@@ -19,6 +19,9 @@ class BridgeApplication : Application() {
         PairingManager.init(applicationContext)
         DeviceCapabilities.init(applicationContext)
         WakeLockManager.init(applicationContext)
+        // init the capability gate; without init() the prefs handle is null
+        // and switch state would not persist.
+        com.hermesandroid.bridge.security.CapabilityGate.init(applicationContext)
         BridgeServer.start(port = 8765)
 
         // Initialize relay client and auto-connect if previously configured

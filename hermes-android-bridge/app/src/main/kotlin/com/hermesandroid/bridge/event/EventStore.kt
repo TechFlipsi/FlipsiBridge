@@ -16,9 +16,20 @@ object EventStore {
     private val events = ArrayDeque<AccessibilityEventData>()
     private val lock = Any()
     @Volatile var maxCapacity: Int = 200
+
+    /** Akku: Text-/Selektions-Events nur aufnehmen wenn Stream aktiv angefragt. */
+    @Volatile var highVolumeEvents: Boolean = false
     @Volatile var streamingEnabled: Boolean = false
 
     fun add(event: AccessibilityEvent) {
+        // Akku-Dämpfung: Hochfrequenz-Events (jeder Tastendruck, jede Selektions-
+        // änderung) nur aufnehmen, wenn ein Verbraucher sie explizit will.
+        if (!highVolumeEvents) {
+            val t = event.eventType
+            if (t == AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED ||
+                t == AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED ||
+                t == AccessibilityEvent.TYPE_VIEW_SELECTED) return
+        }
         val entry = AccessibilityEventData(
             eventType = when (event.eventType) {
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> "VIEW_CLICKED"
