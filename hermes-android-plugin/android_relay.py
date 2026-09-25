@@ -270,7 +270,11 @@ _ROUTES = {
 
 async def _serve(state: _RelayState, ready: threading.Event) -> None:
     """Build the aiohttp app, start the site, and block until shutdown."""
-    app = web.Application()
+    # v0.10.8-Deploy-Fix: aiohttp-Default client_max_size ist 1MB - grosse
+    # POST-Bodies (files_push mit APK als base64) wurden still gekappt, die App
+    # sah ein leeres JSON und antwortete 'Pflichtfelder fehlen'. 96MB deckt das
+    # app-seitige 48MB-Dateilimit (x1.37 Base64) plus JSON-Overhead ab.
+    app = web.Application(client_max_size=96 * 1024 * 1024)
     state.app = app
 
     # WebSocket endpoint
