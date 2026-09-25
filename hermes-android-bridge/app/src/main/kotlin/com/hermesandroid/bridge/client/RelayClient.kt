@@ -104,6 +104,11 @@ object RelayClient {
     fun connect(serverUrl: String, pairingCode: String) {
         disconnect()
 
+        // v0.10.8 (Review-Blocking-3-Fix): Merker für die Capability-Migration —
+        // wer je eine Relay-Verbindung einrichtet, hat "vor dem Gating" genutzt.
+        // Die Migration in CapabilityGate liest dieses Flag beim nächsten Start.
+        prefs?.edit()?.putBoolean("legacy_had_relay", true)?.apply()
+
         this.serverUrl = serverUrl
         this.pairingCode = pairingCode
         shouldReconnect = true
@@ -391,6 +396,12 @@ object RelayClient {
                 throw IllegalArgumentException("Command is missing request_id")
             }
             if (method == "GET" && path == "/mic_file") {
+                // v0.10.8 (Review-Blocking-2-Fix): Gate-Prüfung vor dem Stream
+                // (die Route umgeht den Dispatcher, daher hier manuell).
+                CapabilityGate.checkEndpoint(method, path)?.let { msg ->
+                    sendCommandResult(ws, requestId, mapOf("error" to msg), status = 403)
+                    return
+                }
                 streamMicrophoneRecording(
                     ws,
                     requestId,

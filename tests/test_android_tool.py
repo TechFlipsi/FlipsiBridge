@@ -53,11 +53,11 @@ from tools.android_tool import (
 
 
 class TestSchemas:
-    def test_all_42_tools_have_schemas(self):
-        assert len(_SCHEMAS) == 42
+    def test_all_57_tools_have_schemas(self):
+        assert len(_SCHEMAS) == 57
 
-    def test_all_42_tools_have_handlers(self):
-        assert len(_HANDLERS) == 42
+    def test_all_57_tools_have_handlers(self):
+        assert len(_HANDLERS) == 57
 
     def test_schema_names_match_handler_names(self):
         assert set(_SCHEMAS.keys()) == set(_HANDLERS.keys())
@@ -92,7 +92,7 @@ class TestCodeQuality:
         plugin_source = plugin_path.read_text(encoding="utf-8")
         plugin = runpy.run_path(str(plugin_path))
 
-        assert len(plugin["_SCHEMAS"]) == 42
+        assert len(plugin["_SCHEMAS"]) == 42  # plugin-Kopie: upstream-42-Set (neue Tools im tools/ only)
         assert set(plugin["_SCHEMAS"]) == set(plugin["_HANDLERS"])
         assert ("scp " + "-P") not in plugin_source
 

@@ -51,15 +51,13 @@ object NotificationReplier {
         val remote = action.remoteInputs.firstOrNull { it.allowFreeFormInput }
             ?: return "Keine freie Texteingabe in der Aktion"
         val intent = android.content.Intent()
-        val results = android.os.Bundle()
-        results.putCharSequence(remote.resultKey, text)
-        // Was addResultsTo macht, manuell nachgebaut (SDK-stub-unabhaengig):
-        val extras = android.os.Bundle()
-        extras.putBundle("android.remoteinput.results", android.os.Bundle().apply {
+        // v0.10.8 (Review-Blocking-6-Fix): RemoteInput.addResultsToIntent nutzen —
+        // der manuell nachgebaute Extra-Bundle-Pfad setzt den Clip nicht korrekt,
+        // Apps die via RemoteInput.getResultsFromIntent (ClipData) lesen sahen
+        // die Antwort nicht.
+        RemoteInput.addResultsToIntent(arrayOf(remote), intent, android.os.Bundle().apply {
             putCharSequence(remote.resultKey, text)
         })
-        intent.putExtras(extras)
-        intent.putExtra(RemoteInput.RESULTS_CLIP_LABEL, results)
         return try {
             action.actionIntent.send(listener, 0, intent)
             null // Erfolg

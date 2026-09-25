@@ -665,13 +665,12 @@ object CommandDispatcher {
             }
 
             method == "POST" && path == "/apk_install" -> {
-                val url = body.get("url")?.asString
-                val sha = body.get("sha256")?.asString
-                if (url.isNullOrBlank() || sha.isNullOrBlank()) {
-                    return mapOf("error" to "url und sha256 sind Pflicht") to 400
-                }
+                // v0.10.8 (Review-Blocking-1-Fix): Der Aufrufer kann keine URL mehr
+                // vorgeben — die Update-Quelle ist FIX das konfigurierte Relay.
+                // Ein beliebiger "url"-Parameter wird ignoriert, der Pairing-Token
+                // verlässt das Gerät nur Richtung Relay-Host.
                 val result = withContext(Dispatchers.IO) {
-                    UpdateInstaller.start(BridgeApplication.instance, url, sha)
+                    UpdateInstaller.start(BridgeApplication.instance)
                 }
                 mapOf(
                     "ok" to result.ok,

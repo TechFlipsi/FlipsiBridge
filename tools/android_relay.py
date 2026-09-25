@@ -284,10 +284,16 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR", "/opt/flipsibridge")
 
     async def apk_latest(request: web.Request) -> web.StreamResponse:
-        token = os.environ.get("ANDROID_BRIDGE_TOKEN", "")
+        # v0.10.8 (Review-Fix): Auth gegen denselben Pairing-Code wie alle anderen
+        # Routen (das alte separate Token war ein unthrottled Orakel),
+        # konstante Zeit via compare_digest, Rate-Limiting wie /ws (_auth_record_failure).
+        remote_ip = request.remote or "unknown"
+        if _auth_is_blocked(remote_ip):
+            raise web.HTTPTooManyRequests(text="Too many failed authentication attempts.")
         auth = request.headers.get("Authorization", "")
-        supplied = auth.removeprefix("Bearer ").strip() or str(request.query.get("token", ""))
-        if not token or supplied != token:
+        supplied = auth.removeprefix("Bearer ").strip()
+        if not supplied or not hmac.compare_digest(supplied, state.pairing_code):
+            _auth_record_failure(remote_ip)
             return web.json_response({"error": "Unauthorized"}, status=401)
         try:
             candidates = sorted(
@@ -300,6 +306,9 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
         if not candidates:
             return web.json_response({"error": "No APK available"}, status=404)
         path = os.path.join(apk_dir, candidates[0])
+        # v0.10.8: SHA-256 des APK als Header mitschicken — die App verifiziert
+        # gegen DIESEN Server-Kontrollierten Wert (nie caller-supplied).
+        apk_sha = hashlib.sha256(open(path, "rb").read()).hexdigest()
         stream = web.StreamResponse(
             status=200,
             headers={
@@ -307,6 +316,7 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
                 "Content-Type": "application/vnd.android.package-archive",
                 "Content-Disposition": f'attachment; filename="{candidates[0]}"',
                 "Content-Length": str(os.path.getsize(path)),
+                "X-APK-SHA256": apk_sha,
             },
         )
         await stream.prepare(request)

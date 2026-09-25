@@ -51,8 +51,15 @@ class MainActivity : Activity() {
     private lateinit var tvAddress: TextView
     private lateinit var tvVersion: TextView
 
-    /** Kamera-Laufzeitrecht einmalig beim App-Start anfragen (für Foto-auf-Befehl). */
+    /**
+     * v0.10.8 (Review-Fix): Kamera-Laufzeitrecht wird NICHT mehr bei jedem Start
+     * angefragt — nur wenn der User die device-Capability (Foto) freigeschaltet
+     * hat. Passt zum "default OFF"-Versprechen. Die Foto-Ausführung prüft das
+     * Recht ohnehin vor jedem Foto (DeviceHardware), hier geht es nur um den
+     * einmaligen Dialog.
+     */
     private fun requestCameraIfNeeded() {
+        if (!com.hermesandroid.bridge.security.CapabilityGate.isEnabled("device")) return
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.CAMERA), 4101)
         }

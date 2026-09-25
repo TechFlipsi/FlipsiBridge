@@ -44,7 +44,7 @@ Tools registered:
   - android_files_search     recursive file-name search
   - android_files_count      count files by extension per root
   - android_file_get         stream any file to a local MEDIA path
-  - android_apk_install      FlipsiBridge self-update (https+sha256, user confirms)
+  - android_apk_install      FlipsiBridge self-update (fixed relay source, user confirms)
   - android_read_widgets     read home-screen widgets
   - android_find_nodes       search UI nodes by text/class/clickable
   - android_diff_screen      diff screen against a previous hash
@@ -921,7 +921,7 @@ def android_file_put(local_b64_or_text: str, remote_path: str, overwrite: bool =
 def android_file_delete(remote_path) -> str:
     """
     Delete file(s) on the phone. Pass one relative path OR a list of paths
-    (max 200 per call). Folders are refused. Sir granted general deletion
+    (max 200 per call). Folders are refused. General deletion is supported
     (21.09.2026) — use carefully, double-check the list before sending.
     """
     if isinstance(remote_path, list):
@@ -1048,22 +1048,16 @@ def android_file_get(remote_path: str, save_to: str = "") -> str:
         return json.dumps({"error": str(e)})
 
 
-def android_apk_install(url: str, sha256: str) -> str:
+def android_apk_install() -> str:
     """
-    Have the phone download a new APK (https URL + mandatory SHA-256),
-    verify the checksum and start the Android installer.
-    The user MUST confirm the installation on the device — nothing is
-    installed silently. Use for FlipsiBridge app updates.
+    Have the phone check for an update from its configured relay and start
+    the Android installer. The update source is FIXED (the phone's configured
+    relay, /apk/latest) — no caller-supplied URL, the pairing token never
+    leaves the device towards caller-controlled hosts. The user MUST confirm
+    the installation on the device — nothing is installed silently.
     """
-    if not isinstance(url, str) or not url.strip().lower().startswith("https://"):
-        return json.dumps({"error": "url must be https://"})
-    if not isinstance(sha256, str) or len(sha256.strip()) != 64:
-        return json.dumps({"error": "sha256 must be the 64-char hex digest of the APK"})
     try:
-        data = _post(
-            "/apk_install",
-            {"url": url.strip(), "sha256": sha256.strip().lower()},
-        )
+        data = _post("/apk_install", {})
         return json.dumps(data)
     except Exception as e:
         return json.dumps({"error": str(e)})
@@ -1981,15 +1975,8 @@ _SCHEMAS = {
     },
     "android_apk_install": {
         "name": "android_apk_install",
-        "description": "FlipsiBridge self-update: phone downloads the APK from an https URL, verifies the mandatory SHA-256 and starts the Android installer. The user confirms installation on the device.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "url": {"type": "string", "description": "Direct https:// URL to the .apk file"},
-                "sha256": {"type": "string", "description": "SHA-256 hex digest of the APK file (64 chars, mandatory integrity check)"},
-            },
-            "required": ["url", "sha256"],
-        },
+        "description": "FlipsiBridge self-update: the phone checks its configured relay for the latest APK, verifies the server-provided SHA-256 and starts the Android installer. The user confirms installation on the device. No URL parameter: the update source is fixed to the phone's relay — the pairing token never reaches caller-controlled hosts.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
 
     "android_read_widgets": {

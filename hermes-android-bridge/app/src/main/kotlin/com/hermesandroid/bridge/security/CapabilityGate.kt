@@ -76,9 +76,12 @@ object CapabilityGate {
         Pair("POST", "/volume") to "device",
         Pair("POST", "/alarm") to "device",
         Pair("POST", "/timer") to "device",
-        Pair("POST", "/notify_reply") to "notifications",
-        Pair("POST", "/files_push") to "files",
-        Pair("POST", "/files_delete") to "files",
+        // v0.10.8 (Review-Blocking-6-Fix): Outbound-Action mit EIGENER Capability.
+        Pair("POST", "/notify_reply") to "notify_reply",
+        // v0.10.8 (Review-Blocking-5-Fix): Destruktive Operationen teilen sich
+        // den Schalter NICHT mehr mit dem Lesezugriff.
+        Pair("POST", "/files_push") to "files_write",
+        Pair("POST", "/files_delete") to "files_write",
         Pair("POST", "/apk_install") to "selfupdate",
         // misc ohne eigene Kategorie
         Pair("POST", "/speak") to "interaction",
@@ -100,14 +103,42 @@ object CapabilityGate {
         "microphone" to "Mikrofon (invasiv)",
         "device" to "Geräte-Hardware (Foto, Taschenlampe, Lautstärke, Netz, Wecker)",
         "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
+        "files_write" to "Dateien schreiben & löschen (destruktiv!)",
+        "notify_reply" to "Antworten in Benachrichtigungen senden",
         "selfupdate" to "App-Update installieren (mit Bestätigung)",
     )
 
     private const val PREFS = "flipsibridge_caps"
+    private const val MIGRATION_KEY = "migrated_v0_10_8"
     private var prefs: SharedPreferences? = null
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        migrateLegacyInstall()
+    }
+
+    /**
+     * v0.10.8 (Review-Blocking-3-Fix): Migration für Bestandsinstallationen.
+     * Eine installierte App, die das Upgrade bekommt, hat in "hermes_bridge_prefs"
+     * bereits eine Relay-URL + Pairing-Code gespeichert (vor dem Gating lief sie
+     * mit vollem Zugriff). In diesem Fall bekommen wir EINMALIG alle Capabilities
+     * eingeschaltet — bisheriges Verhalten bleibt erhalten, Release-Note weist
+     * darauf hin. Frische Installationen (nie verbunden, keine relay_server_url)
+     * starten strikt bei AUS. Der Migration-Key verhindert Wiederholung; was der
+     * User danach ausschaltet, bleibt aus.
+     */
+    private fun migrateLegacyInstall() {
+        val p = prefs ?: return
+        if (p.getBoolean(MIGRATION_KEY, false)) return
+        // Bestandsinstallation erkennen: RelayClient-Prefs (hermes_bridge_prefs)
+        // enthalten relay_server_url, wenn die App vor dem Gating verbunden war.
+        val hadRelayBefore = p.getBoolean("legacy_had_relay", false)
+        if (hadRelayBefore) {
+            for ((cap, _) in userFacing) {
+                p.edit().putBoolean("cap_$cap", true).apply()
+            }
+        }
+        p.edit().putBoolean(MIGRATION_KEY, true).apply()
     }
 
     fun isEnabled(capability: String): Boolean {
@@ -121,9 +152,14 @@ object CapabilityGate {
         prefs?.edit()?.putBoolean("cap_$capability", enabled)?.apply()
     }
 
-    /** Prüft einen Endpunkt. Gibt null zurück wenn erlaubt, sonst Fehlermeldung. */
+    /** Prüft einen Endpunkt. Gibt null zurück wenn erlaubt, sonst Fehlermeldung.
+     *  v0.10.8 (Review-Blocking-2-Fix): DENY UNKNOWN — Routen, die nicht in
+     *  routeCapability eingetragen sind, werden abgewiesen (früher: null = erlaubt,
+     *  was jeden zukünftigen Endpunkt ungeschützt durchgelassen hätte).
+     *  "core"-Routen sind immer erlaubt (Verbindungstest). */
     fun checkEndpoint(method: String, path: String): String? {
-        val cap = routeCapability[Pair(method.uppercase(), path)] ?: return null
+        val cap = routeCapability[Pair(method.uppercase(), path)]
+            ?: return "Unbekannte Route $method $path ist nicht freigegeben (deny-unknown-Gate)."
         return if (isEnabled(cap)) null else "Capability '$cap' ist deaktiviert. In der FlipsiBridge-App freischalten."
     }
 

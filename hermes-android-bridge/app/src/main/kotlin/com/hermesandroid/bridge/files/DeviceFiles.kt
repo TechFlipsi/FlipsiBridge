@@ -43,7 +43,12 @@ object DeviceFiles {
         return map
     }
 
-    /** Bereinigt & validiert einen relativen Pfad; null wenn nicht erlaubt. */
+    /** Bereinigt & validiert einen relativen Pfad; null wenn nicht erlaubt.
+     *  v0.10.8 (Review-Blocking-5-Fix): Kein Fallback mehr auf "root" bei
+     *  unbekanntem ersten Segment — der Pfad MUSS mit einem benannten Root
+     *  beginnen (Download, Documents, Pictures, Music, Movies, DCIM). Ein
+     *  Pfad wie "Android/media/..." wird abgewiesen statt still unter root
+     *  aufgelöst zu werden. "root"-Präfix bleibt erlaubt (explizite Wahl). */
     fun sanitize(relative: String?): Pair<File, String>? {
         val raw = relative?.trim().orEmpty().replace('\\', '/')
         if (raw.isEmpty()) return null
@@ -52,7 +57,8 @@ object DeviceFiles {
             if (seg.isEmpty()) raw else seg
         }
         val rootMap = roots()
-        val root = rootMap[first] ?: rootMap["root"] ?: return null
+        // Kein stiller root-Fallback: unbekanntes Top-Segment = ablehnen.
+        val root = rootMap[first] ?: return null
         // "root/Download/x.pdf" erlauben (root-Prefix), sonst Root = Basisordner des Segments
         // Named roots: der Segmentname IST das Verzeichnis - nur Rest hinter dem Segment anhängen,
         // sonst verdoppelt sich der Pfad (base/Download/Download -> "existiert nicht") [v0.9.3-Fix].
@@ -62,7 +68,9 @@ object DeviceFiles {
             raw.removePrefix(first).removePrefix("/")
         }
         val target = if (rest.isEmpty()) root else File(root, rest)
-        // Doppelte Sicherung: kein Escape aus dem External-Storage
+        // Doppelte Sicherung: kein Escape aus dem External-Storage UND Ziel muss
+        // unter einem erlaubten Root liegen (root-Prefix ohne Segment verweigern
+        // wir hier nicht, aber kanonisch bleibt alles unter basePath).
         val basePath = Environment.getExternalStorageDirectory().canonicalPath
         val candidate = try { target.canonicalPath } catch (_: IOException) { return null }
         if (!candidate.startsWith(basePath)) return null
@@ -180,9 +188,9 @@ object DeviceFiles {
     }
 
     /**
-     * Löscht eine Datei (keine Ordner). Sir-Freigabe 21.09.2026: generelles
-     * Löschen gewünscht ("lösche alle PDFs am Gerät" muss funktionieren).
-     * Verbleibende Gurte: Whitelist-Roots, kein "..", nur Dateien, Batch-Cap.
+     * Löscht eine Datei (keine Ordner). Destruktive Operationen laufen jetzt
+     * unter der separaten Capability "files_write" (v0.10.8).
+     * Verbleibende Grenzen: Whitelist-Roots, kein "..", nur Dateien, Batch-Cap.
      */
     fun deleteFile(relative: String): Pair<String, String?> {
         val clean = sanitize(relative) ?: return Pair("", "Ungültiger Pfad")

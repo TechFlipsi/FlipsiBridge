@@ -12,17 +12,26 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
- * FlipsiBridge APK-Selbstupdate (Phase 4): Der Agent sagt der App,
- * wo ein neues APK liegt (HTTPS-URL + SHA-256). Die App lädt selbst
- * herunter, prüft die Checksumme und stößt den Android-Installer an.
+ * FlipsiBridge APK-Selbstupdate (Phase 4, v0.10.8 hartening).
  *
- * Sicherheitsregeln:
- *  - Capability "selfupdate" muss aktiv sein (Default AUS).
- *  - Nur https:// URLs. SHA-256 ist Pflicht — ein Download ohne
- *    verifizierte Checksumme wird verworfen.
- *  - Installiert wird NICHT still: Android zeigt den Installations-
- *    Dialog, Sir bestätigt am Gerät (unbekannte Quellen-Flow).
- *  - APK landet im app-eigenen Cache (kein öffentlicher Speicher).
+ * Update-Quelle ist FIX: das konfigurierte Relay (RelayClient-Server-URL),
+ * Pfad /apk/latest. Der Agent kann NUR den Update-Check anstoßen — er kann
+ * KEINE URL mehr vorgeben. Der Pairing-Token wird ausschließlich an diese
+ * eine, vom Nutzer konfigurierte Gegenstelle gesendet (wie beim WS-Handshake).
+ *
+ * Ablauf:
+ *  1. App fragt <relay>/apk/latest mit Bearer<Pairing-Code> ab (dieselbe
+ *     Authentifizierung wie jede andere geroutete Verbindung — der Token
+ *     verlässt das Gerät ausschließlich Richtung eigener Relay-Host).
+ *  2. Server liefert APK + X-APK-SHA256-Header (Hex, vom Server gesetzt,
+ *     NICHT vom Aufrufer kontrollierbar).
+ *  3. App lädt herunter, prüft SHA-256 gegen den Header — bei Abweichung
+ *     wird die Datei verworfen.
+ *  4. Installiert wird NICHT still: Android zeigt den Installationsdialog,
+ *     der User bestätigt am Gerät (unbekannte Quellen-Flow).
+ *
+ * Entfernt gegenüber v0.10.7: caller-supplied `url`/`expectedSha256`
+ * Parameter (Credential-Exfiltration-Vektor, Review-Blocking-1).
  */
 object UpdateInstaller {
 
@@ -36,19 +45,20 @@ object UpdateInstaller {
         val sha256: String? = null,
     )
 
-    fun start(
-        context: Context,
-        url: String,
-        expectedSha256: String?,
-    ): Result {
-        val trimmed = url.trim()
-        if (!trimmed.startsWith("https://")) {
-            return Result(false, 400, "Nur https:// URLs sind erlaubt")
+    /** Holt das APK vom konfigurierten Relay. Kein caller-supplied URL mehr. */
+    fun start(context: Context): Result {
+        val baseUrl = com.hermesandroid.bridge.client.RelayClient.serverUrl
+            ?: com.hermesandroid.bridge.BridgeApplication.instance
+                ?.getSharedPreferences("flipsibridge", Context.MODE_PRIVATE)
+                ?.getString("server_url", null)
+            ?: return Result(false, 400, "Kein Relay-Server konfiguriert — zuerst verbinden")
+
+        val base = baseUrl.trim().trimEnd('/')
+        if (!base.startsWith("https://") && !base.startsWith("http://")) {
+            return Result(false, 400, "Relay-URL hat kein gültiges Schema")
         }
-        val expected = expectedSha256?.trim()?.lowercase()
-        if (expected.isNullOrEmpty()) {
-            return Result(false, 400, "expectedSha256 ist Pflicht (Integritätsprüfung)")
-        }
+        // Upgrade-Pfad: apk/latest ist fest, kein Aufrufer-Einfluss möglich.
+        val downloadUrl = "$base/apk/latest"
 
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -56,21 +66,24 @@ object UpdateInstaller {
             .build()
 
         val request = Request.Builder()
-            .url(trimmed)
-            // Der eigene Pairing-Code als Bearer — erlaubt dem Phone, das eigene
-            // Update vom token-geschützten Relay-/apk/latest zu laden.
+            .url(downloadUrl)
+            // Der Pairing-Code geht NUR an den konfigurierten Relay-Host —
+            // exakt dieselbe Gegenstelle wie der WS-Handshake.
             .header("Authorization", "Bearer " + (com.hermesandroid.bridge.client.RelayClient.pairingCode
                 ?: com.hermesandroid.bridge.auth.PairingManager.getCode()))
             .build()
+
         val tempFile: File
         val digest: String
         var bytes = 0L
+        var declaredSha: String? = null
         try {
             val response = client.newCall(request).execute()
             response.use { resp ->
                 if (!resp.isSuccessful) {
                     return Result(false, 502, "Download fehlgeschlagen: HTTP ${resp.code}")
                 }
+                declaredSha = resp.header("X-APK-SHA256")?.trim()?.lowercase()
                 val declared = resp.body?.contentLength() ?: -1L
                 if (declared > MAX_APK_BYTES) {
                     return Result(false, 413, "APK zu groß (${declared} Bytes, Limit $MAX_APK_BYTES)")
@@ -112,7 +125,15 @@ object UpdateInstaller {
             tempFile.delete()
             return Result(false, 502, "Download leer (0 Bytes)")
         }
-        if (digest != expected) {
+
+        // Integrität: SHA-256 MUSS vom Server als Header kommen (Server kontrolliert
+        // die Quelle, nicht der Aufrufer). Fehlt der Header oder passt er nicht → verwerfen.
+        val expected = declaredSha
+        if (expected.isNullOrEmpty()) {
+            tempFile.delete()
+            return Result(false, 400, "Server liefert keinen X-APK-SHA256-Header — Update abgelehnt (Integrität nicht prüfbar)")
+        }
+        if (!java.util.regex.Pattern.matches("[0-9a-f]{64}", expected) || digest != expected) {
             tempFile.delete()
             return Result(
                 false, 400,

@@ -22,6 +22,12 @@ import io.ktor.server.routing.*
 fun Application.configureRouting() {
     routing {
         get("/mic_file") {
+            // v0.10.8 (Review-Blocking-2-Fix): Capability-Gate auch hier —
+            // der lokale HTTP-Pfad umgeht den Dispatcher genauso wie /file.
+            com.hermesandroid.bridge.security.CapabilityGate.checkEndpoint("GET", "/mic_file")?.let { msg ->
+                call.respond(HttpStatusCode.Forbidden, mapOf("error" to msg))
+                return@get
+            }
             val requestedName = call.request.queryParameters["name"]
             val file = MicrophoneRecordingFiles.resolve(
                 BridgeApplication.instance,

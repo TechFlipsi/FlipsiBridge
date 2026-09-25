@@ -1,3 +1,19 @@
+## [0.10.8] - 25.09.2026
+### Security (upstream review, 6 Blocking-Punkte behoben)
+- **/apk_install token leak behoben**: Update-Quelle ist FIX auf das konfigurierte Relay (/apk/latest) — kein Aufrufer-URL-Parameter mehr, der Pairing-Token geht nie an fremde Hosts. SHA-256 kommt als X-APK-SHA256-Header serverseitig, wird gegen DIESEN Wert geprüft.
+- **CapabilityGate deny-unknown**: Unbekannte Routen sind abgelehnt statt erlaubt. /mic_file ist jetzt an das Gate gebunden (lokal + Relay).
+- **Migration für Bestandsinstallationen**: Apps, die vor dem Gating liefen (Relay-URL vorhanden), behalten alles aktiv (legacy_had_relay-Flag bei connect). Neue Installationen starten default OFF.
+- **mTLS korrekt über KeyChain**: KeyChain.choosePrivateKeyAlias + getPrivateKey statt der fehlerhaften CA-Store-Annahme.
+- **Datei-Pfad-Sanitizing**: unbekanntes Top-Level-Segment wird abgelehnt (kein Root-Fallback mehr); /files_push + /files_delete unter separater Capability "files_write" (destruktiv getrennt vom Lesen).
+- **/notify_reply**: eigene Capability "notify_reply" (Outbound-Action ≠ Lesen); RemoteInput.addResultsToIntent statt manueller Bundle-Zusammensetzung.
+- **Relay /apk/latest**: Auth gegen denselben Pairing-Code wie alle Routen, konstante Zeit (hmac.compare_digest), Rate-Limiting. Kein separates Token mehr.
+- **Kamera-Dialog** nur noch bei aktivierter device-Capability statt bei jedem App-Start.
+- **Neue Security-Tests**: tests/test_security_v0_10_8.py (13 Tests: deny-unknown, sanitize, installer, migration, capability separation, relay auth).
+### Fork-Hygiene
+- Sir-/private-Kontext-Referenzen aus Quellcode entfernt.
+### Version
+- versionCode 23, versionName 0.10.8 (signierte Release-APK).
+
 ## [0.10.0-0.10.7-flipsi] - 21.09.2026
 ### Neu (Phase 10 - Geräte-Hardware)
 - **device-Capability**: Foto auf Befehl (CameraX-frei, CameraManager + ImageReader, Retry-Loop, aufrecht: +90° CW byte-rotation ohne EXIF-Tag - Empirie über 5 Testfotos), Taschenlampe, Netz-Status (WiFi/BT/Internet/metered/transport, Permissions ACCESS_NETWORK_STATE + ACCESS_WIFI_STATE), Lautstärke lesen/setzen (media/ring/alarm/notification), Wecker & Timer (SET_ALARM-Permission, System-Clock-Intent).
