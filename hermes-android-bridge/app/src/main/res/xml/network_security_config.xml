@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FlipsiBridge Netzwerk-Härtung:
+  - Standard: Klartext (HTTP/ws) VERBOTEN — auch im LAN.
+  - Ausnahme: GENAU EIN DNS-Name — `dashboard.lan` (statisch, Heim-DNS/hosts-
+    Eintrag, nicht identifizierend) — für den HTTP-Direktmodus im Heim-LAN,
+    weil das Lokales Dashboard lokal nur HTTP spricht. ALLE anderen Hosts
+    (eigene Relay-Domain & Co) müssen HTTPS/WSS mit echtem Zertifikat sein.
+  Schnüffler-F5: der alte Kommentar versprach "konfigurierbare private
+  IP-Range" — nie wahr; eine cleartext-LAN-Konnektion unter anderem Host
+  stieß still an der Plattform-Sperre an (kamd als "Verbindungsbug" an).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- EIN generischer Heim-LAN-DNS-Name (hosts-Eintrag) -->
+        <domain includeSubdomains="false">dashboard.lan</domain>
+    </domain-config>
+</network-security-config>
