@@ -1,0 +1,170 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- HTTP server -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Termux-Watchdog: Nur nach explizitem Opt-in in der UI (RUN_COMMAND) -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" tools:ignore="ProtectedPermissions" />
+    <!-- Wake screen for background actions -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Overlay HUD -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Foreground service to keep bridge alive -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Microphone for ambient sound / voice capture (Phase 1 Ohren) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Screenshots via MediaProjection (Phase 2 enhancement) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Phase 4 Datei-Zugriff: voller Lesezugriff auf den gemeinsamen Speicher
+         ("Alle Dateien zugreifen" - vom Nutzer in den Einstellungen zu erteilen,
+         weil MANAGE_EXTERNAL_STORAGE ein Sonderrecht ohne Laufzeit-Dialog ist) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- APK-Selbstupdate: App darf Installations-Prompt anzeigen ("Apps aus unbekannten Quellen
+         installieren" - wird beim ersten Update einmalig in den Einstellungen freigegeben) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Query all installed apps (Android 11+) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Phase 10 Geräte-Hardware: Kamera-Foto auf Befehl, Taschenlampe, Netz-Status -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- v0.11.0 Verbindungskern: Boot-Start + echte Foreground-Schleuder -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- v0.12.0 (Akku P2-4): SCHEDULE_EXACT_ALARM entfernt — der Code nutzt
+         ausschließlich setAndAllowWhileIdle (ungenau genügt beim 5-min-Takt,
+         die Permission war deklariert, aber NIEMALS genutzt). -->
+    <!-- v0.11.0: Aktiv-Aufforderung "Akku nicht einschränken" (UI-Zeile) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Health Connect (v0.11.0, read-only): nur lesen -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony.gsm" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
+    <!-- Health Connect (v0.11.0): Sichtbarkeit der Health Connect-App für Consent/Status-Prüfung -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
+    <application
+        android:name=".BridgeApplication"
+        android:label="FlipsiBridge"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.HermesBridge">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Health Rationale (v0.12.2): OHNE diese Activity zeigt Health Connect
+             die App NICHT in der Connected-Apps-Liste (Sirs Screenshot-Befund 01.11.).
+             Zwei Routen: klassische androidx-Action + Android-14 VIEW_PERMISSION_USAGE-Alias. -->
+        <activity
+            android:name=".health.HealthRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".health.HealthRationaleActivity"
+            android:permission="android.permission.START_HEALTH_PERMISSION_RATIONALE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- FileProvider für APK-Selbstupdate (nur Cache-Ordner) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Accessibility service declaration -->
+        <service
+            android:name=".service.BridgeAccessibilityService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse|mediaProjection"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!-- Notification listener service -->
+        <service
+            android:name=".service.BridgeNotificationListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Microphone recorder service (Phase 1 Ohren) -->
+        <service
+            android:name=".audio.MicrophoneRecorderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- v0.11.0: eigener Verbindungs-FGS (unabhängig vom A11y-Service) -->
+        <service
+            android:name=".service.BridgeConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- v0.11.0: Boot-/Update-Restart der Brücke (Sirs "jederzeit Zugriff") -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- v0.11.0: Doze-sichere Reconnect-Weckrufe -->
+        <receiver
+            android:name=".client.ReconnectAlarmReceiver"
+            android:exported="false" />
+
+    </application>
+</manifest>

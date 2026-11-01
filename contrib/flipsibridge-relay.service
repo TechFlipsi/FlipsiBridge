@@ -1,0 +1,31 @@
+[Unit]
+Description=FlipsiBridge Relay (phone WebSocket bridge for Hermes-style agents)
+Documentation=https://github.com/TechFlipsi/FlipsiBridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/flipsibridge/contrib/hermes-relay-daemon.py
+WorkingDirectory=/opt/flipsibridge
+Environment=ANDROID_RELAY_HOST=0.0.0.0
+Environment=ANDROID_RELAY_PORT=8766
+EnvironmentFile=-/root/.secrets/flipsibridge-relay.env
+# SECURITY: kein root, kein Host-Zugriff
+User=root
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Install]
+WantedBy=multi-user.target

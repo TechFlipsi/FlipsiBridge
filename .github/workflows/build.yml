@@ -1,0 +1,93 @@
+name: Build Bridge APK
+
+# DUAL-EDITION (ROADMAP DE-2/DE-T7): CI läuft je Flavor (github + play) —
+# beide Editionen einer Codebase bekommen eigene Test- + Build-Strecken.
+# Die Play-APK geht dabei NIE an einen GitHub-Release (nur der Store-Track);
+# Release-Upload unten deshalb nur für den github-Flavor.
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'hermes-android-bridge/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'hermes-android-bridge/**'
+  workflow_dispatch:  # manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # Beide Flavors unabhängig bewerten — ein rot-Flavor soll den anderen
+      # nicht abwürgen (fail-fast aus, Ursache bleibt sichtbar).
+      fail-fast: false
+      matrix:
+        flavor: [github, play]
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Generate Gradle wrapper
+        working-directory: hermes-android-bridge
+        run: |
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
+            GRADLE_VER="8.6"
+            curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VER}-bin.zip" -o /tmp/gradle.zip
+            unzip -q /tmp/gradle.zip -d /tmp
+            /tmp/gradle-${GRADLE_VER}/bin/gradle wrapper --gradle-version ${GRADLE_VER}
+          fi
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          validate-wrappers: false
+
+      - name: Run unit tests (${{ matrix.flavor }})
+        working-directory: hermes-android-bridge
+        run: |
+          FLAVOR_CAP="$(echo '${{ matrix.flavor }}' | sed 's/^./\U&/')"
+          ./gradlew "test${FLAVOR_CAP}DebugUnitTest"
+
+      - name: Build debug APK (${{ matrix.flavor }})
+        working-directory: hermes-android-bridge
+        run: |
+          FLAVOR_CAP="$(echo '${{ matrix.flavor }}' | sed 's/^./\U&/')"
+          ./gradlew "assemble${FLAVOR_CAP}Debug"
+
+      # Only needed for PR builds — pushes to the default branch publish
+      # the APK to the latest-build release below, so a per-push artifact
+      # is redundant and just accumulates storage.
+      - name: Upload APK artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: hermes-bridge-${{ matrix.flavor }}-debug-pr${{ github.event.pull_request.number }}
+          path: hermes-android-bridge/app/build/outputs/apk/${{ matrix.flavor }}/debug/*.apk
+          retention-days: 7
+
+      # GitHub-Release ausschließlich mit der GitHub-Edition-APK (DE-2:
+      # die Play-APK gehört nur auf den Play-Store-Track, nie auf GitHub).
+      - name: Upload APK to latest release
+        if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && matrix.flavor == 'github'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-build
+          name: Latest Build
+          body: |
+            Auto-built from latest `${{ github.event.repository.default_branch }}` commit.
+            Commit: `${{ github.sha }}`
+          files: hermes-android-bridge/app/build/outputs/apk/github/debug/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

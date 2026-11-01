@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- FlipsiBridge Farbsystem — Material-Dunkel, Orange-Akzent -->
+    <color name="bg_page">#111318</color>
+    <color name="bg_card">#1B1E24</color>
+    <color name="bg_field">#15171C</color>
+    <color name="bg_chip">#23262E</color>
+    <color name="stroke">#262A33</color>
+    <color name="accent">#ED7931</color>
+    <color name="green">#34A853</color>
+    <color name="danger">#EA4335</color>
+    <color name="dot_grey">#3C4043</color>
+    <color name="text_primary">#E8EAED</color>
+    <color name="text_secondary">#9AA0A6</color>
+    <color name="text_hint">#5F6368</color>
+    <color name="text_on_accent">#141414</color>
+</resources>
