@@ -1,7 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Icon aus google/material-design-icons (symbols/web/warning/materialsymbolsoutlined/warning_24px.svg), Apache-2.0 -->
+<!-- PH1-W2-Fix: Pfad-Y absolut um +960 geshiftet (positive Koordinaten) — Android
+     VectorDrawable clippt negative Viewport-Bereiche, der Material-Symbols-
+     Original-Pfad (Konvention 0,-960) rendert sonst unsichtbar. Gleicher
+     Mechanismus wie der ic_chat-Fix (PH1-T1, Emulator-Pixel-Beweis 01.11.2026). -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp" android:height="24dp"
     android:viewportWidth="960" android:viewportHeight="960">
-    <path android:fillColor="#FF000000" android:pathData="m40-120 440-760 440 760H40Zm138-80h604L480-720 178-200Zm302-40q17 0 28.5-11.5T520-280q0-17-11.5-28.5T480-320q-17 0-28.5 11.5T440-280q0 17 11.5 28.5T480-240Zm-40-120h80v-200h-80v200Zm40-100Z"/>
+    <path android:fillColor="#FF000000" android:pathData="m40 840l440 -760l440 760H40Zm138 -80h604L480 240L178 760Zm302 -40q17 0 28.5 -11.5T520 680q0 -17 -11.5 -28.5T480 640q-17 0 -28.5 11.5T440 680q0 17 11.5 28.5T480 720Zm-40 -120h80v-200h-80v200Zm40 -100Z"/>
 </vector>

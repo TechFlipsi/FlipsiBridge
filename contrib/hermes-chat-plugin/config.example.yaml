@@ -1,0 +1,32 @@
+# Config-Baustein — FlipsiBridge-Chat-Adapter (generisch, KEINE echten Werte)
+#
+# Install-Skizze (je Agent-Heim, Muster: ~/.hermes/plugins/flipsibridge-chat/):
+#   1. Plugin-Verzeichnis nach <agent-home>/.hermes/plugins/flipsibridge-chat kopieren
+#   2. Config-Sektion (unten) in <agent-home>/.hermes/config.yaml einfügen
+#   3. Token + URL je Agent SEPARAT in <agent-home>/.hermes/.env setzen (0600,
+#      niemals im Repo, niemals geteilt — je Agent-Instanz ein eigenes Token)
+#   4. Relay-Env (slim-env) um das je-Agent-Token ergänzen — NICHT die Hermes-.env
+#      des Root-Agents (ROADMAP PH-2, Token-Spreu-Regel)
+
+# --- config.yaml-Sektion (gateway.platforms.flipsibridge) ---------------------
+gateway:
+  platforms:
+    flipsibridge:
+      enabled: true
+      # relay_url bewusst NICHT hier — sie kommt aus der Env, damit .env je
+      # Agent-Heim der einzige Ort für Host + Token bleibt (1 Quelle der Wahrheit).
+      # Erlaubte YAML-Keys (YAML→Env-Brücke, P3-Aufgabe im echten Plugin-Loader):
+      #   require_mention: false          # Chat-DMs brauchen keinen Mention
+      #   typing_indicator: true          # presence-Events senden
+
+# --- .env je Agent-Heim (BEISPIEL-WERTE — generisch) --------------------------
+# FLIPSI_RELAY_URL=wss://relay.example.internal/agent_ws   # Agent-WS-Route am Relay
+# FLIPSI_AGENT_TOKEN=<je-agent-geheim>                     # Bearer für DIESEN Host
+# FLIPSI_AGENT_ID=agent-a                                  # eigener Namespace
+# FLIPSI_DISPLAY_NAME=Agent A                              # Roster-Anzeigename
+# FLIPSI_ALLOWED_URLS=wss://relay.example.internal/agent_ws  # Whitelist-Pinning (I3):
+#                                                          # jede ANDERE URL verweigert der Adapter
+# FLIPSI_WS_ROUTE=/agent_ws                                # Default; ROADMAP P1 nennt /agent/ws
+# FLIPSI_CHAT_ROUTE=/chat                                  # Route für send()-Envelopes
+# FLIPSI_ALLOWED_DEVICES=                                  # optional: erlaubte chat_id-/Geräte-IDs
+# FLIPSI_ALLOW_INSECURE=                                   # nur =1 für lokale QA-Drills (ws/http)

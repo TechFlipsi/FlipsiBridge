@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import com.hermesandroid.bridge.security.AppLockGate
+import com.hermesandroid.bridge.security.AppLockManager
 import com.hermesandroid.bridge.ui.BridgeScreen
 import com.hermesandroid.bridge.ui.FlipsiTheme
 
@@ -15,25 +17,52 @@ import com.hermesandroid.bridge.ui.FlipsiTheme
  *
  * Kamera-Runtime-Recht (v0.10.8-Verhalten): nur anfragen, wenn der User die
  * "device"-Capability freizuschalten beginnt — keine Kamera-Frage beim Start.
+ *
+ * PH-2X X-1 (v0.13): AppLockGate VOR dem Content — solange eine PIN gesetzt
+ * und nicht entsperrt ist, wird BridgeScreen GAR NICHT komponiert (Chat-
+ * Inhalte sind hinter dem Gate nicht renderbar, auch kein Preview-Leak).
+ * onPause stempelt die Hintergrund-Zeit für die Auto-Sperre (30 s/3 min/Nie).
  */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // SEC-W3 (W3-1): FLAG_SECURE — Task-Switcher/Recents + Screenshots zeigen
+        // NIEMALS App-Inhalt (Chat-Verlauf/Fingerprint-Hex). Ohne dieses Flag
+        // bliebe der Recents-Snapshot am System-Switcher hängen, auch wenn die
+        // App-Lock-Sperre aktiv ist.
+        window.setFlags(
+            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+            android.view.WindowManager.LayoutParams.FLAG_SECURE
+        )
+        // X-1: App-Sperre initialisieren (Prefs + AndroidKeyStore-Engine,
+        // idempotent) — VOR setContent, damit das Gate sofort weiß, ob eine
+        // PIN existiert (App-Restart sperrt immer).
+        AppLockManager.init(applicationContext)
         requestCameraIfNeeded()
         setContent {
             FlipsiTheme {
-                BridgeScreen()
+                // X-1: Gate VOR dem Nav-Host-Inhalt — Chat-Route NIE umgehbar.
+                AppLockGate {
+                    BridgeScreen()
+                }
             }
         }
     }
 
     override fun onResume() {
         super.onResume()
-        // v0.12.0 QA-Fix (CHEF-03): Rückkehr aus System-Settings (Eingabehilfe/
-        // Overlay/Alle-Dateien/Health) → Freigabe-Badges sofort neu ziehen,
-        // statt „fehlt" stehen zu lassen bis zur nächsten UI-Aktion.
+        // X-1: Rückkehr aus dem Hintergrund → Gate neu bewerten (Auto-Sperr-
+        // Frist abgelaufen?); v0.12.0 QA-Fix (CHEF-03): Freigabe-Badges neu
+        // ziehen statt „fehlt“ stehen zu lassen.
+        AppLockManager.get().onAppForeground()
         com.hermesandroid.bridge.ui.BridgeStatus.refreshConfig()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // X-1: Hintergrund-Zeitstempel für die Auto-Sperre (30 s/3 min/Nie).
+        AppLockManager.get().onAppBackground()
     }
 
     private fun requestCameraIfNeeded() {

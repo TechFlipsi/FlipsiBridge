@@ -1,0 +1,1517 @@
+"""FlipsiBridge-Chat-Adapter (Hermes-Platform-Plugin, Skeleton).
+
+Muster: BasePlatformAdapter-Schnittstelle aus gateway/platforms/base.py
+(connect/disconnect/send/send_typing/send_image/get_chat_info) — Referenz:
+ADDING_A_PLATFORM.md, Plugin-Pfad (0 Hermes-Core-Änderungen, ctx.register_platform).
+
+Architektur (ROADMAP PH-2 Feature 2, P3):
+- connect()    : verbindet sich OUTBOUND zum FlipsiBridge-Relay auf der Agent-WS-Route
+                 (Default /agent_ws, via FLIPSI_WS_ROUTE anpassbar) mit Agent-Bearer-Token
+                 + agent_id — wie das Handy NAT-frei, damit Agenten aus Containern/Fremd-
+                 Homelabs denselben Relay nutzen.
+- send()       : JSON-Envelope (type=chat.reply) an die Relay-/chat-Route über die Agent-WS.
+- Empfang      : der Agent-WS-Frame-Loop pusht chat.deliver-Texte als NACHRICHT in die
+                 Gateway-Messages-Pipeline (self.handle_message) — NIEMALS als Tool-Call.
+
+Agentenschutz (ROADMAP I3, bindend):
+- URL-Whitelist-Pinning: der Adapter verweigert JEDE Relay-URL außer der konfigurierten
+  Whitelist (Default: genau die 1 konfigurierte URL). Kein „beliebiges Backend"-Fallback.
+- Namespace-Prüfung je Inbound-Frame: chat.deliver mit fremder agent_id wird abgelehnt.
+- Nur wss/https als Schema (ws/http nur mit explizitem FLIPSI_ALLOW_INSECURE=1 für
+  lokale QA-Drills). Kein userinfo in der URL.
+- Chat-Text ist Daten: Frames mit Kommando-/Tool-Charakter (type NICHT in der Envelope-
+  Allowlist) werden ignoriert + geloggt, niemals ausgeführt.
+- Der Agent-Bearer-Token wird NIE geloggt und NIE an eine Nicht-Whitelist-URL gesendet.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import math
+import os
+import re
+import time
+import uuid
+from collections import deque
+from typing import Any, Callable, Optional
+from urllib.parse import urlsplit
+
+try:  # Echter Hermes-Gateway-Kontext (Plugin liegt in einer Hermes-Installation)
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+    _UNDER_HERMES = True
+except ImportError:  # Repo-Skeleton-Kontext (contrib/, Selbst-Test ohne Installation)
+    from _base_fallback import BasePlatformAdapter, SendResult
+    _UNDER_HERMES = False
+
+logger = logging.getLogger("flipsibridge.chat")
+
+# Envelope-Typen, die der Frame-Loop akzeptiert. ALLES ANDERE wird abgelehnt —
+# insbesondere nie etwas mit Tool-/Command-Semantik (I3: Chat-Text ≠ Tool-Call).
+# chat.send = echter Broker-Frame des Relays (PH2-T10: mit msg_id für
+# Lesebestätigungen); chat.deliver = Skeleton-Namespace (kompatibel gehalten).
+_INBOUND_ENVELOPE_ALLOWLIST = frozenset(
+    {"chat.send", "chat.deliver", "chat.ack", "roster", "presence", "pong",
+     "crypto.hello", "chat.send.enc", "chat.event.enc"}
+)
+_PROTOCOL_VERSION = 1
+
+# PH-3 (Welle 1): E2E-Crypto-Kern — `cryptography` ist die EINE neue Python-
+# Dependency (PH3-CRYPTO-SPEC §0/§1 (i)). Fehlt sie, läuft der Adapter im
+# Legacy-Klartext-Modus (v0.14-Migration §3.2) und lehnt crypto.hello ab.
+try:
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric.x25519 import (
+        X25519PrivateKey, X25519PublicKey)
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF, HKDFExpand
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding, PrivateFormat, PublicFormat)
+    _HAS_CRYPTO = True
+except ImportError:  # pragma: no cover — nur ohne cryptography-Install
+    _HAS_CRYPTO = False
+
+# ── PH-3: fb-v1-Protokoll-Parameter (Byte-exakter Vertrag: siehe
+# secrets-docs/PH3-KDF-FIXTURES-v1.md — Kotlin Welle 2 implementiert DAEGEN) ──
+_REPLAY_WINDOW = 100              # Counter-Fenster je Richtung
+_FRAME_MAX_AGE_MS = 10 * 60 * 1000  # Frame-Altersgrenze (Replay-Fenster 100 + 10 min)
+_SKIPPED_KEY_CACHE_MAX = 100      # OOO-Nachrichten-Cache (Cap = Replay-Bound)
+_DECRYPT_FAIL_DELAY = 0.25        # konstante Fehlverzögerung (kein Orakel)
+_SESSION_MAX_AGE_SECONDS = 24 * 3600  # 24-h-Session (danach neue crypto.hello)
+_RATCHET_ROTATE_EVERY = 100       # DH-Rotation je N Nachrichten (konfigurierbar)
+_HEX32_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_FP_PREFIX = "FP-ABGLEICH:"
+_FP_OK_TEXT = "Fingerprint-Abgleich: OK — Code ist gleich"
+_FP_FAIL_TEXT = ("Fingerprint-Abgleich: FEHLGESCHLAGEN — Abweichung! "
+                 "Mögliches Man-in-the-Middle. Session sofort ungültig!")
+_ENC_CT_MAX_BYTES = 512 * 1024    # Relay-seitig identisches Limit (Fail-closed)
+_SEEN_PEER_PUBS_MAX = 4           # Replay-Schutz: gesehene Peer-Ratchet-Pubs
+
+
+class CryptoFrameError(RuntimeError):
+    """Entschlüsselung/Validierung fehlgeschlagen — NIE mit Klartext-Inhalt."""
+
+
+class RatchetError(CryptoFrameError):
+    """Ratchet-Zustand unbenutzbar (z. B. keine Sende-Kette)."""
+
+
+# ── PH-3: Primitive (RFC-exakt, gegen PH3-KDF-FIXTURES-v1 getestet) ──────────
+
+def _b64e(raw: bytes) -> str:
+    return base64.b64encode(raw).decode("ascii")
+
+
+def _b64d(text: str) -> bytes:
+    try:
+        return base64.b64decode(text, validate=True)
+    except Exception as exc:
+        raise CryptoFrameError("base64 ungültig") from exc
+
+
+def hkdf_extract(salt: bytes, ikm: bytes) -> bytes:
+    """RFC 5869 Extract: HMAC-SHA256(key=salt, msg=ikm)."""
+    return hmac.new(salt, ikm, hashlib.sha256).digest()
+
+
+def hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
+    """RFC 5869 Expand (cryptography-HKDFExpand = RFC-konform)."""
+    if not _HAS_CRYPTO:
+        raise CryptoFrameError("cryptography fehlt")
+    return HKDFExpand(algorithm=hashes.SHA256(), length=length, info=info).derive(prk)
+
+
+def hkdf_sha256(salt: bytes, ikm: bytes, info: bytes, length: int = 32) -> bytes:
+    """HKDF-SHA256 = Expand(Extract(salt, ikm), info, length)."""
+    return hkdf_expand(hkdf_extract(salt, ikm), info, length)
+
+
+def _x25519_gen() -> tuple[bytes, bytes]:
+    priv = X25519PrivateKey.generate()
+    return (priv.private_bytes(Encoding.Raw, PrivateFormat.Raw,
+                                serialization.NoEncryption()),
+            priv.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw))
+
+
+def _x25519_dh(priv_bytes: bytes, peer_pub_bytes: bytes) -> bytes:
+    return X25519PrivateKey.from_private_bytes(priv_bytes).exchange(
+        X25519PublicKey.from_public_bytes(peer_pub_bytes))
+
+
+def _kdf_rk(rk: bytes, dh_out: bytes) -> tuple[bytes, bytes]:
+    """KDF_RK: okm = HKDF(salt=rk, ikm=dh_out, info='fb-ratchet', 64) → (rk', ck)."""
+    okm = hkdf_sha256(salt=rk, ikm=dh_out, info=b"fb-ratchet", length=64)
+    return okm[:32], okm[32:64]
+
+
+def _kdf_ck(ck: bytes) -> tuple[bytes, bytes]:
+    """KDF_CK (Signal-exakt): → (ck', mk); mk = HMAC(ck, 0x01), ck' = HMAC(ck, 0x02)."""
+    return hmac.new(ck, b"\x02", hashlib.sha256).digest(), \
+        hmac.new(ck, b"\x01", hashlib.sha256).digest()
+
+
+def _msg_aes_key(mk: bytes) -> bytes:
+    return hkdf_sha256(salt=b"fb-msgkey", ikm=mk, info=b"fb-aes256", length=32)
+
+
+def fingerprint_of_pub(pub_bytes: bytes) -> str:
+    """agent_fp = HKDF-Hash über einen Identity-PubKey (Registry/Config-Wert)."""
+    salt = hashlib.sha256(b"flipsi-fp").digest()
+    return hkdf_sha256(salt=salt, ikm=pub_bytes, info=b"fb-agent-fp").hex()
+
+
+def fingerprint_display(fp_hex: str) -> str:
+    """Anzeige-Gruppierung: 8 Gruppen à 8 Hex-Zeichen (Abgleich bleibt Hex-Gleichheit)."""
+    return " ".join(fp_hex[i:i + 8].upper() for i in range(0, len(fp_hex), 8))
+
+
+def _fb_v1_kdf(dh1: bytes, dh2: bytes, dh3: bytes, psk: bytes, session_id: str,
+               agent_id: str, ik_p: bytes, ek_p: bytes, spk_p: bytes,
+               ik_a: bytes, spk_a: bytes) -> dict:
+    """fb-v1-Ableitung (PH3-KDF-FIXTURES §5.2 — byte-exakt, beidseitig identisch)."""
+    # SEC-W1 B F-02: Lone-Surrogates in session_id/agent_id sind UTF-8-NICHT-
+    # codierbar — der UnicodeEncodeError entkam bisher JEDEM CryptoFrameError-
+    # Fang (Frame-Loop-Tod). Jetzt: deterministischer CryptoFrameError.
+    try:
+        session_bytes = session_id.encode("utf-8")
+        agent_bytes = agent_id.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise CryptoFrameError(
+            "session_id/agent_id nicht UTF-8-codierbar") from exc
+    transcript = hashlib.sha256(
+        b"flipsi-v1" + session_bytes
+        + ik_p + ek_p + spk_p + ik_a + spk_a + agent_bytes
+    ).digest()
+    psk_comp = hmac.new(transcript, psk, hashlib.sha256).digest()
+    prk = hkdf_extract(transcript, dh1 + dh2 + dh3 + psk_comp)
+    context = (ik_p + ek_p + spk_p + ik_a + spk_a
+               + agent_bytes + session_bytes)
+    return {
+        "transcript": transcript,
+        "prk": prk,
+        "root0": hkdf_expand(prk, b"fb-root" + context, 32),
+        "k_init": hkdf_expand(prk, b"fb-init" + context, 32),
+        "session_fp": hkdf_expand(prk, b"fb-fp" + context, 32).hex(),
+    }
+
+
+def _enc_aad(session_id: str, chat_id: str, agent_id: str) -> bytes:
+    """AAD = 'fb-v1|session_id|chat_id|agent_id' (Typ bewusst NICHT drin:
+    der Relay benennt chat.reply.enc → chat.event.enc um)."""
+    # SEC-W1 B F-02: Surrogate-haltige IDs warfen UnicodeEncodeError, der
+    # den Frame-Loop töten konnte (kein CryptoFrameError-Fang) — jetzt
+    # deterministisch als CryptoFrameError (Frame wird verworfen, Loop lebt).
+    try:
+        return f"fb-v1|{session_id}|{chat_id}|{agent_id}".encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise CryptoFrameError("session_id/chat_id nicht UTF-8-codierbar") from exc
+
+
+def _log_id(value, limit: int = 64) -> str:
+    """SEC-W2 W2-3: IDs/Typen für LOG-Ausgaben kürzen + \n/\r escapen
+    (Parität zum Relay-Helfer _log_id, W1 B F-07)."""
+    text = str(value)[:limit]
+    if "\n" in text or "\r" in text:
+        text = text.replace("\r", "\\r").replace("\n", "\\n")
+    return text
+
+
+def _json_payload(payload: dict) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _hex32(value) -> bytes:
+    if not isinstance(value, str) or not _HEX32_RE.fullmatch(value):
+        raise CryptoFrameError("PubKey kein 64-Hex")
+    return bytes.fromhex(value)
+
+
+# ── PH-3: VOLLES Double Ratchet (Signal-Referenz, fb-v1-Parametrisierung) ────
+
+class DoubleRatchet:
+    """Zustandsmaschine: RK, CKs/CKr, Ratchet-Pairs, Ns/Nr/PN, Skipped-Cache.
+
+    Sender: encrypt() liefert (hdr, nonce, ct). Receiver: decrypt() mit
+    Replay-Fenster (100 Counter), 10-min-Freshness prüft die Session-Schicht.
+    DH-Rotation je rotate_every Nachrichten + automatisch je Peer-Ratchet-Wechsel.
+    """
+
+    def __init__(self, root_key: bytes, rotate_every: int = _RATCHET_ROTATE_EVERY):
+        self.rk = root_key
+        self.ck_s: Optional[bytes] = None
+        self.ck_r: Optional[bytes] = None
+        self.dh_priv: Optional[bytes] = None
+        self.dh_pub: Optional[bytes] = None
+        self.dh_r: Optional[bytes] = None
+        self.ns = 0
+        self.nr = 0
+        self.pn = 0
+        self.rotate_every = max(1, int(rotate_every))
+        self.skipped: dict[tuple[str, int], bytes] = {}
+        self._seen_peer_pubs: list[str] = []
+        self.nonce_prefix = os.urandom(4)
+        # ── Rotations-Kadenz (je N) ──────────────────────────────────────────
+        # DH-Rotation geschieht (a) automatisch je Peer-Announcement (Signal-
+        # Lockstep — JEDE neue Ratchet-Pub rotiert beide Ketten) und (b) je
+        # Session (frische crypto.hello). Spontane Eigen-Rotation ist verboten:
+        # sie bricht die RK-Parität (1-Advance passt nie auf die 2-Advance-
+        # Ratchet-Schritte des Peers → GCM-Desync). rotate_every erzeugt daher
+        # nur einen HINWEIS (hdr.rot=1) nach N Frames ohne DH-Schritt — das
+        # Phone (Welle 2) kann darauf mit einer frischen crypto.hello antworten.
+        self.sent_since_dh = 0        # gesendete Frames seit letztem Ratchet-Schritt
+
+    # -- Init (Rollen) -------------------------------------------------------
+    def init_responder(self, peer_ek_pub: bytes) -> None:
+        """Agent nach X3DH: RA-Pair + Sende-Kette aus X25519(RA, EK_p)."""
+        self.dh_priv, self.dh_pub = _x25519_gen()
+        self.dh_r = peer_ek_pub
+        self.rk, self.ck_s = _kdf_rk(self.rk, _x25519_dh(self.dh_priv, peer_ek_pub))
+        self.ns = 0
+        self.pn = 0
+        self.nr = 0
+
+    def init_initiator(self, own_ek_priv: bytes, own_ek_pub: bytes,
+                       peer_ratchet_pub: bytes) -> None:
+        """Phone nach hello_ack-Verify (Signal-Alice-Init, EIN Advance):
+        RK1, CKr = KDF_RK(root0, X25519(EK, RA)) = Agent-Sendekette.
+        CKs bleibt None — die erste eigene Sende-Nachricht macht den
+        Alice-Sendeschritt (frisches Pair gegen RA), siehe encrypt()."""
+        self.dh_priv, self.dh_pub = own_ek_priv, own_ek_pub
+        self.dh_r = peer_ratchet_pub
+        self.rk, self.ck_r = _kdf_rk(self.rk, _x25519_dh(own_ek_priv, peer_ratchet_pub))
+        self.nr = 0
+        self.ns = 0
+        self.pn = 0
+
+    # -- interne Schritte ----------------------------------------------------
+    def _dh_ratchet(self, remote_pub: bytes) -> None:
+        """Empfangs-Schritt (neuer Peer-Key): CKr aus ALTEN eigenen Priv × neu;
+        danach neues eigenes Pair + neue Sende-Kette (Signal DHRatchet). Ein
+        Ratchet-Schritt IST eine vollständige Kettens-Rotation (Lockstep)."""
+        if self.dh_r is not None:
+            self._track_peer_pub(self.dh_r.hex())
+        self.dh_r = remote_pub
+        self.rk, self.ck_r = _kdf_rk(self.rk, _x25519_dh(self.dh_priv, remote_pub))
+        self.nr = 0
+        self.pn = self.ns  # Länge der bisherigen Sende-Kette (für hdr.pn)
+        self.dh_priv, self.dh_pub = _x25519_gen()
+        self.rk, self.ck_s = _kdf_rk(self.rk, _x25519_dh(self.dh_priv, remote_pub))
+        self.ns = 0
+        self.nonce_prefix = os.urandom(4)
+        self.sent_since_dh = 0  # Ratchet-Schritt = frische Rotation der Ketten
+
+    def _rotate_send_chain(self) -> None:
+        """Rotation: frisches Pair gegen den aktuellen Peer-Key. Aufruf NUR für
+        die erste Phone-Sende-Nachricht (CKs=None, Signal-Alice-Sendeschritt)
+        — Mittendrin-Spontan-Rotation ist verboten (RK-Parität, s. Klassen-
+        Kommentar)."""
+        if self.dh_r is None:
+            raise RatchetError("kein Peer-Key — zuerst Handshake")
+        self.pn = self.ns
+        self.dh_priv, self.dh_pub = _x25519_gen()
+        self.rk, self.ck_s = _kdf_rk(self.rk, _x25519_dh(self.dh_priv, self.dh_r))
+        self.ns = 0
+        self.nonce_prefix = os.urandom(4)
+
+    def _track_peer_pub(self, pub_hex: str) -> None:
+        if pub_hex not in self._seen_peer_pubs:
+            self._seen_peer_pubs.append(pub_hex)
+            while len(self._seen_peer_pubs) > _SEEN_PEER_PUBS_MAX:
+                self._seen_peer_pubs.pop(0)
+
+    def _skip_message_keys(self, until: int, remote_hex: str) -> None:
+        """Übersprungene Message-Keys [nr, until) ableiten + cachen (Cap 100)."""
+        if self.ck_r is None or until is None or until <= self.nr:
+            return
+        while self.nr < until:
+            if len(self.skipped) >= _SKIPPED_KEY_CACHE_MAX:
+                self.skipped.pop(next(iter(self.skipped)))
+            self.ck_r, mk = _kdf_ck(self.ck_r)
+            self.skipped[(remote_hex, self.nr)] = mk
+            self.nr += 1
+
+    # -- Chiffre -------------------------------------------------------------
+    def encrypt(self, payload: bytes, aad: bytes) -> tuple[dict, bytes, bytes]:
+        if self.dh_pub is None:
+            raise RatchetError("kein eigenes Ratchet-Pair — zuerst Handshake")
+        if self.ck_s is None:
+            self._rotate_send_chain()  # erste Phone-Sende-Nachricht (Alice-Schritt)
+        self.ck_s, mk = _kdf_ck(self.ck_s)
+        nonce = self.nonce_prefix + self.ns.to_bytes(8, "big")
+        ct = AESGCM(_msg_aes_key(mk)).encrypt(nonce, payload, aad)
+        header = {"rk": self.dh_pub.hex(), "n": self.ns, "pn": self.pn}
+        self.sent_since_dh += 1
+        # Rotations-Hinweis je N (KEINE Krypto-Wirkung — nur Signal an das
+        # Phone: 'DH-Schritt überfällig, neue crypto.hello sinnvoll').
+        if self.sent_since_dh % self.rotate_every == 0:
+            header["rot"] = 1
+        self.ns += 1
+        return header, nonce, ct
+
+    def decrypt(self, header: dict, nonce: bytes, ct: bytes, aad: bytes) -> bytes:
+        if not isinstance(header, dict):
+            raise CryptoFrameError("hdr fehlt")
+        remote_hex = header.get("rk")
+        remote = _hex32(remote_hex)
+        try:
+            n = int(header.get("n"))
+            pn = int(header.get("pn", 0))
+        except (TypeError, ValueError) as exc:
+            raise CryptoFrameError("hdr-Zähler ungültig") from exc
+        if n < 0 or pn < 0:
+            raise CryptoFrameError("hdr-Zähler negativ")
+        if len(nonce) != 12 or nonce[4:] != n.to_bytes(8, "big"):
+            raise CryptoFrameError("Nonce passt nicht zum Zähler")
+
+        # 1) Out-of-Order aus dem Skipped-Cache (Verbrauch = Replay-Schutz).
+        mk = self.skipped.pop((remote.hex(), n), None)
+        if mk is not None:
+            return AESGCM(_msg_aes_key(mk)).decrypt(nonce, ct, aad)
+
+        # 2) Alter Peer-Key = Replay (kein Zustands-Konsum, gerader Drop).
+        if self.dh_r is not None and remote != self.dh_r:
+            if remote.hex() in self._seen_peer_pubs:
+                raise CryptoFrameError("alter Ratchet-Key (Replay)")
+            # PH-3 F2 (Jäger P2): pn-Cap — hdr.pn ist ANGREIFER-KONTROLLIERT
+            # (bis 2³¹); ohne Cap leitet _skip_message_keys Milliarden
+            # Message-Keys ab (CPU/RAM-DoS). Grenze = Empfangs-Fenster
+            # (Parität: Kotlin DoubleRatchet.decrypt, gleiche Meldung).
+            if pn > self.nr + _REPLAY_WINDOW:
+                raise CryptoFrameError("pn über Fenster (>100)")
+            self._skip_message_keys(pn, self.dh_r.hex())
+            self._dh_ratchet(remote)
+        if self.ck_r is None:
+            raise CryptoFrameError("keine Empfangs-Kette")
+
+        # 3) Fenster-Prüfung (100 Counter) + Ablauf der aktuellen Kette.
+        if n < self.nr:
+            raise CryptoFrameError("Zähler unter Fenster (Replay)")
+        if n >= self.nr + _REPLAY_WINDOW:
+            raise CryptoFrameError("Zähler über Fenster (>100)")
+        self._skip_message_keys(n, remote.hex())
+        self.ck_r, mk = _kdf_ck(self.ck_r)
+        self.nr = n + 1
+        return AESGCM(_msg_aes_key(mk)).decrypt(nonce, ct, aad)
+
+
+# ── PH-3: Sessions (Agent-Responder + Phone-Referenz für Tests/Kotlin) ───────
+
+class _CryptoSessionBase:
+    """Gemeinsamer Frame-Überbau über dem DoubleRatchet (beide Rollen)."""
+
+    def __init__(self, session_id: str, agent_id: str, root_key: bytes,
+                 session_fp_hex: str, rotate_every: int):
+        self.session_id = session_id
+        self.agent_id = agent_id
+        self.created = time.time()
+        self.ratchet = DoubleRatchet(root_key, rotate_every=rotate_every)
+        self._fp_hex = session_fp_hex
+
+    @property
+    def fingerprint(self) -> str:
+        """session_fp (64 Hex) — identisch auf beiden Seiten (Abgleich-Wert)."""
+        return self._fp_hex
+
+    def expired(self) -> bool:
+        return (time.time() - self.created) > _SESSION_MAX_AGE_SECONDS
+
+    def encrypt_frame(self, frame_type: str, chat_id: str, payload: dict,
+                      clear: Optional[dict] = None) -> dict:
+        """chat.*.enc-Frame bauen (Klartext-Payload → AES-GCM, Metadaten klar)."""
+        header, nonce, ct = self.ratchet.encrypt(
+            _json_payload(payload), _enc_aad(self.session_id, chat_id, self.agent_id))
+        frame = {
+            "type": frame_type,
+            "v": _PROTOCOL_VERSION,
+            "session_id": self.session_id,
+            "chat_id": chat_id,
+            "agent_id": self.agent_id,
+            "hdr": header,
+            "nonce": _b64e(nonce),
+            "ct": _b64e(ct),
+            "ts": int(time.time() * 1000),
+        }
+        if clear:
+            frame.update(clear)
+        return frame
+
+    def decrypt_frame(self, frame: dict) -> dict:
+        """chat.*.enc-Frame entschlüsseln — bei JEDEM Fehlschlag konstante
+        0,25 s Verzögerung + Fehler OHNE Inhalt (kein Timing-/Text-Orakel)."""
+        try:
+            if not isinstance(frame, dict):
+                raise CryptoFrameError("Frame kein Objekt")
+            if frame.get("session_id") != self.session_id:
+                raise CryptoFrameError("fremde session_id")
+            if self.expired():
+                raise CryptoFrameError("Session abgelaufen (>24h)")
+            ts = frame.get("ts")
+            # PH-3 F3 (Jäger P2): ts ist PFLICHT — ein fehlender ts übersprang
+            # bis jetzt die 10-min-Fenster-Prüfung (Replay-Schutz umgehbar).
+            # Parität: Kotlin PhoneCryptoPeer.decryptFrame, gleiche Meldung.
+            if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+                raise CryptoFrameError("ts fehlt (Pflicht)")
+            # SEC-W1 B F-04: NaN ist ein float und fiel durch die alte
+            # Prüfung (NaN < cutoff = False) — Freshness deaktivierbar.
+            # Parität zur Relay-Prüfung (math.isfinite).
+            if not math.isfinite(ts):
+                raise CryptoFrameError("ts nicht endlich (NaN/inf)")
+            if ts < int(time.time() * 1000) - _FRAME_MAX_AGE_MS:
+                raise CryptoFrameError("Frame zu alt (>10 min)")
+            nonce = _b64d(str(frame.get("nonce") or ""))
+            if len(nonce) != 12:
+                raise CryptoFrameError("Nonce nicht 12 Byte")
+            ct = _b64d(str(frame.get("ct") or ""))
+            if not ct or len(ct) > _ENC_CT_MAX_BYTES:
+                raise CryptoFrameError("ct leer/zu groß")
+            chat_id = str(frame.get("chat_id") or "")
+            pt = self.ratchet.decrypt(frame.get("hdr"), nonce, ct,
+                                      _enc_aad(self.session_id, chat_id, self.agent_id))
+            return json.loads(pt.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            time.sleep(_DECRYPT_FAIL_DELAY)
+            raise CryptoFrameError("Payload kein JSON") from exc
+        except InvalidTag:
+            time.sleep(_DECRYPT_FAIL_DELAY)
+            raise CryptoFrameError("GCM-Tag ungültig") from None
+        except CryptoFrameError:
+            time.sleep(_DECRYPT_FAIL_DELAY)
+            raise
+
+
+class AgentCryptoSession(_CryptoSessionBase):
+    """Agent-Seite (X3DH-Responder): crypto.hello → hello_ack + Ratchet."""
+
+    @classmethod
+    def respond_to_hello(cls, hello: dict, identity: dict, psk: bytes = b"",
+                         rotate_every: int = _RATCHET_ROTATE_EVERY
+                         ) -> tuple["AgentCryptoSession", dict]:
+        if not _HAS_CRYPTO:
+            raise CryptoFrameError("cryptography fehlt (Legacy-Modus)")
+        try:
+            session_id = str(hello["session_id"])
+            agent_id = str(hello["agent_id"])
+        except (KeyError, TypeError) as exc:
+            raise CryptoFrameError("hello unvollständig") from exc
+        if not (8 <= len(session_id) <= 128) or not agent_id:
+            raise CryptoFrameError("session_id/agent_id ungültig")
+        ik_p = _hex32(hello.get("ik_pub"))
+        ek_p = _hex32(hello.get("ek_pub"))
+        spk_p = _hex32(hello.get("spk_pub"))
+        ik_a_priv = _hex32(identity.get("identity_priv"))
+        spk_a_priv = _hex32(identity.get("prekey_priv"))
+        ik_a = _hex32(identity.get("identity_pub"))
+        spk_a = _hex32(identity.get("prekey_pub"))
+        dh1 = _x25519_dh(ik_a_priv, ek_p)    # X25519(EK_p, IK_a)
+        dh2 = _x25519_dh(ik_a_priv, ik_p)    # X25519(IK_p, IK_a)
+        dh3 = _x25519_dh(spk_a_priv, ek_p)   # X25519(EK_p, SPK_a)
+        kdf = _fb_v1_kdf(dh1, dh2, dh3, psk, session_id, agent_id,
+                         ik_p, ek_p, spk_p, ik_a, spk_a)
+        sess = cls(session_id, agent_id, kdf["root0"], kdf["session_fp"], rotate_every)
+        sess.ratchet.init_responder(ek_p)
+        ack_nonce = os.urandom(12)
+        ack_ct = AESGCM(kdf["k_init"]).encrypt(
+            ack_nonce,
+            b"flipsi-verify-v1|" + session_id.encode("utf-8"),
+            f"fb-v1|{session_id}|{agent_id}".encode("utf-8"))
+        ack = {
+            "type": "crypto.hello_ack",
+            "v": _PROTOCOL_VERSION,
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "kex_pub": sess.ratchet.dh_pub.hex(),
+            "nonce": _b64e(ack_nonce),
+            "ct": _b64e(ack_ct),
+        }
+        return sess, ack
+
+
+class PhoneCryptoPeer(_CryptoSessionBase):
+    """App-REFERENZ-Implementierung (Phone-Initiator) — Python-Gegenstelle
+    für E2E-Tests + byte-exakte Vorlage für Kotlin Welle 2. NICHT im
+    Produktiv-Adapter-Pfad (der Adapter ist ausschließlich Responder)."""
+
+    def __init__(self, agent_id: str, agent_ik_pub_hex: str,
+                 agent_spk_pub_hex: str, psk: bytes = b"",
+                 rotate_every: int = _RATCHET_ROTATE_EVERY):
+        if not _HAS_CRYPTO:
+            raise CryptoFrameError("cryptography fehlt")
+        super().__init__("", "", b"", "", rotate_every)  # Felder folgen sofort
+        self.agent_id = agent_id  # überschreibt den Leer-Default der Basis
+        self.agent_ik_pub = _hex32(agent_ik_pub_hex)
+        self.agent_spk_pub = _hex32(agent_spk_pub_hex)
+        self.psk = psk
+        self.rotate_every = rotate_every
+        self.ik_priv, self.ik_pub = _x25519_gen()
+        self.spk_priv, self.spk_pub = _x25519_gen()
+        self.ek_priv: Optional[bytes] = None
+        self.ek_pub: Optional[bytes] = None
+        self._pending: Optional[dict] = None
+
+    def make_hello(self, session_id: str) -> dict:
+        self.ek_priv, self.ek_pub = _x25519_gen()
+        dh1 = _x25519_dh(self.ek_priv, self.agent_ik_pub)
+        dh2 = _x25519_dh(self.ik_priv, self.agent_ik_pub)
+        dh3 = _x25519_dh(self.ek_priv, self.agent_spk_pub)
+        kdf = _fb_v1_kdf(dh1, dh2, dh3, self.psk, session_id, self.agent_id,
+                         self.ik_pub, self.ek_pub, self.spk_pub,
+                         self.agent_ik_pub, self.agent_spk_pub)
+        self.session_id = session_id
+        self.ratchet = DoubleRatchet(kdf["root0"], rotate_every=self.rotate_every)
+        self._fp_hex = kdf["session_fp"]
+        self._pending = kdf
+        return {
+            "type": "crypto.hello",
+            "v": _PROTOCOL_VERSION,
+            "session_id": session_id,
+            "agent_id": self.agent_id,
+            "ik_pub": self.ik_pub.hex(),
+            "ek_pub": self.ek_pub.hex(),
+            "spk_pub": self.spk_pub.hex(),
+            "ts": int(time.time() * 1000),
+        }
+
+    def consume_ack(self, ack: dict) -> None:
+        """hello_ack verifizieren (Wrong-Key = MITM/PSK → Session verwerfen)."""
+        if self._pending is None or self.ek_priv is None or self.ek_pub is None:
+            raise CryptoFrameError("consume_ack vor make_hello")
+        try:
+            if str(ack.get("session_id")) != self.session_id:
+                raise CryptoFrameError("fremde session_id")
+            kex_pub = _hex32(ack.get("kex_pub"))
+            nonce = _b64d(str(ack.get("nonce") or ""))
+            ct = _b64d(str(ack.get("ct") or ""))
+            pt = AESGCM(self._pending["k_init"]).decrypt(
+                nonce, ct,
+                f"fb-v1|{self.session_id}|{self.agent_id}".encode("utf-8"))
+        except InvalidTag:
+            raise CryptoFrameError("hello_ack-Verify fehlgeschlagen (Wrong-Key/PSK)") from None
+        if pt != b"flipsi-verify-v1|" + self.session_id.encode("utf-8"):
+            raise CryptoFrameError("hello_ack-Payload falsch")
+        self.ratchet.init_initiator(self.ek_priv, self.ek_pub, kex_pub)
+        self.created = time.time()
+        self._pending = None  # k_init nur für den Handshake — danach verwerfen
+
+
+# InvalidTag: cryptography-Exceptions VOR dem Guarded-Import aliasen
+if _HAS_CRYPTO:
+    from cryptography.exceptions import InvalidTag  # noqa: E402
+else:  # pragma: no cover
+    class InvalidTag(Exception):  # type: ignore[no-redef]
+        pass
+
+
+# ── PH-3: Agent-Identity-Key-File (0600, Keys NIE loggen) ─────────────────────
+
+_IDENTITY_FIELDS = ("identity_priv", "identity_pub", "prekey_priv", "prekey_pub")
+
+
+def _pub_of_priv(priv_hex: str) -> str:
+    return X25519PrivateKey.from_private_bytes(bytes.fromhex(priv_hex)) \
+        .public_key().public_bytes(Encoding.Raw, PublicFormat.Raw).hex()
+
+
+def load_or_create_identity(path: str) -> dict:
+    """Identity-File laden oder erzeugen (X25519 Identity+PreKey, hex, 0600).
+
+    Fail-closed: existiert die Datei, wird sie streichend validiert (Pubs
+    passen zu Priv-Keys) — korrupte Datei = Fehler, KEIN stiller Re-Key
+    (Fingerprint bleibt stabil). Private Keys werden NIE geloggt/ausgegeben.
+    """
+    if not _HAS_CRYPTO:
+        raise CryptoFrameError("cryptography fehlt — keine Identity-Verwaltung")
+    data = None
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        data = None
+    except (OSError, ValueError) as exc:
+        raise CryptoFrameError(f"Identity-File unlesbar ({os.path.basename(path)})") from exc
+
+    if isinstance(data, dict) and all(
+        isinstance(data.get(f), str) and _HEX32_RE.fullmatch(data[f])
+        for f in _IDENTITY_FIELDS
+    ):
+        if (_pub_of_priv(data["identity_priv"]) == data["identity_pub"]
+                and _pub_of_priv(data["prekey_priv"]) == data["prekey_pub"]):
+            return data
+        raise CryptoFrameError("Identity-File korrupt (Pub/Priv-Mismatch)")
+
+    if data is not None:
+        raise CryptoFrameError("Identity-File korrupt (ungültige Felder)")
+
+    ik_priv, ik_pub = _x25519_gen()
+    spk_priv, spk_pub = _x25519_gen()
+    fresh = {
+        "v": 1,
+        "identity_priv": ik_priv.hex(),
+        "identity_pub": ik_pub.hex(),
+        "prekey_priv": spk_priv.hex(),
+        "prekey_pub": spk_pub.hex(),
+        "created": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        try:
+            os.fchmod(fd, 0o600)  # POSIX-Dateirechte; Windows kennt kein fchmod
+        except AttributeError:
+            # SEC-W1 D3b: silently pass ließ Bestands-Dateirechte (z. B. 0644,
+            # weltlesbar — die Datei enthält X25519-PRIVATE-Keys) UNREPARIERT.
+            logger.warning(
+                "fchmod nicht verfügbar (Windows?) — Dateirechte von %s unverändert "
+                "(Bestands-ACLs prüfen; Datei enthält Private Keys)",
+                os.path.basename(path))
+        json.dump(fresh, fh, indent=2)
+        fh.write("\n")
+    return fresh
+
+
+
+class AdapterPinningError(RuntimeError):
+    """Relay-URL ist nicht in der konfigurierten Whitelist (oder ungültiges Schema)."""
+
+
+def _cfg(extra: dict, env_var: str, default: str = "") -> str:
+    """Adapter-Config-Wert: extra-Dict zuerst, dann Env (generisch, niemals geloggt)."""
+    value = str(extra.get(env_var.lower(), "") or "").strip()
+    if not value:
+        value = str(os.environ.get(env_var, "") or "").strip()
+    return value or default
+
+
+class FlipsiBridgeChatAdapter(BasePlatformAdapter):
+    """Chat-Adapter gegen den FlipsiBridge-Relay (Agent-WS-Rolle)."""
+
+    def __init__(self, config: Any = None) -> None:
+        # PlatformConfig (Hermes, .extra-Dict) oder plain dict (Skeleton/Test)
+        if _UNDER_HERMES:
+            # Plugin-Plattform: Enum-Member dynamisch auflösen (Plugin-Loader legt
+            # „flipsibridge“-Member an; sonst None und der Loader stempelt self.platform).
+            platform_arg = None
+            try:
+                from gateway.config import Platform
+                platform_arg = Platform("flipsibridge")
+            except (ImportError, ValueError):
+                pass
+            super().__init__(config, platform_arg)  # type: ignore[arg-type]
+        else:
+            super().__init__(config)
+        extra = getattr(config, "extra", None) or (config if isinstance(config, dict) else {}) or {}
+
+        # --- Adapter-Config-Keys (je Agent-Heim generisch; Token nur im .env) ---
+        self.relay_url: str = _cfg(extra, "FLIPSI_RELAY_URL")
+        self.agent_token: str = _cfg(extra, "FLIPSI_AGENT_TOKEN")
+        self.agent_id: str = _cfg(extra, "FLIPSI_AGENT_ID", default="agent")
+        self.display_name: str = _cfg(extra, "FLIPSI_DISPLAY_NAME", default=self.agent_id)
+        self.ws_route: str = _cfg(extra, "FLIPSI_WS_ROUTE", default="/agent_ws")
+        self.chat_route: str = _cfg(extra, "FLIPSI_CHAT_ROUTE", default="/chat")
+        # Whitelist: Default = genau die 1 konfigurierte URL (I3-Pinning).
+        whitelist_raw = _cfg(extra, "FLIPSI_ALLOWED_URLS", default=self.relay_url)
+        self.allowed_urls: frozenset[str] = frozenset(
+            u.strip().rstrip("/") for u in whitelist_raw.split(",") if u.strip())
+        self.allowed_devices: frozenset[str] = frozenset(
+            d.strip() for d in _cfg(extra, "FLIPSI_ALLOWED_DEVICES").split(",") if d.strip())
+        self.allow_insecure: bool = _cfg(extra, "FLIPSI_ALLOW_INSECURE") == "1"
+
+        # SEC-W1 B F-08: Pinning-Tautologie — ohne explizites FLIPSI_ALLOWED_URLS
+        # defaultet die Whitelist auf die Relay-URL selbst und pinnt damit JEDE
+        # (auch kompromittierte) URL gegen sich selbst. Fail-closed bleibt
+        # erhalten, aber die unabhängige Vertrauenswurzel fehlt → laut warnen.
+        if not _cfg(extra, "FLIPSI_ALLOWED_URLS"):
+            logger.warning(
+                "FlipsiBridge: FLIPSI_ALLOWED_URLS nicht gesetzt — URL-Pinning "
+                "defaultet auf die Relay-URL selbst (Tautologie, keine unabhängige "
+                "Vertrauenswurzel). Für Produktion die Whitelist unabhängig setzen.")
+
+        # --- PH-3 (Welle 1): E2E-Crypto-Config (Agent = Responder) ---
+        # Identity-File: X25519 Identity+PreKey, 0600, Private Keys nie geloggt.
+        self.identity_file: str = _cfg(extra, "FLIPSI_IDENTITY_FILE") or os.path.join(
+            os.path.expanduser("~"), ".flipsibridge", "agent-identity.json")
+        # SEC-W1 W1A-5: TOFU-Pin der Phone-Identity — relay-keys.json hat am
+        # Agenten KEINEN Consumer (jeder X3DH-Hello galt als 'das Phone',
+        # Session-Verdrängung per Code-Leak). Erster Handshake pint ik_pub.
+        self.phone_pin_file: str = _cfg(extra, "FLIPSI_PHONE_PIN_FILE") or os.path.join(
+            os.path.dirname(os.path.abspath(self.identity_file)) or ".",
+            "phone-pin.json")
+        self.pairing_psk: str = _cfg(extra, "FLIPSI_PAIRING_PSK")
+        try:
+            self.ratchet_rotate: int = max(
+                1, int(_cfg(extra, "FLIPSI_RATCHET_ROTATE", default=str(_RATCHET_ROTATE_EVERY))
+                       or _RATCHET_ROTATE_EVERY))
+        except ValueError:
+            self.ratchet_rotate = _RATCHET_ROTATE_EVERY
+        self._identity: Optional[dict] = None
+        self._crypto_session: Optional[AgentCryptoSession] = None
+        self._session_reset_pending: bool = False
+        self._bg_tasks: list = []  # geplante Sends (Ack/FP-Antwort) — Test-Hook
+
+        # --- Laufzeit-Zustand ---
+        self._ws: Any = None
+        self._frame_task: Optional[asyncio.Task] = None
+        self._connected: bool = False
+        self._ws_factory: Optional[Callable[[str, str, str], Any]] = None
+        # Skeleton/Test-Pfad: Inbound-Texte gehen an diesen Callback, wenn der echte
+        # Gateway (handle_message) fehlt.
+        self.message_callback: Optional[Callable[[dict], None]] = None
+        # SEC-W2 W2-3: FIFO-Cap (Parität zu den Relay-Maps W1 D2/W1C-7) —
+        # die Diagnose-Liste wuchs UNBEGRENZT: ein (kompromittierter) Relay
+        # oder Junk-Quelle füllte rejected_frames je Frame +1 ohne Obere Grenze
+        # (RAM-Wachstum im Agent-Prozess). deque behält append/len/Index-Semantik.
+        self.rejected_frames: deque = deque(maxlen=256)
+
+        # PH2-T11 (F2-S2+S3): Empfangszeit je chat_id (Unix-ms) — Basis für
+        # elapsed_ms (Empfang→Antwort) und started_at des Activity-Frames.
+        # Bewusst begrenzt (FIFO-Cap): Empfangs-Zeiten sind kein Archiv.
+        self._received_at: dict[str, int] = {}
+
+    # ------------------------------------------------------------------ Pinning
+    def _pin_relay_url(self) -> str:
+        """Whitelist-Pinning (I3): geprüfte Relay-URL oder AdapterPinningError.
+
+        - Muss schema-genau wss:// bzw. https:// sein (ws/http nur bei
+          FLIPSI_ALLOW_INSECURE=1 für lokale QA-Drills).
+        - Kein userinfo (@) in der URL.
+        - Muss exakt (normalisiert, ohne trailing slash) in self.allowed_urls stehen.
+        """
+        url = (self.relay_url or "").strip()
+        if not url:
+            raise AdapterPinningError("Keine Relay-URL konfiguriert (FLIPSI_RELAY_URL)")
+        parsed = urlsplit(url)
+        if "@" in (parsed.netloc or ""):
+            raise AdapterPinningError("Relay-URL mit userinfo abgelehnt")
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in {"wss", "https"} and not (self.allow_insecure and scheme in {"ws", "http"}):
+            raise AdapterPinningError(
+                f"Schema {parsed.scheme or '<leer>'!r} nicht erlaubt (nur wss/https"
+                + (", ws/http nur mit FLIPSI_ALLOW_INSECURE=1)" if not self.allow_insecure else ")"))
+        normalized = url.rstrip("/")
+        if normalized not in self.allowed_urls:
+            raise AdapterPinningError("Relay-URL nicht in der konfigurierten Whitelist — verweigert")
+        return url
+
+    # ------------------------------------------------------- Base-Schnittstelle
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        """OUTBOUND-Verbindung zum Relay (Agent-WS-Route) + Frame-Loop starten."""
+        url = self._pin_relay_url()  # Pinnung VOR jedem Verbindungsaufbau
+        if not self.agent_token:
+            logger.error("FlipsiBridge: kein Agent-Token konfiguriert — kein Connect")
+            return False
+        try:
+            self._ws = await self._open_ws(url)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: WS-Connect fehlgeschlagen: %s", exc)
+            self._connected = False
+            return False
+        # Identität announce (kein Token im Envelope — Token steckt im WS-Auth-Header)
+        await self._send_json({
+            "type": "agent.register", "v": _PROTOCOL_VERSION,
+            "agent_id": self.agent_id, "display_name": self.display_name})
+        # PH-3: Identity-Keys laden/erzeugen (File 0600, Keys NIE loggen — nur
+        # der Identity-Fingerprint ist öffentliche Info).
+        if _HAS_CRYPTO:
+            try:
+                self._identity = load_or_create_identity(self.identity_file)
+                logger.info("FlipsiBridge: PH-3 E2E bereit (Identity-Fingerprint %s)",
+                            fingerprint_display(fingerprint_of_pub(
+                                bytes.fromhex(self._identity["identity_pub"]))))
+            except CryptoFrameError as exc:
+                logger.error("FlipsiBridge: %s — E2E deaktiviert (Legacy-Modus)", exc)
+        else:
+            logger.warning(
+                "FlipsiBridge: cryptography fehlt — Legacy-Klartext-Modus (PH-3 nicht verfügbar)")
+        self._frame_task = asyncio.get_running_loop().create_task(self._frame_loop())
+        self._connected = True
+        logger.info("FlipsiBridge-Adapter verbunden (agent_id=%s)", self.agent_id)
+        return True
+
+    async def _open_ws(self, url: str) -> Any:
+        """WS öffnen: injizierbare Factory (Mock-Test), sonst aiohttp ClientSession."""
+        if self._ws_factory is not None:
+            return self._ws_factory(url, self.agent_token, self.agent_id)
+        try:
+            from aiohttp import ClientSession
+        except ImportError as exc:
+            raise RuntimeError("aiohttp fehlt — pip install aiohttp") from exc
+        session = ClientSession()
+        ws = await session.ws_connect(
+            url, headers={"Authorization": f"Bearer {self.agent_token}"},
+            heartbeat=45.0,  # Präsenz-Heartbeat (Reuse 15-s-Relay-Erkennung, gedrosselt)
+            max_msg_size=2 * 1024 * 1024)  # REL-04: 2-MB-Frame-Limit NICHT anheben
+        ws._flipsi_own_session = session
+        setattr(ws, "_flipsi_session", session)  # Cleanup-Referenz für disconnect()
+        return ws
+
+    async def disconnect(self) -> None:
+        """Frame-Loop stoppen + WS sauber schließen."""
+        self._connected = False
+        if self._frame_task is not None:
+            self._frame_task.cancel()
+            try:
+                await self._frame_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._frame_task = None
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            session = getattr(self._ws, "_flipsi_session", None)
+            if session is not None:
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+            self._ws = None
+        logger.info("FlipsiBridge-Adapter getrennt")
+
+    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
+                   metadata: Optional[dict] = None) -> SendResult:
+        """Text über die Agent-WS als JSON an die Relay-/chat-Route (type=chat.reply).
+
+        PH2-T11 (F2-S3): unmittelbar VOR der Antwort ein chat.activity
+        {working: true, started_at}, danach {working: false} — der Phone-Header
+        zeigt 'arbeitet …' live. started_at = Empfangszeit der Nachricht
+        (Falls unbekannt: jetzt). elapsed_ms (F2: Empfang→Antwort-Send) wird
+        im Envelope mitgegeben; ein Fehlschlag der Activity-Frames bricht die
+        Antwort NIEMALS (Status ≠ Inhalt).
+        """
+        if not self._connected or self._ws is None:
+            return SendResult(success=False, error="nicht verbunden", retryable=True)
+        msg_id = uuid.uuid4().hex[:16]
+        received_ms = self._received_at.get(chat_id)
+        started_at = received_ms if received_ms is not None else int(time.time() * 1000)
+        await self._send_activity(chat_id, working=True, started_at=started_at)
+        # PH-3: aktive E2E-Session → chat.reply.enc (Text NUR im AES-GCM-ct).
+        session = self._active_session()
+        if session is not None:
+            payload = {"text": content, "msg_id": msg_id}
+            if reply_to:
+                payload["reply_to"] = reply_to
+            envelope = session.encrypt_frame(
+                "chat.reply.enc", chat_id, payload, clear={"msg_id": msg_id})
+        else:
+            envelope = {
+                "type": "chat.reply", "v": _PROTOCOL_VERSION, "msg_id": msg_id,
+                "route": self.chat_route,  # Relay routet den Payload an /chat
+                "agent_id": self.agent_id, "chat_id": chat_id,
+                "reply_to": reply_to,
+                # SEC-W1 Drill-Fund P2 (vc36): Der Relay liest Top-Level
+                # 'text' (_handle_agent_chat_reply — Vertrag, den auch die
+                # Relay-Tests festschreiben). 'body.text' wurde als 'chat.reply
+                # ohne gültiges chat_id/text' verworfen => jede Legacy-
+                # Klartext-Antwort ging stillos verloren.
+                "text": content,
+                "body": {"text": content}}  # Alt-Kompatibilität (Leser, die body nutzen)
+        if received_ms is not None:
+            envelope["elapsed_ms"] = max(0, int(time.time() * 1000) - received_ms)
+        if metadata:
+            envelope["metadata"] = metadata
+        try:
+            try:
+                await self._send_json(envelope)
+            except Exception as exc:
+                logger.warning("FlipsiBridge: send fehlgeschlagen: %s", exc)
+                return SendResult(success=False, error=str(exc), retryable=True, message_id=msg_id)
+            return SendResult(success=True, message_id=msg_id, raw_response=envelope)
+        finally:
+            # PH2-FIX (Jäger B5): working=false IMMER feuern — auch wenn der
+            # Reply-Send scheitert oder dazwischen ein Fehler fliegt. Sonst
+            # bleibt der Phone-Header-Spinner ('arbeitet …') dauerhaft stecken.
+            await self._send_activity(chat_id, working=False, started_at=started_at)
+
+    async def send_typing(self, chat_id: str) -> None:
+        """Tipp-Indikator (presence-Event, gedrosselt — kein Polling)."""
+        if self._connected and self._ws is not None:
+            await self._send_json({"type": "typing", "v": _PROTOCOL_VERSION,
+                                   "agent_id": self.agent_id, "chat_id": chat_id})
+
+    async def send_image(self, chat_id: str, image_url: str,
+                         caption: Optional[str] = None) -> SendResult:
+        """Bild per URL (Skeleton; Datei-Transfer = eigener P6-Chunk-Stream)."""
+        if not self._connected or self._ws is None:
+            return SendResult(success=False, error="nicht verbunden", retryable=True)
+        msg_id = uuid.uuid4().hex[:16]
+        await self._send_json({
+            "type": "chat.reply", "v": _PROTOCOL_VERSION, "msg_id": msg_id,
+            "route": self.chat_route, "agent_id": self.agent_id, "chat_id": chat_id,
+            "body": {"image": image_url, "caption": caption or ""}})
+        return SendResult(success=True, message_id=msg_id)
+
+    def get_chat_info(self, chat_id: str) -> dict:
+        """Chat-Metadaten (Slim — der Adapter kennt nur seine Chat-/Geräte-IDs)."""
+        return {"name": f"FlipsiBridge-Chat {chat_id}", "type": "dm", "chat_id": chat_id}
+
+    # ------------------------------------------------------------- Empfangs-Pfad
+    # SEC-W1 B F-02: Bounded Reconnect-Backoff — endete die Frame-Loop (Relay-
+    # Restart ODER ein kranker Frame), blieb der Adapter PERMANENT offline
+    # (bis Gateway-Restart). Exponentiell 1s→60s, Reset je erfolgreichem
+    # Reconnect; bewusstes disconnect() bricht die Schleife sauber ab.
+    _RECONNECT_BACKOFF_MIN = 1.0
+    _RECONNECT_BACKOFF_MAX = 60.0
+
+    async def _frame_loop(self) -> None:
+        """SEC-W1 B F-02: Frame-Loop mit Per-Frame-Isolation + Reconnect.
+
+        EIN Frame darf die Loop NIE beenden: je Frame try/except (Dispatch
+        inkl. aller Crypto-Fehler, s. _dispatch_frame). Endet der WS-Lauf
+        trotzdem (Relay-Restart, Netz), verbindet der Adapter mit
+        exponentiellem Backoff neu — bounded, kein Endlos-Sturm.
+        """
+        backoff = self._RECONNECT_BACKOFF_MIN
+        while self._connected:
+            try:
+                await self._read_ws_frames()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("FlipsiBridge: Frame-Loop endete: %s", exc)
+            if not self._connected:
+                break
+            logger.info("FlipsiBridge: WS verloren — Reconnect in %.1fs", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self._RECONNECT_BACKOFF_MAX)
+            try:
+                self._ws = await self._open_ws(self._pin_relay_url())
+                await self._send_json({
+                    "type": "agent.register", "v": _PROTOCOL_VERSION,
+                    "agent_id": self.agent_id, "display_name": self.display_name})
+                backoff = self._RECONNECT_BACKOFF_MIN
+                logger.info("FlipsiBridge: Reconnect erfolgreich (Backoff zurückgesetzt)")
+            except Exception as exc:
+                logger.warning("FlipsiBridge: Reconnect fehlgeschlagen: %s", exc)
+
+    async def _read_ws_frames(self) -> None:
+        """Ein WS-Lauf: Frames lesen bis zum Ende; jeder Frame isoliert."""
+        while self._ws is not None:
+            msg = await self._ws.receive()
+            kind = str(getattr(getattr(msg, "type", None), "name",
+                               getattr(msg, "type", ""))).upper()
+            if kind in {"CLOSE", "CLOSED", "CLOSING", "CLOSED_OK"}:
+                # Relay-Close = DER Reconnect-Fall (Relay-Restart schließt
+                # sauber) — Status bleibt 'verbunden', der Supervisor baut
+                # mit Backoff neu auf; bewusstes disconnect() cancelt den Task.
+                logger.info("FlipsiBridge: Relay hat die WS geschlossen — Reconnect geplant")
+                return
+            data = getattr(msg, "data", msg)
+            if isinstance(data, (bytes, bytearray)):
+                data = data.decode("utf-8", errors="replace")
+            if isinstance(data, str):
+                try:
+                    payload = json.loads(data)
+                except ValueError:
+                    logger.warning("FlipsiBridge: ungültiger WS-Frame (kein JSON) ignoriert")
+                    continue
+            else:
+                payload = data
+            if isinstance(payload, dict):
+                # SEC-W1 B F-02: Per-Frame-Isolation — ein kranker Frame
+                # (AttributeError auf string-body, UnicodeEncodeError aus
+                # der Crypto-Kette, …) verwirft NUR diesen Frame; die Loop
+                # und damit der Adapter bleiben am Leben.
+                try:
+                    self._dispatch_frame(payload)
+                except Exception:
+                    logger.warning(
+                        "FlipsiBridge: Frame-Verarbeitung fehlgeschlagen — Frame verworfen",
+                        exc_info=True)
+
+    def _dispatch_frame(self, envelope: dict) -> None:
+        """EIN Frame verarbeiten: Allowlist → Namespace → Nachricht (nie Tool-Call).
+
+        PH2-T11 (F2-S2): nach bestandenen Guards wird SOFORT ein chat.read-
+        Frame bestätigt (Status=read im Broker → chat.status-Frame ans Phone)
+        und die Empfangszeit für elapsed_ms notiert.
+        """
+        etype = str(envelope.get("type", "")).strip()
+        if etype not in _INBOUND_ENVELOPE_ALLOWLIST:
+            # I3: Chat-Route darf KEINE Steuerung ins Agenten-Innere tragen.
+            # SEC-W2 W2-3: Typ kürzen (Log + Diagnose) — %r eines voll
+            # angreiferkontrollierten Typs schrieb bis 2 MB je Frame ins Log.
+            etype_short = _log_id(etype, 64) or "<leer>"
+            self.rejected_frames.append({"type": etype_short,
+                                         "reason": "Envelope-Typ nicht erlaubt (kein Tool-Call-Pfad)"})
+            logger.warning("FlipsiBridge: Frame-Type %r abgelehnt — Chat-Text ist nur Nachricht",
+                           etype_short)
+            return
+        if etype in {"chat.ack", "roster", "presence", "pong"}:
+            logger.debug("FlipsiBridge: %s-Frame empfangen", etype)
+            return
+        # chat.send/chat.deliver: Namespace-Prüfung (fremde agent_id = fremdes Gerät/Backend)
+        target = str(envelope.get("agent_id", "")).strip()
+        if target != self.agent_id:
+            self.rejected_frames.append({"type": etype, "reason": "fremde agent_id (Namespace-Verstoß)"})
+            logger.warning("FlipsiBridge: %s für fremde agent_id abgelehnt", etype)
+            return
+
+        # PH-3-T2: X3DH-vereinfachter Handshake-Frame (App identity/ephe/prekey
+        # → Session-Key-Ableitung beidseitig; der Relay routet nur opak).
+        # Bewusst VOR der chat_id-Pflicht: hello ist Session-Protokoll, kein Chat.
+        if etype == "crypto.hello":
+            self._handle_crypto_hello(envelope)
+            return
+
+        chat_id = str(envelope.get("chat_id", "")).strip()
+        if not chat_id:
+            self.rejected_frames.append({"type": etype, "reason": "chat_id fehlt"})
+            return
+        if self.allowed_devices and chat_id not in self.allowed_devices:
+            self.rejected_frames.append({"type": etype, "reason": "chat_id nicht in Geräte-Whitelist"})
+            logger.warning("FlipsiBridge: chat_id %r nicht erlaubt — abgelehnt", chat_id)
+            return
+
+        # PH-3-T2: X3DH-vereinfachter Handshake-Frame (App identity/ephe/prekey
+        # → Session-Key-Ableitung beidseitig; der Relay routet nur opak).
+        if etype == "crypto.hello":
+            self._handle_crypto_hello(envelope)
+            return
+
+        # PH-3-T3: chat.*.enc — entschlüsseln (Klartext NUR intern, nie geloggt).
+        if etype in ("chat.send.enc", "chat.event.enc"):
+            text = self._decrypt_inbound(envelope, etype)
+            if text is None:
+                return
+            # Sirs Revision (iii): Fingerprint-Chat-Abgleich — reine Protokoll-
+            # Nachricht, geht NICHT an den Agenten (Gateway) weiter.
+            if self._handle_fingerprint_check(envelope, chat_id, text):
+                return
+        else:
+            # Relay-Broker-Frame (chat.send) trägt den Text oben, Skeleton-Namespace
+            # (chat.deliver) im body — beides lesen, keines ausführen (I3).
+            # SEC-W1 B F-02: body kann ein STRING sein (nur bei kompromittier-
+            # tem Relay erreichbar) — .get auf str warf AttributeError, der
+            # die Frame-Loop riss; jetzt: Typ-Check, Frame wird verworfen.
+            body = envelope.get("body")
+            if not isinstance(body, dict):
+                body = {}
+            text = str(body.get("text") or envelope.get("text") or "")
+        # PH2-T11: Empfangszeit für elapsed_ms notieren (begrenzt, FIFO-Cap).
+        self._received_at[chat_id] = int(time.time() * 1000)
+        while len(self._received_at) > 256:
+            self._received_at.pop(next(iter(self._received_at)))
+        # PH2-FIX (Jäger B4): chat.read erst NACH der Verarbeitung — vorher
+        # wurde der Read schon beim bloßen Frame-Empfang bestätigt (Lüge:
+        # 'gelesen', bevor der Text überhaupt angekommen war).
+        self._deliver_inbound(chat_id, text, envelope)
+
+    # ------------------------------------------------------ PH-3 E2E-Kern
+    def _active_session(self) -> Optional[AgentCryptoSession]:
+        """Aktive E2E-Session (24 h) oder None — abgelaufene Session wird
+        verworfen (Legacy bis zum nächsten crypto.hello, Relay läuft synchron)."""
+        sess = self._crypto_session
+        if sess is None:
+            return None
+        if sess.expired():
+            logger.info("FlipsiBridge: E2E-Session %s abgelaufen (24 h) — Legacy bis zum neuen Handshake",
+                        sess.session_id[:8])
+            self._crypto_session = None
+            return None
+        return sess
+
+    def _schedule(self, coro) -> None:
+        """Coroutine als Hintergrund-Task (kein Loop → verwerfen, nie crashen)."""
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            logger.debug("FlipsiBridge: Hintergrund-Task ohne Loop verworfen")
+            return
+        self._bg_tasks.append(task)
+
+    async def drain_bg_tasks(self) -> None:
+        """Helper (Tests/CLI): auf geplante Hintergrund-Sends warten."""
+        while self._bg_tasks:
+            await self._bg_tasks.pop(0)
+
+    def _handle_crypto_hello(self, envelope: dict) -> None:
+        """PH-3-T2: Handshake — Session-Key-Ableitung, hello_ack senden.
+        Neue Session ersetzt eine alte (Session-Rotate = frischer X3DH)."""
+        if not (_HAS_CRYPTO and self._identity is not None):
+            self.rejected_frames.append({"type": "crypto.hello",
+                                        "reason": "Adapter ohne Crypto-Fähigkeit (Legacy)"})
+            logger.warning("FlipsiBridge: crypto.hello ohne Crypto-Fähigkeit ignoriert (Legacy-Modus)")
+            return
+        try:
+            session, ack = AgentCryptoSession.respond_to_hello(
+                envelope, self._identity,
+                psk=self.pairing_psk.encode("utf-8"),
+                rotate_every=self.ratchet_rotate)
+        except CryptoFrameError as exc:
+            self.rejected_frames.append({"type": "crypto.hello", "reason": str(exc)})
+            logger.warning("FlipsiBridge: crypto.hello ungültig — keine Session (%s)", exc)
+            return
+        self._crypto_session = session
+        self._session_reset_pending = False
+        # SEC-W1 W1A-5: TOFU-Bindung der Phone-Identity (ik_pub-Pin) — siehe
+        # _check_phone_identity_pin. Warnung bei Wechsel (kein Blockade-
+        # Design: echtes Neu-Gerät vs. Übernahme klärt der FP-Abgleich).
+        self._check_phone_identity_pin(envelope)
+        logger.info("FlipsiBridge: E2E-Session %s etabliert — Fingerprint %s",
+                    session.session_id[:8], fingerprint_display(session.fingerprint))
+        self._schedule(self._send_ack(ack, session))
+
+    async def _send_ack(self, ack: dict, session: AgentCryptoSession) -> None:
+        """hello_ack senden; scheitert der Send, wird die frische Session
+        wieder verworfen (kein Zustand ohne bestätigte Verbindung)."""
+        try:
+            await self._send_json(ack)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: hello_ack-Send fehlgeschlagen: %s", exc)
+            if self._crypto_session is session:
+                self._crypto_session = None
+
+    def _check_phone_identity_pin(self, hello: dict) -> None:
+        """SEC-W1 W1A-5: TOFU-Bindung der Phone-Identity.
+
+        relay-keys.json (vom Relay gepublishte Phone-Device-Keys) hat am
+        Agenten NULL Consumer — `respond_to_hello` validierte nur die Hex-
+        Form, jeder Paarungs-Code-Inhaber etablierte sich als 'das Phone'
+        (Session-Verdrängung, FP-ABGLEICH verglich dann nur Angreifer-vs-
+        Agent). Fix: Der ERSTE Handshake pint ik_pub des Phones lokal
+        (0600, neben dem Identity-File); ein WECHSEL ist ein lautes
+        Warn-Ereignis (Neu-Gerät ODER Übernahme — klärt der FP-Abgleich).
+        Bewusst Warnung statt Blockade (echtes Gerät-Wechseln bleibt
+        möglich); Datei unlesbar = Warnung + Prüfung übersprungen."""
+        ik_pub = str(hello.get("ik_pub") or "").strip().lower()
+        if not ik_pub:
+            return
+        pin: dict = {}
+        try:
+            with open(self.phone_pin_file, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                pin = loaded
+        except FileNotFoundError:
+            pin = {}
+        except (OSError, ValueError):
+            logger.warning(
+                "FlipsiBridge: Phone-Pin-Datei unlesbar (%s) — TOFU-Prüfung übersprungen",
+                os.path.basename(self.phone_pin_file))
+            return
+        pinned = pin.get("ik_pub")
+        if not isinstance(pinned, str) or not pinned:
+            try:
+                self._write_phone_pin(ik_pub)
+                logger.info("FlipsiBridge: Phone-Identity gepinnt (TOFU, erste Sichtung)")
+            except OSError as exc:
+                logger.warning("FlipsiBridge: Phone-Pin konnte nicht gespeichert werden: %s", exc)
+            return
+        if pinned == ik_pub:
+            return
+        logger.warning(
+            "FlipsiBridge: PHONE-IDENTITY-WECHSEL erkannt (gepinnt %s… → neu %s…) — "
+            "neues Gerät ODER Übernahme-Versuch (weiterer Paarungs-Code-Inhaber). "
+            "Fingerprint-Abgleich am NEUEN Phone prüfen!",
+            pinned[:8], ik_pub[:8])
+
+    def _write_phone_pin(self, ik_pub: str) -> None:
+        """Phone-ik_pub-Pin schreiben — 0600, ATOMAR (SEC-W2 W2-3).
+
+        SEC-W2 W2-3: das alte O_TRUNC auf der Bestandsdatei konnte den
+        Phone-Pin bei Absturz MITTLERES Schreibens leeren/korruptieren
+        (Parität zu W1 D3a für relay-keys.json) — Folge: TOFU-Pin weg →
+        nächster Handshake pint den Angreifer-Key als 'erstes Gerät'.
+        Jetzt: Temp-Datei (mkstemp = 0600) + atomares os.replace; der
+        Alt-Bestand bleibt bei JEDEM Fehler unangetastet."""
+        payload = json.dumps(
+            {"v": 1, "ik_pub": ik_pub, "pinned": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+            indent=2) + "\n"
+        directory = os.path.dirname(os.path.abspath(self.phone_pin_file)) or "."
+        os.makedirs(directory, exist_ok=True)
+        import tempfile as _tempfile
+        fd, tmp_path = _tempfile.mkstemp(prefix=".phone-pin-", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                try:
+                    os.fchmod(fh.fileno(), 0o600)
+                except AttributeError:
+                    pass  # mkstemp legt die Datei ohnehin 0600 an
+                fh.write(payload)
+            os.replace(tmp_path, self.phone_pin_file)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _decrypt_inbound(self, envelope: dict, etype: str) -> Optional[str]:
+        """chat.*.enc entschlüsseln → Text (None = verworfen, Grund geloggt
+        OHNE Klartext). Cross-Session-Replay wird per session_id geblockt."""
+        sess = self._active_session()
+        if sess is None:
+            # SIRS-01 (P0, Volltest 03.11.2026): Agent-Restart (Crash/Update/
+            # Wartung) verliert die In-Memory-Session, das Phone sendet weiter
+            # chat.send.enc auf der ALTEN Session. Bisher: STILL verworfen —
+            # das Phone zeigte '✓✓ Zugestellt' + E2E-Badge weiter, der Chat
+            # war tot. Fix (PoC SIRS-01): statt still verwerfen → SOFORT
+            # crypto.session_reset für die fremde session_id ans Relay (der
+            # Relay entfernt die Session aus seiner Registry + informiert das
+            # Phone) → das Phone stößt einen Neu-Handshake an. Dedup über
+            # _session_reset_pending (das nächste crypto.hello hebt es auf).
+            frame_session = str(envelope.get("session_id") or "").strip()
+            if frame_session:
+                self.rejected_frames.append({
+                    "type": etype,
+                    "reason": "session dem Agenten nicht bekannt (Agent-Neustart) — "
+                              "crypto.session_reset + Neu-Handshake angestoßen"})
+                logger.warning(
+                    "FlipsiBridge: %s mit unbekannter session_id %s — Session dem Agenten "
+                    "nicht bekannt (Agent-Neustart?); crypto.session_reset ans Relay, "
+                    "Neu-Handshake angestoßen", etype, _log_id(frame_session, 16))
+                if not self._session_reset_pending:
+                    self._session_reset_pending = True
+                    self._schedule(self._send_session_reset(
+                        frame_session, "agent-session-lost"))
+                return None
+            self.rejected_frames.append({"type": etype,
+                                        "reason": "enc-Frame ohne aktive E2E-Session"})
+            logger.warning("FlipsiBridge: %s ohne aktive E2E-Session verworfen", etype)
+            return None
+        if str(envelope.get("session_id") or "") != sess.session_id:
+            self.rejected_frames.append({"type": etype,
+                                        "reason": "fremde session_id (Cross-Session-Replay)"})
+            logger.warning("FlipsiBridge: %s mit fremder session_id verworfen", etype)
+            return None
+        try:
+            payload = sess.decrypt_frame(envelope)
+        except CryptoFrameError as exc:
+            self.rejected_frames.append({"type": etype, "reason": str(exc)})
+            logger.warning("FlipsiBridge: %s-Entschlüsselung fehlgeschlagen (%s) — Frame verworfen",
+                           etype, exc)
+            return None
+        return str(payload.get("text") or "")
+
+    def _handle_fingerprint_check(self, envelope: dict, chat_id: str, text: str) -> bool:
+        """Sirs Revision (iii): 'FP-ABGLEICH: <64 Hex>' → Vergleich gegen den
+        EIGENEN Session-Fingerprint + automatische chat.reply-Antwort.
+        True = als Protokoll-Nachricht behandelt (kein Gateway-Push)."""
+        if not text.startswith(_FP_PREFIX):
+            return False
+        sess = self._active_session()
+        if sess is None:
+            logger.info("FlipsiBridge: FP-ABGLEICH ohne aktive E2E-Session — als normale Nachricht behandelt")
+            return False
+        claimed = text[len(_FP_PREFIX):].strip().replace(" ", "").lower()
+        matches = (re.fullmatch(r"[0-9a-f]{64}", claimed) is not None
+                   and hmac.compare_digest(claimed, sess.fingerprint))
+        # SIRS-03 (Volltest 03.11.2026): Der FP-Abgleich wurde GELESEN und
+        # automatisch BEANTWORTET — trotzdem ging nie ein chat.read für ihn
+        # raus, der Phone-Chip blieb bei '✓✓ Zugestellt', obwohl die Antwort
+        # bereits existierte. Der Abgleich ist eine echte Lese-Verarbeitung →
+        # Read-Receipt wie bei jeder zugestellten Nachricht (Chip → 'Gelesen').
+        self._send_read_receipt(chat_id, str(envelope.get("msg_id", "") or ""))
+        self._schedule(self._fp_reply(chat_id, matches, sess))
+        return True
+
+    async def _send_session_reset(self, session_id: str, reason: str) -> None:
+        """PH-3/SIRS-01: crypto.session_reset ans Relay — die Gegenseite
+        verwirft ihre SessionKeys, der Relay entfernt die Session aus der
+        Registry und das Phone stößt einen Neu-Handshake an. Ein Sendefehler
+        bricht den Adapter NIE (nur Warnung — der Frame-Typ steht in der
+        Relay-Allowlist, das nächste hello heilt den Zustand ohnehin)."""
+        try:
+            await self._send_json({"type": "crypto.session_reset",
+                                   "v": _PROTOCOL_VERSION,
+                                   "session_id": session_id,
+                                   "agent_id": self.agent_id,
+                                   "reason": reason})
+        except Exception as exc:
+            logger.warning("FlipsiBridge: crypto.session_reset-Send fehlgeschlagen: %s", exc)
+
+    async def _fp_reply(self, chat_id: str, matches: bool, session) -> None:
+        """Auto-Antwort auf den Fingerprint-Abgleich; bei ABWEICHUNG danach
+        Session invalidieren (Warn + Reset-Flag + crypto.session_reset).
+
+        SEC-W1 W1C-6: Identity-Guard wie _send_ack — der await-Slice beim
+        Senden kann einen NEUEN crypto.hello durchlassen (Session-Rotate
+        nach Mismatch); das bedingungslose `self._crypto_session = None`
+        killte die FRISCHE, gültige Session still (enc-Frames fielen bis
+        zum nächsten hello). Nur invalidieren, wenn NOCH dieselbe aktiv."""
+        reply = _FP_OK_TEXT if matches else _FP_FAIL_TEXT
+        try:
+            # Antwort geht VOR der Invalidierung raus (noch über die aktive
+            # Session verschlüsselt — die Gegenseite muss die Abweichung sehen).
+            await self.send(chat_id, reply)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: Fingerprint-Antwort fehlgeschlagen: %s", exc)
+        if matches:
+            return
+        session_id = session.session_id
+        logger.warning("FlipsiBridge: Fingerprint-ABWEICHUNG in Session %s — Session invalidiert "
+                       "(möglicher Man-in-the-Middle)", session_id[:8])
+        if self._crypto_session is session:
+            self._crypto_session = None
+            self._session_reset_pending = True
+        await self._send_session_reset(session_id, "fingerprint-mismatch")
+
+    def _send_read_receipt(self, chat_id: str, msg_id: str) -> None:
+        """PH2-T11 (F2-S2): chat.read-Frame feuern (fire-and-forget, nie brechen).
+
+        PH-3: aktive E2E-Session → chat.read.enc (msg_id bleibt klar für die
+        PH2-Status-Logik des Relays, ct = verschlüsselter Spiegel).
+        """
+        session = self._active_session()
+        if session is not None:
+            envelope = session.encrypt_frame(
+                "chat.read.enc", chat_id, {"msg_id": msg_id}, clear={"msg_id": msg_id})
+        else:
+            envelope = {
+                "type": "chat.read", "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, "chat_id": chat_id, "msg_id": msg_id,
+            }
+
+        async def _send() -> None:
+            try:
+                await self._send_json(envelope)
+            except Exception as exc:
+                logger.warning("FlipsiBridge: chat.read-Frame fehlgeschlagen: %s", exc)
+
+        try:
+            asyncio.get_running_loop().create_task(_send())
+        except RuntimeError:
+            logger.debug("FlipsiBridge: chat.read ohne Loop verworfen")
+
+    def _deliver_inbound(self, chat_id: str, text: str, envelope: dict) -> None:
+        """Text ALS NACHRICHT in die Gateway-Messages-Pipeline schieben.
+
+        PH2-FIX (Jäger B4): die chat.read-Bestätigung feuert erst DANACH —
+        handle_message muss den Text wirklich verarbeitet haben, bevor der
+        Status 'read' beim Relay/Phone ankommt (vorher: read beim bloßen
+        Frame-Empfang = gelogen). Im Hermes-Pfad kettet die Bestätigung an
+        den handle_message-Task (nach dessen Await); im Skeleton-Pfad ist
+        der Callback synchron → Bestätigung direkt im Anschluss.
+        """
+        if not text:
+            return
+        if _UNDER_HERMES:
+            try:  # Echter Gateway-Pfad: MessageEvent → handle_message (Session je chat_id)
+                source = self.build_source(chat_id=chat_id, chat_name=self.get_chat_info(chat_id)["name"],
+                                           chat_type="dm",
+                                           user_id=str(envelope.get("device_id", chat_id)),
+                                           user_name=str(envelope.get("sender", "Agent-Gerät")),
+                                           message_id=str(envelope.get("msg_id", "")))
+                from gateway.platforms.event import MessageEvent, MessageType  # noqa: F401
+                event = MessageEvent(source=source, text=text,
+                                     message_type=MessageType.TEXT)  # type: ignore[name-defined]
+                msg_id = str(envelope.get("msg_id", "") or "")
+                asyncio.get_running_loop().create_task(self._handle_and_ack(event, chat_id, msg_id))
+                return
+            except Exception:
+                logger.warning("FlipsiBridge: Gateway-Push fehlgeschlagen — Text verworfen",
+                               exc_info=True)
+                return
+        # Skeleton/Test-Pfad: Callback statt Gateway (kein Hermes installiert).
+        if self.message_callback is not None:
+            self.message_callback({
+                "chat_id": chat_id, "text": text,
+                "envelope_type": str(envelope.get("type", "") or "chat.deliver"),
+            })
+        # PH2-FIX (Jäger B4): Text synchron verarbeitet → JETZT erst read.
+        self._send_read_receipt(chat_id, str(envelope.get("msg_id", "") or ""))
+
+    async def _handle_and_ack(self, event: Any, chat_id: str, msg_id: str) -> None:
+        """PH2-FIX (Jäger B4): handle_message awaiten, DANACH erst chat.read.
+
+        Schlägt die Verarbeitung fehl, wird KEIN read bestätigt (der Text
+        wurde nicht wirklich verarbeitet — kein Status-Betrug).
+        """
+        try:
+            await self.handle_message(event)
+        except Exception:
+            logger.warning("FlipsiBridge: handle_message fehlgeschlagen — kein chat.read",
+                           exc_info=True)
+            return
+        self._send_read_receipt(chat_id, msg_id)
+
+    async def _send_activity(self, chat_id: str, working: bool, started_at: int) -> None:
+        """PH2-T11 (F2-S3): chat.activity-Frame senden — Fehler brechen nie die Antwort.
+
+        PH-3: aktive E2E-Session → chat.activity.enc (working/started_at bleiben
+        klar für die Relay-Dedup-Logik, ct = verschlüsselter Spiegel).
+        """
+        session = self._active_session()
+        if session is not None:
+            envelope = session.encrypt_frame(
+                "chat.activity.enc", chat_id,
+                {"working": working, "started_at": started_at},
+                clear={"working": working, "started_at": started_at})
+        else:
+            envelope = {
+                "type": "chat.activity", "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, "chat_id": chat_id,
+                "working": working, "started_at": started_at,
+            }
+        try:
+            await self._send_json(envelope)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: chat.activity-Frame fehlgeschlagen: %s", exc)
+
+    async def _send_json(self, envelope: dict) -> None:
+        """JSON-Frame über die Agent-WS senden (Token bleibt im Auth-Header)."""
+        await self._ws.send_str(json.dumps(envelope))
+
+    # ------------------------------------------------------------------ Loader
+    def is_connected(self) -> bool:
+        """Verbindungsstatus (Skeleton-Hook für Status-Anzeigen)."""
+        return self._connected
+
+
+def check_flipsibridge_requirements() -> bool:
+    """Abhängigkeits-Check (aiohttp für den echten WS-Betrieb)."""
+    try:
+        import aiohttp  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def register(ctx) -> None:
+    """Plugin-Eintrittspunkt (Muster: plugins/platforms/mattermost/adapter.py)."""
+    ctx.register_platform(
+        name="flipsibridge", label="FlipsiBridge Chat",
+        adapter_factory=FlipsiBridgeChatAdapter,
+        check_fn=check_flipsibridge_requirements,
+        required_env=["FLIPSI_RELAY_URL", "FLIPSI_AGENT_TOKEN", "FLIPSI_AGENT_ID"],
+        allowed_users_env="FLIPSI_ALLOWED_DEVICES",
+        install_hint="pip install aiohttp",
+        emoji="🟠")
+
+
+def crypto_cli(argv: Optional[list] = None) -> int:
+    """PH-3 (Spec §2.6): `python adapter.py fingerprint` — Identity-Report.
+
+    Gibt die PUBLIZIERBAREN Werte (PubKeys + Fingerprint) für relay-config.json
+    aus; Private Keys bleiben ausschließlich im Key-File (0600) und werden
+    niemals ausgegeben oder geloggt.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="flipsibridge-crypto",
+        description="FlipsiBridge PH-3 Agent-Identity (fingerprint-Report)")
+    parser.add_argument("command", nargs="?", default="fingerprint",
+                        choices=["fingerprint"], help="Unterbefehl")
+    parser.add_argument("--file", default=os.path.join(
+        os.path.expanduser("~"), ".flipsibridge", "agent-identity.json"),
+        help="Pfad zum Identity-Key-File (Default ~/.flipsibridge/agent-identity.json)")
+    args = parser.parse_args(argv)
+    identity = load_or_create_identity(args.file)
+    fp = fingerprint_of_pub(bytes.fromhex(identity["identity_pub"]))
+    print("FlipsiBridge Agent-Identity — für relay-config.json kopieren (<ID> groß):")
+    print(f"  ANDROID_AGENT_IDENTITY_<ID>    = {identity['identity_pub']}")
+    print(f"  ANDROID_AGENT_PREKEY_<ID>      = {identity['prekey_pub']}")
+    print(f"  ANDROID_AGENT_FINGERPRINT_<ID> = {fp}")
+    print(f"Identity-Fingerprint (Anzeige):  {fingerprint_display(fp)}")
+    print(f"Key-File: {args.file} (0600 — Private Keys bleiben dort)")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(crypto_cli())

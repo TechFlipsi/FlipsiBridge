@@ -16,8 +16,8 @@ android {
         // targetSdk bewusst auf 34 belassen (Verhaltenssprung FGS/Rechte im Release
         // kontrolliert trennen; compileSdk 36 ist nur für Bibliotheksauswahl).
         targetSdk = 34
-        versionCode = 29
-        versionName = "0.12.4"
+        versionCode = 36
+        versionName = "0.14.0"
     }
 
     buildFeatures {
@@ -29,7 +29,9 @@ android {
     // Codebase per productFlavors — github = volle Funktion (bestehende App-ID und
     // Installiert-Basis bleiben), play = Google-konforme Subset-App-ID.
     // Skeleton-Phase: NUR Flavor-Gerüst + BuildConfig-Flags. KEIN Manifest-Minus-Set
-    // (kommt in PH-7), KEINE Permission-Änderung, KEIN versionCode/versionName-Bump.
+    // (kommt in PH-7), KEINE Permission-Änderung. Skeleton-Phase kein Bump; spätere
+    // Wellen bumped regulär (30/0.12.5, 31/0.12.6) — Regel: versionCode-Bump +
+    // CHANGELOG im selben Commit je App-Änderung.
     flavorDimensions += "edition"
     productFlavors {
         // GitHub-Edition (Full Edition): Self-Update via Relay, volle Permissions.
@@ -73,13 +75,16 @@ android {
         }
     }
 
-    // Name the built APK `hermes-android-<version>.apk` instead of the default
-    // `app-debug.apk`, for local builds, the CI artifact, and the release asset alike.
+    // Name der gebauten APK `flipsibridge-<version>-<flavor>.apk` statt des
+    // Defaults `app-debug.apk` — für lokale Builds, das CI-Artefakt und das
+    // Release-Asset gleich. Je Flavor ein eigener Dateiname (keine Kollision
+    // zwischen den Editionen); der Relay-/apk/latest-Parser liest die erste
+    // x.y.z-Zahlengruppe aus dem Namen — der Flavor-Suffix stört ihn nicht.
     applicationVariants.all {
         val variant = this
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "flipsibridge-${variant.versionName}.apk"
+                .outputFileName = "flipsibridge-${variant.versionName}-${variant.flavorName}.apk"
         }
     }
 

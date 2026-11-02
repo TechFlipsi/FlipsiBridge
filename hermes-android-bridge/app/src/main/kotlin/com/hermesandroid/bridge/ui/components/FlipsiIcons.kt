@@ -57,6 +57,22 @@ object StatusIcons {
     @DrawableRes val error: Int = R.drawable.ic_warn
 }
 
+/** Nav-/Top-Bar-Icon (PH1-T1): Chat-Bubble als eigener Vector-Drawable. */
+object NavIcons {
+    @DrawableRes val chat: Int = R.drawable.ic_chat
+}
+
+/** Gruppen-Logos der Einstellungen (PH1-T2): Server, App, Agenten. */
+object SettingsIcons {
+    @DrawableRes val server: Int = R.drawable.ic_link_off
+    @DrawableRes val app: Int = R.drawable.ic_build
+    @DrawableRes val agent: Int = R.drawable.ic_power
+    // PH-2X X-1: Gruppe 4 „App-Sperre“ (Schloss/Privacy-Drawable).
+    @DrawableRes val security: Int = R.drawable.ic_privacy
+    // PH-3 Welle 2: Gruppe 5 „Verschlüsselung“ (Schlüssel-Drawable).
+    @DrawableRes val crypto: Int = R.drawable.ic_key
+}
+
 /** Berechtigungs-Icons (OS-Freigaben-Zeilen). */
 object PermissionIcons {
     @DrawableRes val accessibility: Int = R.drawable.ic_accessibility

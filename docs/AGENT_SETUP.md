@@ -77,7 +77,7 @@ den mit [HAND] markierten Schritten. Prüfe vor jedem Schritt, ob er nicht schon
 | Token | `~/.hermes/.env` als `ANDROID_BRIDGE_TOKEN` | = der Pairing-Code aus der App (12 Zeichen) |
 | TLS | Reverse-Proxy vor dem Relay | Let's Encrypt + WebSocket-Upgrade; Relay selbst bleibt im LAN |
 | mTLS | `contrib/flipsibridge-ca.sh` | CA + pro Gerät ein Client-Zertifikat (P12); Proxy verlangt es (`ssl_verify_client`) |
-| APK | GitHub-Releases oder `./gradlew assembleRelease` | eigener Keystore, siehe `docs/RELEASING.md` |
+| APK | GitHub-Releases oder `./gradlew assembleGithubRelease` | eigener Keystore, siehe `docs/RELEASING.md` |
 
 ## 3. Sicherheitsmodell (Kurzfassung)
 

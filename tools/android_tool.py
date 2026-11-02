@@ -1238,6 +1238,15 @@ def android_setup(pairing_code: str) -> str:
     Call this when the user provides their pairing code from the Hermes Bridge app.
     Example: android_setup("K7V3NP")
     """
+    # FIN-T1 RED-01: leerer/null-Code = fail-closed abgewiesen (einheitliche
+    # Verwerf-Route wie start_relay/set_pairing_code) — NIEMALS einen leeren
+    # Code in .env schreiben (PoC: leere ANDROID_BRIDGE_TOKEN = Relay-Auth-
+    # Bypass, jede Anfrage ohne Header war akzeptiert).
+    if not isinstance(pairing_code, str) or not pairing_code.strip():
+        return json.dumps({
+            "status": "error",
+            "message": "Pairing code must be a non-empty string (fail-closed).",
+        })
     try:
         port = _relay_port()
         public_ip = _get_public_ip()
@@ -1268,9 +1277,15 @@ def android_setup(pairing_code: str) -> str:
             from tools.android_relay import (
                 start_relay,
                 is_phone_connected,
+                set_pairing_code,
             )
 
             start_relay(pairing_code=pairing_code, port=port)
+            # SEC-W2 W2-1: start_relay ist bei laufendem Relay ein stilles
+            # No-Op — der Code-Wechsel (Rotation, z. B. nach Leak) würde sonst
+            # nie am Relay ankommen. set_pairing_code wirkt IMMER und kickt
+            # bei Wechsel die Alt-Code-Phone-WS (Re-Auth mit neuem Code).
+            set_pairing_code(pairing_code)
 
             # Check if phone is already connected
             time.sleep(1)
@@ -1534,6 +1549,9 @@ _SCHEMAS = {
             "properties": {
                 "pairing_code": {
                     "type": "string",
+                    # FIN-T1 RED-01: minLength verhindert den leeren Code schon
+                    # am Tool-Call (PoC: leerer Code = vollständiger Auth-Bypass).
+                    "minLength": 6,
                     "description": "6-character pairing code shown in the Hermes Bridge app on the phone",
                 },
             },

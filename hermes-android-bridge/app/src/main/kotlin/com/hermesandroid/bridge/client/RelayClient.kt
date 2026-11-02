@@ -13,11 +13,18 @@ import android.util.Log
 import com.hermesandroid.bridge.BridgeApplication
 import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.auth.PairingManager
+import com.hermesandroid.bridge.crypto.AndroidKeystoreIdentitySealer
+import com.hermesandroid.bridge.crypto.CryptoEngine
+import com.hermesandroid.bridge.crypto.IdentityStore
+import com.hermesandroid.bridge.crypto.PrefsIdentityStore
+import com.hermesandroid.bridge.crypto.PhoneCryptoPeer
 import com.hermesandroid.bridge.event.EventStore
 import com.google.gson.Gson
+import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import com.hermesandroid.bridge.audio.MicrophoneRecordingFiles
+import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.files.DeviceFiles
 import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
@@ -25,10 +32,20 @@ import com.hermesandroid.bridge.server.CommandDispatcher
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update  // SEC-W1 W1C-4: atomare CAS-Updates
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import okio.ByteString.Companion.toByteString
 import java.io.FileInputStream
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -144,9 +161,135 @@ object RelayClient {
     var currentStatusMessage: String = "Inaktiv"
         private set
 
+    /**
+     * Strukturierte Verbindungs-Phase (PH1-T3, v0.12.5): die UI leitet daraus
+     * BridgeStatus.ConnectionState ab — KEIN String-Matching auf Status-Texten
+     * mehr. notifyStatus setzt sie, bevor die Hörer gerufen werden.
+     */
+    enum class Phase { IDLE, CONNECTING, CONNECTED, RECONNECTING, PAIRING_BROKEN, FAILED }
+
+    /** Aktuelle Verbindungs-Phase — strukturierter Zustand für die UI. */
+    @Volatile
+    var currentPhase: Phase = Phase.IDLE
+        private set
+
     @Volatile
     var isConnected: Boolean = false
         private set
+
+    // ── PH2-MERGE: Chat-Daten-Modelle + StateFlows (UI bindet live daran) ────
+
+    /**
+     * PH2-MERGE: Agenten-Eintrag aus dem relay.state-Hallo-Frame des Relays
+     * ({agent_id, display_name, online} je Agent). Fehlt das agents-Feld,
+     * bleibt die Liste leer → ChatScreen zeigt seinen Demo-Fallback.
+     */
+    data class AgentEntry(
+        val agentId: String,
+        val displayName: String,
+        val online: Boolean,
+    )
+
+    /** PH2-MERGE: Eingehende Agenten-Antwort (chat.event-Frame des Relays).
+     * PH2-T11: elapsedMs = Empfang→Antwort (vom Adapter gemessen, optional). */
+    data class ChatMessageEvent(
+        val chatId: String,
+        val agentId: String,
+        val text: String,
+        val ts: Long,
+        val elapsedMs: Long? = null,
+    )
+
+    /**
+     * PH2-T10 (F2-S1/S2): Zustell-/Lese-Status je eigener Nachricht —
+     * chat.status-Frames des Relays (queued/delivered/read), Key = msg_id
+     * (die App bekommt ihn aus der POST-/chat-Antwort zurück).
+     */
+    data class ChatStatusEvent(
+        val msgId: String,
+        val chatId: String,
+        val status: String,
+        val ts: Long,
+    )
+
+    /**
+     * PH2-T10 (F2-S3): Arbeitsstatus je Agent — chat.activity-Frames des
+     * Relays (je Wechsel 1×, serverseitig dedupliziert). startedAt =
+     * Empfangszeit der Nachricht beim Agenten (Unix-ms) für die mm:ss-Anzeige.
+     */
+    data class AgentActivity(
+        val agentId: String,
+        val chatId: String,
+        val working: Boolean,
+        val startedAt: Long,
+    )
+
+    /** Obergrenze des Empfangs-Puffers (Chat-Verlauf ist kein Dauerarchiv). */
+    private const val MAX_CHAT_EVENTS = 200
+
+    /** Obergrenze der Status-Map (Status ist transient, kein Archiv). */
+    private const val MAX_CHAT_STATUS = 500
+
+    /** Agenten-Liste (relay.state) — letzte Meldung des Relays. */
+    private val _agents = MutableStateFlow<List<AgentEntry>>(emptyList())
+    val agents: StateFlow<List<AgentEntry>> = _agents.asStateFlow()
+
+    /** Empfangene Agenten-Antworten (chat.event) in Empfangs-Reihenfolge. */
+    private val _chatEvents = MutableStateFlow<List<ChatMessageEvent>>(emptyList())
+    val chatEvents: StateFlow<List<ChatMessageEvent>> = _chatEvents.asStateFlow()
+
+    /** PH2-T10: Zustell-/Lese-Status je msg_id (queued/delivered/read). */
+    private val _chatStatus = MutableStateFlow<Map<String, String>>(emptyMap())
+    val chatStatus: StateFlow<Map<String, String>> = _chatStatus.asStateFlow()
+
+    /** PH2-T10: Arbeitsstatus je agent_id (letzter chat.activity-Frame). */
+    private val _agentWorking = MutableStateFlow<Map<String, AgentActivity>>(emptyMap())
+    val agentWorking: StateFlow<Map<String, AgentActivity>> = _agentWorking.asStateFlow()
+
+    // ── PH-3 Welle 2: E2E-Verschlüsselung (fb-v1, Double Ratchet) ──────────
+
+    /**
+     * PH-3: aktive E2E-Sitzung je Agent — Anzeige in Einstellungen →
+     * Verschlüsselung (Fingerprint-Hex 8×4, read-only).
+     */
+    data class E2eSessionInfo(
+        val agentId: String,
+        val sessionId: String,
+        val chatId: String,
+        val fingerprintHex: String,
+        val fingerprintDisplay: String,
+        val agentFingerprintDisplay: String,
+    )
+
+    /** Aktive E2E-Sitzungen (agentId → Info; leer = Klartext v0.14-kompatibel). */
+    private val _e2eSessions = MutableStateFlow<Map<String, E2eSessionInfo>>(emptyMap())
+    val e2eSessions: StateFlow<Map<String, E2eSessionInfo>> = _e2eSessions.asStateFlow()
+
+    /**
+     * PH-3: rot-Banner (Fingerprint-ABWEICHUNG / Session-Reset) — null = keins.
+     * Chat + Settings binden daran; Abweichung = möglicher Man-in-the-Middle.
+     */
+    private val _e2eBanner = MutableStateFlow<String?>(null)
+    val e2eBanner: StateFlow<String?> = _e2eBanner.asStateFlow()
+
+    /** agentId → aktive (hello_ack-verifizierte) E2E-Session. Keys nur Heap. */
+    private val cryptoSessions = ConcurrentHashMap<String, PhoneCryptoPeer>()
+
+    /** session_id → Peer, der auf hello_ack wartet (Wrong-Key = verwerfen). */
+    private val pendingCryptoPeers = ConcurrentHashMap<String, PhoneCryptoPeer>()
+
+    /** agentId → Handshake läuft gerade (kein Doppel-Hellos). */
+    private val handshakesInFlight = ConcurrentHashMap.newKeySet<String>()
+
+    /** Phone-Identity (X25519, aus dem Keystore-sealed IdentityStore geladen). */
+    @Volatile
+    private var phoneIdentity: CryptoEngine.X25519KeyPair? = null
+
+    @Volatile
+    private var phonePrekey: CryptoEngine.X25519KeyPair? = null
+
+    @Volatile
+    private var identityReady: Boolean = false
 
     @Volatile
     private var shouldReconnect: Boolean = false
@@ -243,6 +386,12 @@ object RelayClient {
         clearAuthFailureStreak()
         shouldReconnect = true
         reconnectPolicy.reset()
+        // PH-3 Welle 2: frische E2E-Sessions je WS-Connect (Session-Rotation je
+        // Verbindung, Spec §2.5 — Session-Keys leben nur im RAM).
+        cryptoSessions.clear()
+        pendingCryptoPeers.clear()
+        _e2eBanner.value = null
+        publishE2eSessions()
 
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         if (watchdogScope == null) {
@@ -274,8 +423,13 @@ object RelayClient {
         scope?.cancel()
         scope = null
         isConnected = false
+        // PH-3 Welle 2: Session-Keys verwerfen (RAM-only; frischer Handshake je
+        // Verbindung — Spec §2.5 Rotation je Session).
+        cryptoSessions.clear()
+        pendingCryptoPeers.clear()
+        publishE2eSessions()
         BridgeAccessibilityService.instance?.stopForeground()
-        notifyStatus(false, "Verbindung geschlossen")
+        notifyStatus(false, "Verbindung geschlossen", Phase.IDLE)
         // v0.11.0-QA-LEARNING (Emulator-Repro 30.10., crash-buffer):
         // KEIN stopService() hier! connect() ruft disconnect() zuerst — ein
         // stopService innerhalb des 5-s-FGS-Regelfensters produzierte
@@ -395,7 +549,7 @@ object RelayClient {
         Log.i(TAG, "Connecting to ${safeUrlForLog(buildWsUrl(serverUrl))}")
         // Schnüffler-F2: die FGS-Notification (Sperrbildschirm!) nennt den
         // Relay-Host NIEMALS — nur der App-Screen zeigt die konkrete Adresse.
-        notifyStatus(false, "Verbinde mit Relay ...")
+        notifyStatus(false, "Verbinde mit Relay ...", Phase.CONNECTING)
 
         // v0.12.0 (QA-T20): INVALID-URL darf die App NICHT abschießen —
         // OkHttp HttpUrl wirft bei defekter host/port-Form synchron
@@ -408,7 +562,7 @@ object RelayClient {
                 .build()
         }.getOrElse { e ->
             Log.w(TAG, "Ungültige Server-Adresse: ${e.javaClass.simpleName}")
-            notifyStatus(false, "Server-Adresse ungültig — Format: https://dein-relay.example")
+            notifyStatus(false, "Server-Adresse ungültig — Format: https://dein-relay.example", Phase.FAILED)
             generation = myGeneration - 1
             return
         }
@@ -430,13 +584,16 @@ object RelayClient {
                 // session proves stable (see endSession), so a relay that
                 // accepts and instantly drops us can't retry forever.
                 sessionStartedNs = System.nanoTime()
+                // PH-3 Welle 2: Identity laden (Keystore-sealed) + PUBLIC Keys via
+                // /key_publish; E2E-Handshake startet mit dem relay.state (Agenten).
+                publishIdentity()
                 runCatching {
                     // v0.12.0 (Akku P1-3): KEINE zweite dauerhafte FGS-Promotion
                     // mehr — die Prozess-Priorität trägt der dataSync-FGS
                     // (BridgeConnectionService); die mediaProjection-Promotion
                     // übernimmt ScreenRecorder bei /screen_record selbst.
                 }.onFailure { logW("A11y-Foreground-Promotion übersprungen: ${it.message}") }
-                notifyStatus(true, "Verbunden mit Relay")
+                notifyStatus(true, "Verbunden mit Relay", Phase.CONNECTED)
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -462,7 +619,7 @@ object RelayClient {
                 // v0.12.0 QA-Fix (SK-02/CHEF-02): Service-QUELLE drosseln —
                 // sonst bleibt der A11y-Service bis Reboot auf VOLLEM Set.
                 BridgeAccessibilityService.instance?.applyEventThrottle(false)
-                notifyStatus(false, "Getrennt (code=$code)")
+                notifyStatus(false, "Getrennt (code=$code)", Phase.IDLE)
                 scheduleReconnect()
             }
 
@@ -478,7 +635,7 @@ object RelayClient {
                 EventStore.streamingEnabled = false
                 // v0.12.0 QA-Fix (SK-02/CHEF-02): Service-QUELLE drosseln.
                 BridgeAccessibilityService.instance?.applyEventThrottle(false)
-                notifyStatus(false, errorDetail)
+                notifyStatus(false, errorDetail, Phase.FAILED)
 
                 // Auth-Fehler: kurze Serie zulassen, dann STOPP (Relay blockt
                 // 5 Fehlversuche für 300 s — Endlos-Retry lockt die eigene IP,
@@ -492,7 +649,7 @@ object RelayClient {
                         sessionStartedNs = 0L
                         this@RelayClient.webSocket?.cancel()
                         this@RelayClient.webSocket = null
-                        notifyStatus(false, "Kopplungscode abgelehnt (HTTP $httpCode) — in der App neu koppeln")
+                        notifyStatus(false, "Kopplungscode abgelehnt (HTTP $httpCode) — in der App neu koppeln", Phase.PAIRING_BROKEN)
                         return
                     }
                 }
@@ -557,7 +714,7 @@ object RelayClient {
                 reconnectPending = true
                 reconnectJob?.cancel()
                 reconnectJob = null
-                notifyStatus(false, "$label: nächster Versuch in ${backoff / 60_000} min.")
+                notifyStatus(false, "$label: nächster Versuch in ${backoff / 60_000} min.", Phase.RECONNECTING)
                 return
             }
             Log.w(TAG, "Doze-Alarm nicht planbar — Rückfall auf Coroutine-Warte (${backoff}ms)")
@@ -566,7 +723,7 @@ object RelayClient {
         reconnectPending = true
         reconnectJob = activeScope.launch {
             Log.i(TAG, "Reconnecting in ${backoff}ms... (attempt $attempt/${reconnectPolicy.limit})")
-            notifyStatus(false, "$label in ${backoff / 1000}s (Versuch $attempt/${reconnectPolicy.limit})")
+            notifyStatus(false, "$label in ${backoff / 1000}s (Versuch $attempt/${reconnectPolicy.limit})", Phase.RECONNECTING)
             delay(backoff)
             beginReconnectAttempt(url, PairingManager.getCode())
         }
@@ -670,17 +827,17 @@ object RelayClient {
             }
             ctx.startService(intent)
             Log.i(TAG, "Termux revival: RUN_COMMAND fired (start-zee.sh)")
-            notifyStatus(false, "Stack nicht erreichbar — Termux-Revival ausgelöst …")
+            notifyStatus(false, "Stack nicht erreichbar — Termux-Revival ausgelöst …", Phase.RECONNECTING)
             // The watchdog fired but the app itself must keep trying to
             // reconnect: without this the relay stays dark even after a
             // successful revival (review point: "fires but never reconnects").
             reconnectDelayed()
         } catch (e: SecurityException) {
             Log.e(TAG, "Termux revival BLOCKED: RUN_COMMAND permission missing", e)
-            notifyStatus(false, "Revival blockiert — Termux RUN_COMMAND fehlt als Erlaubnis")
+            notifyStatus(false, "Revival blockiert — Termux RUN_COMMAND fehlt als Erlaubnis", Phase.FAILED)
         } catch (e: Exception) {
             Log.e(TAG, "Termux revival intent failed", e)
-            notifyStatus(false, "Revival fehlgeschlagen: ${e.message?.take(80) ?: "unbekannt"}")
+            notifyStatus(false, "Revival fehlgeschlagen: ${e.message?.take(80) ?: "unbekannt"}", Phase.FAILED)
         }
     }
 
@@ -729,6 +886,26 @@ object RelayClient {
     private suspend fun handleMessage(ws: WebSocket, text: String) {
         try {
             val json = JsonParser.parseString(text).asJsonObject
+
+            // PH2-MERGE: Relay-Eigenframes zuerst — relay.state (Agenten-Liste,
+            // als allererster Frame je Phone-Connect) und chat.event (Agenten-
+            // Antwort). Sie tragen kein request_id und sind KEINE Kommandos.
+            val frameType = runCatching {
+                json.get("type")?.takeIf { it.isJsonPrimitive }?.asString
+            }.getOrNull()
+            when (frameType) {
+                "relay.state" -> { handleRelayStateFrame(json); return }
+                "chat.event" -> { handleChatEventFrame(json); return }
+                "chat.status" -> { handleChatStatusFrame(json); return }
+                "chat.activity" -> { handleChatActivityFrame(json); return }
+                // PH-3 Welle 2: E2E-Frames (Relay = opaker Router, ct wird nie geöffnet)
+                "chat.event.enc" -> { handleChatEventEnc(json); return }
+                "chat.read.enc" -> { handleChatReadEnc(json); return }
+                "chat.activity.enc" -> { handleChatActivityEnc(json); return }
+                "crypto.hello_ack" -> { handleCryptoHelloAck(json); return }
+                "crypto.session_reset" -> { handleCryptoSessionReset(json); return }
+            }
+
             val requestId = json.get("request_id")?.asString ?: ""
             val method = json.get("method")?.asString?.uppercase() ?: "GET"
             val path = json.get("path")?.asString ?: ""
@@ -803,6 +980,638 @@ object RelayClient {
                 ws.send(errorResponse.toString())
             } catch (_: Exception) {}
         }
+    }
+
+    // ── PH2-MERGE: Relay-Eigenframes (relay.state + chat.event) ────────────────
+
+    /**
+     * PH2-MERGE: relay.state-Hallo-Frame → [agents]-Flow. Fehlt das agents-
+     * Feld oder ist es kein Array, bleibt die Liste leer (Demo-Fallback der
+     * UI, kein Crash). Fehlen je Eintrag Felder, wird der Eintrag übersprungen
+     * bzw. mit sinnvollen Defaults gefüllt (display_name = agent_id).
+     */
+    private fun handleRelayStateFrame(json: JsonObject) {
+        val agentsArray = json.get("agents") as? JsonArray
+        if (agentsArray == null) {
+            _agents.value = emptyList()
+            return
+        }
+        val parsed = agentsArray.mapNotNull { element ->
+            val obj = element as? JsonObject ?: return@mapNotNull null
+            val agentId = runCatching {
+                obj.get("agent_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+            }.getOrNull().orEmpty()
+            if (agentId.isEmpty()) return@mapNotNull null
+            val displayName = runCatching {
+                obj.get("display_name")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+            }.getOrNull().orEmpty().ifEmpty { agentId }
+            val online = runCatching {
+                obj.get("online")?.takeIf { it.isJsonPrimitive }?.asBoolean
+            }.getOrNull() ?: false
+            // PH-3 F7 (Jäger): session_active = WAHRHEIT des Relay-Session-
+            // Brokers (je Agent). relay.state kommt bei JEDEM Phone-(Re)Connect —
+            // hier holt die App ein verschlucktes crypto.session_reset nach:
+            // sagt der Relay session_active=false, während lokal noch eine
+            // aktive Session lebt, war das Reset-Frame auf der toten WS
+            // verloren (kein Spool für Eigenframes). Session verwerfen +
+            // rot-Banner statt weiter auf toten Keys zu vertrauen. Fehlt das
+            // Feld (älterer Relay), bleibt das Verhalten unverändert (null).
+            val sessionActive = runCatching {
+                obj.get("session_active")?.takeIf { it.isJsonPrimitive }?.asBoolean
+            }.getOrNull()
+            if (E2eSessionTruth.missedReset(sessionActive, cryptoSessions[agentId]?.isActive() == true)) {
+                Log.w(
+                    TAG,
+                    "PH-3 F7: Session für Agent ${agentId.take(24)} laut relay.state " +
+                        "inaktiv — verschlucktes crypto.session_reset nachgeholt",
+                )
+                cryptoSessions.remove(agentId)
+                publishE2eSessions()
+                _e2eBanner.value =
+                    "E2E-Sitzung wurde serverseitig zurückgesetzt — bitte neu verbinden."
+            }
+            AgentEntry(agentId, displayName, online)
+        }
+        _agents.value = parsed
+        if (BuildConfig.DEBUG) Log.d(TAG, "relay.state: ${parsed.size} Agent(en)")
+        // PH-3 Welle 2: E2E-Handshake je onlineem Agenten (crypto.hello über
+        // POST /crypto_hello; Identity-Publish läuft parallel beim onOpen).
+        maybeStartHandshakes()
+    }
+
+    /**
+     * PH2-MERGE: chat.event-Frame (Agenten-Antwort) → [chatEvents]-Flow.
+     * Ungültige Frames (chat_id/agent_id/text fehlt) werden still verworfen —
+     * die Verbindung bleibt unberührt (Server entsorgt Müll ebenfalls nur).
+     */
+    private fun handleChatEventFrame(json: JsonObject) {
+        val chatId = runCatching {
+            json.get("chat_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        val agentId = runCatching {
+            json.get("agent_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        // PH-3 F1 (Jäger P1): Downgrade-SYMMETRIE — ist für diesen Agenten
+        // eine aktive E2E-Session bekannt, wird KLARTEXT chat.event verworfen
+        // (der Agent sendet chat.event.enc; Klartext = Downgrade-Versuch).
+        // Rot-Banner statt stiller Anzeige, Warnung im Log.
+        if (agentId.isNotEmpty()) {
+            cryptoSessions[agentId]?.let { peer ->
+                if (peer.isActive()) {
+                    Log.w(
+                        TAG,
+                        "chat.event (Klartext) für Agent ${agentId.take(24)} verworfen — " +
+                            "E2E-Session aktiv (Downgrade-Schutz)",
+                    )
+                    _e2eBanner.value =
+                        "Unverschlüsselte Antwort verworfen — E2E-Sitzung aktiv. Neu verbinden."
+                    return
+                }
+            }
+        }
+        val body = runCatching {
+            json.get("text")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        if (chatId.isEmpty() || agentId.isEmpty() || body == null) return
+        val ts = runCatching {
+            json.get("ts")?.takeIf { it.isJsonPrimitive }?.asLong
+        }.getOrNull() ?: System.currentTimeMillis()
+        // PH2-T11: elapsed_ms (Empfang→Antwort, Adapter-Messung) — optional.
+        val elapsedMs = runCatching {
+            json.get("elapsed_ms")?.takeIf { it.isJsonPrimitive }?.asLong
+        }.getOrNull()
+        val event = ChatMessageEvent(chatId, agentId, body, ts, elapsedMs)
+        // SEC-W1 W1C-4: Per-Frame IO-Coroutinen liefen parallel auf dem
+        // Read-Modify-Write → StateFlow-Lost-Update = stiller Nachrichten-
+        // schwund. update{} = CAS-Schleife, kein Frame geht mehr verloren.
+        _chatEvents.update { (it + event).takeLast(MAX_CHAT_EVENTS) }
+        // SIRS-02: eingehende Antwort persistieren (genau hier, genau einmal).
+        persistChatBubble(agentId, chatId, fromAgent = true, body, ts, status = null)
+        if (BuildConfig.DEBUG) Log.d(TAG, "chat.event von Agent ${agentId.take(24)}")
+    }
+
+    /**
+     * PH2-T10 (F2-S1/S2): chat.status-Frame → [chatStatus]-Flow (Key msg_id).
+     * Ungültige Frames (msg_id/status fehlt, unbekannter Status) werden still
+     * verworfen — die Verbindung bleibt unberührt. Map bleibt begrenzt
+     * (Status ist transient), älteste Keys fliegen zuerst raus.
+     */
+    private fun handleChatStatusFrame(json: JsonObject) {
+        val msgId = runCatching {
+            json.get("msg_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        val status = runCatching {
+            json.get("status")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        if (msgId.isEmpty() || status !in setOf("queued", "delivered", "read")) return
+        // PH-3 F4 (Jäger P2): Rang-Dedup — SPIEGEL des Relay-_set_chat_status:
+        // existiert ein Eintrag mit Rang ≥ dem eingehenden, wird der Frame
+        // verworfen (kein Chip-Downgrade: last-write-wins könnte einen 'read'-
+        // Chip auf 'delivered' zurückkleben, wenn Frames die Reihenfolge
+        // tauschen — Spool/Reconnect macht das real möglich).
+        // SEC-W1 W1C-4: Rang-Prüfung + Schreiben atomar in EINEM CAS-Schritt
+        // (update{}) — der externe Check war ein TOCTOU-Fenster, parallele
+        // Frame-Coroutinen konnten den Chip-Status still überschreiben.
+        _chatStatus.update { cur ->
+            if (!ChatStatusRank.shouldApply(cur[msgId], status)) {
+                if (BuildConfig.DEBUG) {
+                    Log.d(TAG, "chat.status $status für ${msgId.take(12)} verworfen — Rang ≤ existierend")
+                }
+                cur
+            } else {
+                if (BuildConfig.DEBUG) Log.d(TAG, "chat.status: $status für msg ${msgId.take(12)}")
+                val next = LinkedHashMap(cur)
+                next[msgId] = status
+                while (next.size > MAX_CHAT_STATUS) {
+                    next.remove(next.keys.first())
+                }
+                next
+            }
+        }
+    }
+
+    /**
+     * PH2-T10 (F2-S3): chat.activity-Frame → [agentWorking]-Flow (Key agent_id,
+     * letzter Frame gewinnt — der Relay sendet je Wechsel genau 1×).
+     */
+    private fun handleChatActivityFrame(json: JsonObject) {
+        val agentId = runCatching {
+            json.get("agent_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        val working = runCatching {
+            json.get("working")?.takeIf { it.isJsonPrimitive }?.asBoolean
+        }.getOrNull() ?: return
+        if (agentId.isEmpty()) return
+        val chatId = runCatching {
+            json.get("chat_id")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull().orEmpty()
+        val startedAt = runCatching {
+            json.get("started_at")?.takeIf { it.isJsonPrimitive }?.asLong
+        }.getOrNull() ?: System.currentTimeMillis()
+        val activity = AgentActivity(agentId, chatId, working, startedAt)
+        // SEC-W1 W1C-4: atomares update{} statt Read-Modify-Write.
+        _agentWorking.update { it + (agentId to activity) }
+        if (BuildConfig.DEBUG) Log.d(TAG, "chat.activity: agent ${agentId.take(24)} working=$working")
+    }
+
+    // ── PH-3 Welle 2: E2E-Handshake + chat.*.enc-Empfang ───────────────────
+
+    /**
+     * PH-3-T2: Identity laden (Keystore-sealed, fail-closed) + PUBLIC Keys
+     * via POST /key_publish (Pairing-Bearer). Private Keys NIE geloggt.
+     * Fehlschlag = E2E aus (Legacy-Klartext v0.14-kompatibel), kein Crash.
+     */
+    private fun publishIdentity() {
+        val ctx = appContext ?: return
+        val activeScope = scope ?: return
+        activeScope.launch {
+            runCatching {
+                val identity = IdentityStore(
+                    PrefsIdentityStore(ctx), AndroidKeystoreIdentitySealer()
+                ).loadOrCreate()
+                phoneIdentity = CryptoEngine.X25519KeyPair(
+                    CryptoEngine.fromHex(identity.ikPrivHex),
+                    CryptoEngine.fromHex(identity.ikPubHex),
+                )
+                phonePrekey = CryptoEngine.X25519KeyPair(
+                    CryptoEngine.fromHex(identity.spkPrivHex),
+                    CryptoEngine.fromHex(identity.spkPubHex),
+                )
+                identityReady = true
+                val base = serverUrl?.trim()?.trimEnd('/') ?: return@launch
+                val body = JsonObject().apply {
+                    addProperty("ik_pub", identity.ikPubHex)
+                    addProperty("spk_pub", identity.spkPubHex)
+                    addProperty("device_id", "phone")
+                }
+                postJson(base, "/key_publish", body)
+                Log.i(TAG, "PH-3: Identity bereit + veröffentlicht (nur Pubs, Keys nie geloggt)")
+                // relay.state kann VOR der Identity angekommen sein — jetzt nachholen.
+                maybeStartHandshakes()
+            }.onFailure {
+                Log.w(TAG, "PH-3: Identity nicht ladbar (${it.javaClass.simpleName}) — E2E aus (fail-closed)")
+            }
+        }
+    }
+
+    /** E2E-Handshake je onlineem Agenten starten (Idempotenz-Guards innen). */
+    private fun maybeStartHandshakes() {
+        if (!identityReady) return
+        _agents.value.filter { it.online }.forEach { startHandshake(it.agentId) }
+    }
+
+    /**
+     * PH-3-T2: crypto.hello je Agent — Agent-Keys via GET /key_get (fail-closed
+     * 404 = kein E2E für diesen Agenten), frisches EK, POST /crypto_hello.
+     * hello_ack kommt als Frame über die Phone-WS (Relay = opaker Router).
+     */
+    private fun startHandshake(agentId: String) {
+        val activeScope = scope ?: return
+        val ik = phoneIdentity ?: return
+        val spk = phonePrekey ?: return
+        cryptoSessions[agentId]?.let { if (it.isActive()) return }
+        if (!handshakesInFlight.add(agentId)) return
+        activeScope.launch {
+            try {
+                val base = serverUrl?.trim()?.trimEnd('/') ?: return@launch
+                val agentKeys = keyGet(base, agentId) ?: return@launch
+                val peer = PhoneCryptoPeer(
+                    agentId = agentId,
+                    agentIkPubHex = agentKeys.ikPub,
+                    agentSpkPubHex = agentKeys.spkPub,
+                    identityIk = ik,
+                    identitySpk = spk,
+                )
+                val sessionId = "fb-" + CryptoEngine.hex(CryptoEngine.secureRandomBytes(8))
+                val chatId = "chat-" + CryptoEngine.hex(CryptoEngine.secureRandomBytes(6))
+                val hello = peer.makeHello(sessionId, chatId)
+                pendingCryptoPeers[sessionId] = peer
+                if (!postJson(base, "/crypto_hello", hello)) {
+                    pendingCryptoPeers.remove(sessionId)
+                    Log.w(TAG, "PH-3: crypto.hello für Agent ${agentId.take(24)} abgelehnt — kein E2E (Legacy)")
+                } else {
+                    Log.i(TAG, "PH-3: crypto.hello Session ${sessionId.take(8)} gesendet (Agent ${agentId.take(24)})")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "PH-3: Handshake fehlgeschlagen (${e.javaClass.simpleName}) — nie Keys/Inhalt loggen")
+            } finally {
+                handshakesInFlight.remove(agentId)
+            }
+        }
+    }
+
+    /** PH-3: Agent-Public-Keys aus der Registry (404 = Agent ohne E2E-Keys). */
+    private class AgentKeys(val ikPub: String, val spkPub: String)
+
+    private fun keyGet(base: String, agentId: String): AgentKeys? = runCatching {
+        val request = Request.Builder()
+            .url(buildHttpUrl(base, "/key_get?agent_id=$agentId"))
+            .header("Authorization", "Bearer ${PairingManager.getCode()}")
+            .get()
+            .build()
+        client.newCall(request).execute().use { response ->
+            if (response.code != 200) {
+                Log.w(TAG, "PH-3: /key_get für Agent ${agentId.take(24)} → HTTP ${response.code} (fail-closed)")
+                return null
+            }
+            val obj = JsonParser.parseString(response.body?.string() ?: "").asJsonObject
+            AgentKeys(obj.get("ik_pub").asString, obj.get("spk_pub").asString)
+        }
+    }.getOrNull()
+
+    /** JSON-POST mit Pairing-Bearer (Key-Registry + crypto_hello-Routen). */
+    private fun postJson(base: String, path: String, body: JsonObject): Boolean = runCatching {
+        val request = Request.Builder()
+            .url(buildHttpUrl(base, path))
+            .header("Authorization", "Bearer ${PairingManager.getCode()}")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        client.newCall(request).execute().use { it.code in 200..299 }
+    }.getOrDefault(false)
+
+    /** Frame-String-Feld (primitive) — null bei fehlendem/nicht-primitivem Feld. */
+    private fun stringOf(json: JsonObject, field: String): String? = runCatching {
+        json.get(field)?.takeIf { it.isJsonPrimitive }?.asString?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
+
+    private fun longOf(json: JsonObject, field: String): Long? = runCatching {
+        json.get(field)?.takeIf { it.isJsonPrimitive }?.asLong
+    }.getOrNull()
+
+    /** E2eSessionInfo-Flow neu veröffentlichen (Session kam/weg). */
+    private fun publishE2eSessions() {
+        _e2eSessions.value = cryptoSessions.entries.mapNotNull { (agentId, peer) ->
+            val fp = peer.fingerprint ?: return@mapNotNull null
+            E2eSessionInfo(
+                agentId = agentId,
+                sessionId = peer.sessionId ?: "",
+                chatId = peer.chatId ?: "",
+                fingerprintHex = fp,
+                fingerprintDisplay = CryptoEngine.fingerprintDisplay(fp),
+                agentFingerprintDisplay = CryptoEngine.fingerprintDisplay(peer.agentFingerprint),
+            )
+        }.associateBy { it.agentId }
+    }
+
+    /** Session-Rotate-Hinweis (hdr.rot = 1): frische crypto.hello (§5.4). */
+    private fun handleRotateHint(frame: JsonObject, agentId: String, peer: PhoneCryptoPeer) {
+        if (!peer.hasRotateHint(frame)) return
+        Log.i(TAG, "PH-3: rotate-Hinweis (hdr.rot) — frischer Handshake für Agent ${agentId.take(24)}")
+        cryptoSessions.remove(agentId)
+        publishE2eSessions()
+        startHandshake(agentId)
+    }
+
+    /** PH-3: hello_ack-Verify (k_init GENAU EINMAL) → Session aktiv. */
+    private fun handleCryptoHelloAck(json: JsonObject) {
+        val sessionId = stringOf(json, "session_id") ?: return
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = pendingCryptoPeers.remove(sessionId) ?: return
+        try {
+            peer.consumeAck(json)
+            cryptoSessions[agentId] = peer
+            publishE2eSessions()
+            Log.i(TAG, "PH-3: E2E-Session ${sessionId.take(8)} aktiv (Agent ${agentId.take(24)})")
+        } catch (e: Exception) {
+            // Wrong-Key/PSK → Session verwerfen, KEIN Cleartext-Fallback (Spec §6).
+            Log.w(TAG, "PH-3: hello_ack-Verify fehlgeschlagen — Session verworfen (fail-closed)")
+        }
+    }
+
+    /**
+     * PH-3 (Sirs Revision (iii)): Session-Reset vom Agenten — SessionKeys
+     * verwerfen; das Verhalten entscheidet der REASON (SIRS-01, P0):
+     * - "agent-session-lost" = BENIGN: Der Agent kennt die Sitzung nach einem
+     *   Neustart nicht mehr (kein Sicherheitsereignis) — KEIN MitM-Alarm,
+     *   Verbindungsstatus unberührt, stattdessen SOFORT ein neuer Handshake
+     *   (früher: stille Tote-Session, Heilung nur per App-Restart).
+     * - alles andere (fingerprint-mismatch) = Sicherheitsereignis: rot-Banner
+     *   + PAIRING_BROKEN-artige Status-Zeile wie bisher.
+     */
+    private fun handleCryptoSessionReset(json: JsonObject) {
+        val sessionId = stringOf(json, "session_id") ?: return
+        val agentId = stringOf(json, "agent_id") ?: return
+        val decision = sessionResetDecision(stringOf(json, "reason"))
+        pendingCryptoPeers.remove(sessionId)
+        cryptoSessions.remove(agentId)
+        publishE2eSessions()
+        if (decision.isSecurityEvent) {
+            Log.w(TAG, "PH-3: Session ${sessionId.take(8)} vom Agenten zurückgesetzt (Fingerprint-Abweichung)")
+            _e2eBanner.value = decision.banner
+            notifyStatus(
+                false,
+                "E2E-Sitzung zurückgesetzt (Fingerprint-Abweichung) — neu verbinden",
+                Phase.PAIRING_BROKEN,
+            )
+        } else {
+            // SIRS-01: benigne Zeile (Log) + Neu-Handshake-Anstoß — das
+            // E2E-Badge (publishE2eSessions oben) verschwindet kurz und kommt
+            // mit der bestätigten neuen Session zurück; der User bekommt KEIN
+            // rote MitM-Warnung für einen normalen Agent-Neustart.
+            Log.i(
+                TAG,
+                "SIRS-01: Session ${sessionId.take(8)} dem Agenten nicht mehr bekannt " +
+                    "(Agent-Neustart) — Neu-Handshake sofort angestoßen",
+            )
+            startHandshake(agentId)
+        }
+    }
+
+    /**
+     * PH-3: chat.event.enc = verschlüsselte Agenten-Antwort → entschlüsseln
+     * (Klartext intern-only, nie geloggt) → wie bisher in [chatEvents] (der
+     * KI-Badge der Chat-UI bleibt, da fromAgent = true).
+     */
+    private fun handleChatEventEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: run {
+            Log.w(TAG, "PH-3: chat.event.enc ohne aktive E2E-Session verworfen")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: chat.event.enc-Entschlüsselung fehlgeschlagen — Frame verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val text = runCatching {
+            payload.get("text")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull() ?: return
+        val chatId = stringOf(json, "chat_id") ?: return
+        val ts = longOf(json, "ts") ?: System.currentTimeMillis()
+        val elapsedMs = longOf(json, "elapsed_ms")
+        // SEC-W1 W1C-4: atomares update{} (CAS) — kein Lost-Update mehr.
+        _chatEvents.update { (it + ChatMessageEvent(chatId, agentId, text, ts, elapsedMs))
+            .takeLast(MAX_CHAT_EVENTS) }
+        // SIRS-02: verschlüsselte Antworten DENSELBEN Weg persistieren wie
+        // Klartext-Ereignisse — der Verlauf kennt keinen E2E-Unterschied.
+        persistChatBubble(agentId, chatId, fromAgent = true, text, ts, status = null)
+        if (BuildConfig.DEBUG) Log.d(TAG, "chat.event.enc von Agent ${agentId.take(24)} entschlüsselt")
+        // Sirs Revision (iii): Abweichungs-Antwort → rot-Banner in Chat + Settings.
+        if (text.startsWith("Fingerprint-Abgleich: FEHLGESCHLAGEN")) {
+            _e2eBanner.value = text
+        }
+    }
+
+    /**
+     * PH-3: chat.read.enc-Spiegel — nur entschlüsseln, damit die Empfangs-Kette
+     * mit der Agenten-Sendekette synchron bleibt (jede enc-Nachricht zählt);
+     * der Lese-Status selbst läuft über den KLAREN chat.status-Frame (PH2-T10).
+     */
+    private fun handleChatReadEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        try {
+            peer.decryptFrame(json)
+            handleRotateHint(json, agentId, peer)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: chat.read.enc-Spiegel verworfen (Entschlüsselung fehlgeschlagen)")
+        }
+    }
+
+    /**
+     * PH-3: chat.activity.enc-Spiegel — entschlüsseln (Ketten-Sync), UI liest
+     * die KLAREN working/started_at-Felder (Relay-Dedup PH2-T10 unverändert).
+     */
+    private fun handleChatActivityEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        try {
+            peer.decryptFrame(json)
+            handleRotateHint(json, agentId, peer)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: chat.activity.enc-Spiegel verworfen (Entschlüsselung fehlgeschlagen)")
+            return
+        }
+        handleChatActivityFrame(json)
+    }
+
+    /** PH-3: session_fp des Agenten (für den FP-Abgleich-Button im Chat). */
+    fun sessionFingerprint(agentId: String): String? = cryptoSessions[agentId]?.fingerprint
+
+    /**
+     * SIRS-02 (P2, Volltest 03.11.2026): Klartext-Bubble in den Disk-Store
+     * persistieren — der Verlauf überlebt App-Restart/force-stop (vorher nur
+     * rememberSaveable: „Noch keine Nachrichten“ nach dem Neustart). Store =
+     * app-private filesDir hinter dem AppLock-Gate; I/O NIE auf dem Caller-
+     * Thread (appendAsync serialisiert über einen eigenen IO-Thread).
+     * Persistiert wird EXAKT am Frame-/Sende-Ergebnis-Punkt (genau einmal).
+     */
+    private fun persistChatBubble(
+        agentId: String,
+        chatId: String,
+        fromAgent: Boolean,
+        text: String,
+        ts: Long,
+        status: String?,
+    ) {
+        val root = appContext?.let { ChatHistoryStore.root(it) } ?: return
+        ChatHistoryStore.appendAsync(
+            root,
+            ChatHistoryStore.Entry(
+                seq = ts,
+                agentId = agentId,
+                chatId = chatId,
+                fromAgent = fromAgent,
+                text = text,
+                time = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(ts)),
+                status = status,
+            ),
+        )
+    }
+
+    /** PH-3: rot-Banner wegdismissing (Chat/Settings rufen nach dem Lesen). */
+    fun clearE2eBanner() {
+        _e2eBanner.value = null
+    }
+
+    /**
+     * PH2-MERGE: Nachricht an einen Agenten via POST /chat (gleiche Route wie
+     * die Tools; Bearer = Kopplungs-Code, gleiche Gegenstelle wie der WS).
+     * onResult läuft IMMER auf dem Main-Thread (UI darf direkt binden) —
+     * ok=true heißt: vom Relay angenommen (delivered ODER queued).
+     * PH2-T10: msgId = Broker-Nachrichten-ID aus der Relay-Antwort (null bei
+     * Fehler/leerer Antwort) — die UI bindet den Zustell-/Lese-Status genau
+     * an diese msg_id (RelayClient.chatStatus).
+     */
+    fun sendChat(agentId: String, text: String, onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit) {
+        val activeScope = scope
+        if (activeScope == null || !isConnected) {
+            // SIRS-02: auch der gescheiterte Versand bleibt im Verlauf (Chip
+            // '✕ Fehlgeschlagen' überlebt den Restart statt zu verhungern).
+            persistChatBubble(agentId, chatId = "", fromAgent = false, text,
+                System.currentTimeMillis(), status = "failed")
+            deliverChatResult(onResult, false, "Keine Verbindung zum Relay", null)
+            return
+        }
+        val base = serverUrl?.trim()?.trimEnd('/')
+        if (base.isNullOrBlank()) {
+            persistChatBubble(agentId, chatId = "", fromAgent = false, text,
+                System.currentTimeMillis(), status = "failed")
+            deliverChatResult(onResult, false, "Kein Relay-Server konfiguriert", null)
+            return
+        }
+        activeScope.launch {
+            // SIRS-02: chat_id des Sendens (E2E = Session-chat_id, Klartext
+            // = leer — der Relay vergibt sie; sie wird je Eintrag mitge-
+            // speichert, der Verlauf ist je agent+chat_id nachvollziehbar).
+            var historyChatId = ""
+            // Ganzer Sendeweg inkl. URL-Bau im runCatching — eine ungültige
+            // Adresse wirft synchron (IllegalArgumentException) und darf die
+            // Coroutine nicht reißen (App-Crash), sondern als Fehler melden.
+            val outcome = runCatching {
+                // PH-3 Welle 2: aktive E2E-Session → chat.send.enc (Klartext nur
+                // im AES-GCM-ct, POST-Body OHNE text; chat_id vom PHONE gewählt —
+                // AAD bindet daran, der Relay ersetzt sie im enc-Modus NICHT).
+                val cryptoPeer = cryptoSessions[agentId]
+                if (cryptoPeer != null && cryptoPeer.isActive()) {
+                    val peerChatId = cryptoPeer.chatId
+                        ?: throw IllegalStateException("E2E-Session ohne chat_id")
+                    historyChatId = peerChatId
+                    val frame = cryptoPeer.encryptFrame(
+                        "chat.send.enc", peerChatId,
+                        mapOf("msg_id" to "", "text" to text),
+                    )
+                    val encBody = JsonObject().apply {
+                        addProperty("agent_id", agentId)
+                        addProperty("chat_id", peerChatId)
+                        addProperty("session_id", frame.get("session_id").asString)
+                        add("hdr", frame.get("hdr"))
+                        addProperty("nonce", frame.get("nonce").asString)
+                        addProperty("ct", frame.get("ct").asString)
+                        addProperty("ts", frame.get("ts").asLong)
+                    }
+                    val encRequest = Request.Builder()
+                        .url(buildHttpUrl(base, "/chat"))
+                        .header("Authorization", "Bearer ${PairingManager.getCode()}")
+                        .post(encBody.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+                    client.newCall(encRequest).execute().use { response ->
+                        val code = response.code
+                        val msgId = if (code in 200..299) {
+                            parseMsgIdFromBody(response.body?.string())
+                        } else null
+                        code to msgId
+                    }
+                } else {
+                    val url = buildHttpUrl(base, "/chat")
+                    val payload = JsonObject().apply {
+                        addProperty("agent_id", agentId)
+                        addProperty("text", text)
+                    }
+                    val request = Request.Builder()
+                        .url(url)
+                        .header("Authorization", "Bearer ${PairingManager.getCode()}")
+                        .post(payload.toString().toRequestBody("application/json".toMediaType()))
+                        .build()
+                    client.newCall(request).execute().use { response ->
+                        val code = response.code
+                        // PH2-T10: msg_id aus dem Body (nur bei 2xx lesbar sinnvoll).
+                        val msgId = if (code in 200..299) {
+                            parseMsgIdFromBody(response.body?.string())
+                        } else null
+                        code to msgId
+                    }
+                }
+            }
+            outcome.onSuccess { (code, msgId) ->
+                // SIRS-02: eigener Versand persistieren (status-Snapshot:
+                // null = gesendet, failed = endgültig gescheitert).
+                persistChatBubble(agentId, historyChatId, fromAgent = false, text,
+                    System.currentTimeMillis(),
+                    if (code in 200..299) null else "failed")
+                if (code in 200..299) {
+                    deliverChatResult(onResult, true, null, msgId)
+                } else {
+                    deliverChatResult(onResult, false, "Relay lehnte ab (HTTP $code)", null)
+                }
+            }.onFailure { e ->
+                persistChatBubble(agentId, historyChatId, fromAgent = false, text,
+                    System.currentTimeMillis(), status = "failed")
+                deliverChatResult(onResult, false, e.message?.take(80) ?: "Senden fehlgeschlagen", null)
+            }
+        }
+    }
+
+    /** msg_id aus der /chat-Antwort (nur bei 2xx sinnvoll; gehärtet). */
+    private fun parseMsgIdFromBody(bodyText: String?): String? = bodyText?.let {
+        runCatching {
+            JsonParser.parseString(it).asJsonObject
+                .get("msg_id")?.takeIf { p -> p.isJsonPrimitive }?.asString
+        }.getOrNull()
+    }
+
+    /** Chat-Sende-Ergebnis immer auf den Main-Thread posten (UI-Bindung). */
+    private fun deliverChatResult(
+        onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit,
+        ok: Boolean,
+        error: String?,
+        msgId: String?,
+    ) {
+        try {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { onResult(ok, error, msgId) }
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * PH2-MERGE: HTTP-URL zur Relay-Server-Adresse — gleiche Regeln wie
+     * [buildWsUrl] (TLS-Route bekommt NIE einen Port, Plaintext-LAN den
+     * Standard-Port 8766), nur mit http/https-Schema.
+     */
+    private fun buildHttpUrl(serverUrl: String, path: String): String {
+        val trimmed = serverUrl.trim().trimEnd('/')
+        val useTls = trimmed.startsWith("https://") || trimmed.startsWith("wss://")
+        var base = trimmed
+            .removePrefix("http://").removePrefix("https://")
+            .removePrefix("ws://").removePrefix("wss://")
+        if (!useTls && !base.contains(":")) {
+            base = "$base:8766"
+        }
+        val scheme = if (useTls) "https" else "http"
+        return "$scheme://$base$path"
     }
 
     /**
@@ -1023,9 +1832,14 @@ object RelayClient {
         ws.send(response.toString())
     }
 
-    /** Status an alle Hörer (Service-Notification, UI) — immer am Main-Thread. */
-    private fun notifyStatus(connected: Boolean, message: String) {
+    /**
+     * Status an alle Hörer (Service-Notification, UI) — immer am Main-Thread.
+     * PH1-T3: mit strukturierter Phase — die UI (BridgeStatus) leitet daraus
+     * den ConnectionState ab, statt Status-Texte zu greppen.
+     */
+    private fun notifyStatus(connected: Boolean, message: String, phase: Phase) {
         currentStatusMessage = message
+        currentPhase = phase
         try {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 for (listener in statusListeners) {

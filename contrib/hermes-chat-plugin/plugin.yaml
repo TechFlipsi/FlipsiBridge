@@ -1,0 +1,46 @@
+name: flipsibridge-chat
+label: FlipsiBridge Chat
+kind: platform
+version: 0.1.0
+description: >
+  FlipsiBridge-Chat-Gateway-Adapter für Hermes Agent (Skeleton).
+  Verbindet sich OUTBOUND zum FlipsiBridge-Relay (Agent-WS-Route),
+  empfängt Chat-Texte als Gateway-Messages (nie als Tool-Calls) und
+  beantwortet sie über send() mit JSON-Envelopes über die /chat-Route.
+  URL-Whitelist-Pinning: der Adapter verweigert jede Relay-URL außer
+  der konfigurierten Whitelist (genau 1 Host, I3-Agentenschutz).
+author: FlipsiBridge
+requires_env:
+  - name: FLIPSI_RELAY_URL
+    description: "Relay-WS-URL inkl. Route (z. B. wss://relay.example.internal/agent_ws) — muss in FLIPSI_ALLOWED_URLS stehen"
+    prompt: "Relay-URL (Agent-WS)"
+    password: false
+  - name: FLIPSI_AGENT_TOKEN
+    description: "Je-Agent-Bearer-Token für die Agent-WS (liegt im Agent-Heim in .env, nie im Repo)"
+    prompt: "Agent-Token"
+    password: true
+  - name: FLIPSI_AGENT_ID
+    description: "Eigene Agent-ID (Namespace-Prüfung gegen Inbound-Frames)"
+    prompt: "Agent-ID"
+    password: false
+optional_env:
+  - name: FLIPSI_ALLOWED_URLS
+    description: "Komma-getrennte URL-Whitelist (Default: nur FLIPSI_RELAY_URL). Jegliche andere URL wird verweigert."
+    prompt: "Erlaubte Relay-URLs (Komma)"
+    password: false
+  - name: FLIPSI_WS_ROUTE
+    description: "WS-Pfad am Relay (Default /agent_ws; ROADMAP P1 benennt /agent/ws — per Key anpassbar)"
+    prompt: "WS-Route"
+    password: false
+  - name: FLIPSI_CHAT_ROUTE
+    description: "Chat-Route für send()-Envelopes (Default /chat)"
+    prompt: "Chat-Route"
+    password: false
+  - name: FLIPSI_DISPLAY_NAME
+    description: "Anzeigename im Roster (Default = Agent-ID)"
+    prompt: "Anzeigename"
+    password: false
+  - name: FLIPSI_ALLOWED_DEVICES
+    description: "Komma-getrennte erlaubte Chat-/Geräte-IDs (Default: alle an den Agent gerichteten)"
+    prompt: "Erlaubte Geräte-IDs"
+    password: false

@@ -32,13 +32,13 @@ cp -r hermes-android-plugin ~/.hermes/plugins/hermes-android
 
 ## Bridge APK
 
-**Option A — prebuilt:** download `hermes-android-<version>.apk` from the [Latest Build release](https://github.com/TechFlipsi/FlipsiBridge/releases/tag/latest-build); install on-device or `adb install hermes-android-*.apk`.
+**Option A — prebuilt:** download `flipsibridge-<version>-github.apk` from the [Latest Build release](https://github.com/TechFlipsi/FlipsiBridge/releases/tag/latest-build); install on-device or `adb install flipsibridge-*-github.apk`.
 
 **Option B — build from source:**
 ```bash
 cd hermes-android-bridge
-./gradlew assembleDebug
-adb install app/build/outputs/apk/debug/hermes-android-*.apk
+./gradlew assembleGithubDebug
+adb install app/build/outputs/apk/github/debug/flipsibridge-*-github.apk
 ```
 
 It is an unsigned **debug** build (not on Play Store / F-Droid yet).

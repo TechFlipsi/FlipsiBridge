@@ -57,4 +57,4 @@ Xiaomi 15 Ultra, HyperOS 3. Berechtigungen werden von Sir manuell erteilt; Insta
 
 - Upstream: raulvidis/hermes-android — Bugfixes upstream-würdig werden als PR/Issue zurückgemeldet (Issues #107–#109 sind gestellt).
 - Eigenes Rebranding + Sicherheits-Features bleiben in diesem Fork; keine Aufspaltung der Historie.
-- Build: `./gradlew assembleRelease` mit eigenem Keystore (`keystore/flipsibridge.jks`, Passwort in Server-Env, nie im Repo).
+- Build: `./gradlew assembleGithubRelease` mit eigenem Keystore (`keystore/flipsibridge.jks`, Passwort in Server-Env, nie im Repo).
