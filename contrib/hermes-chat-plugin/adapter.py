@@ -914,6 +914,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._relay_chat_by_gw: dict[str, str] = {}
         self._active_phone_ik: str = ""
 
+        # --- W3-02: Auto-Approve-Schiene — PairingStore-Injektion (Tests;
+        # None = echter Gateway-Store via gateway.pairing, in-process). ---
+        self._pairing_store_factory: Optional[Callable[[], Any]] = None
+
         # --- FIX-WELLE-2 B2 (P3): TOFU-Pin-Warnung je NEUEM Key nur EINMAL —
         # sonst warnte JEDE Reconnect-Wiederholung denselben Identity-Wechsel
         # erneut (HERZ-Befund 2: Warn-Spam, Alarm-Fatigue). Bestätigt der
@@ -1032,6 +1036,87 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
     _HOME_NOTICE_WINDOW_S = 24 * 3600  # 1 Hinweis je Agent pro 24-h-Fenster
     _HOME_NOTICE_MARKERS = ("No home channel is set for",
                             "kein Home-Kanal festgelegt")
+    # --- W3-02: Auto-Approve-Schiene — Anzeigename des Phone-Principals im
+    # PairingStore des Gateways (nur Metadaten, die Freigabe-Verwurzelung
+    # läuft über die Phone-Identity ik_pub, nicht über den Namen). ---
+    _AUTO_APPROVE_USER_NAME = "FlipsiBridge-Phone"
+
+    def _pairing_store(self):
+        """W3-02: PairingStore des Gateways (in-process) holen.
+
+        Der Adapter läuft IM Gateway-Prozess — der Store ist derselbe, den
+        ``hermes pairing approve`` schreibt (pro Profil getrennt). Läuft der
+        Adapter außerhalb des Gateways (Skeleton/Tests) oder ist die
+        Gateway-API nicht importierbar, liefert er None und die normale
+        Gateway-Pairing-Schiene bleibt unberührt (fail-open nur in die
+        BESTEHende Freigabe-Prüfung, nie in eine Schwäche). Über
+        ``_pairing_store_factory`` injizierbar (Tests/Drills).
+        """
+        factory = getattr(self, "_pairing_store_factory", None)
+        if factory is not None:
+            return factory()
+        try:
+            from gateway.pairing import PairingStore  # noqa: PLC0415 (in-process)
+        except ImportError:
+            return None
+        try:
+            return PairingStore()
+        except Exception:
+            logger.warning("FlipsiBridge: PairingStore nicht konstruierbar",
+                           exc_info=True)
+            return None
+
+    def _ensure_phone_auto_approved(self, gw_chat_id: str) -> bool:
+        """W3-02 AUTO-APPROVE: Bridge-Code-gepaartes Phone ist je ALLE Agenten
+        automatisch chat-freigegeben — Freigabe gebunden an ik_pub.
+
+        Threat-Modell (SECURITY-REPORT-W3): DER eine Schlüssel ist der
+        Bridge-Kopplungscode — das Relay nimmt Phone-WS/HTTP-Auth NUR mit
+        genau diesem Code an (konstant-zeit verglichen, 5 Fails = 300 s
+        IP-Block). Jeder Frame, der beim Adapter ankommt, hat diese Auth-
+        Kette bereits durchlaufen; die Phone-Identity (ik_pub aus dem
+        bestätigten E2E-Handshake) ist damit kryptografisch an die
+        Bridge-Code-Kopplung gebunden. Der Adapter übersetzt das am
+        Gateway-Rand in eine PairingStore-Freigabe der stabilen ID
+        'flipsi-phone-<ik8>': 0 Code-DMs, 0 'Unauthorized'-Hinhalten, 0
+        pending-request-Frames an die Phone-Chat. Stabil je Reinstall:
+        ein neu installiertes Phone mit neuem ik_pub wird mit dem GLEICHEN
+        Bridge-Code wieder gepaart → neuer Handshake → Auto-Approve der
+        neuen Identity-ID. Der Fingerprint-Abgleich bleibt als
+        MITM-ANZEIGE bestehen (Verifikation, keine Freigabe-Grenze).
+
+        Grenzen (bewusst): Legacy-Klartext ohne E2E-Identity (kein
+        'flipsi-phone-'-Präfix) wird NICHT auto-approvt — dort greift
+        weiterhin das normale Gateway-Pairing. Ein Fehler im Auto-Approve
+        (Store nicht verfügbar) fällt NIE in eine Freigabe, sondern zurück
+        auf die Gateway-Prüfung.
+        """
+        if not gw_chat_id.startswith(self._STABLE_CHAT_PREFIX):
+            return False  # Legacy/ohne Identity → normale Gateway-Pairing-Schiene
+        store = self._pairing_store()
+        if store is None:
+            return False
+        platform = getattr(getattr(self, "platform", None), "value", None) \
+            or "flipsibridge"
+        try:
+            if store.is_approved(platform, gw_chat_id):
+                return True
+            with store._locked():
+                # Re-Check unter Lock (Doppel-Zustellung/Race mit CLI-Approve)
+                if not store.is_approved(platform, gw_chat_id):
+                    store._approve_user(platform, gw_chat_id,
+                                        self._AUTO_APPROVE_USER_NAME)
+                    logger.info(
+                        "FlipsiBridge: Phone-Identität %s AUTOMATISCH "
+                        "chat-freigegeben (W3-02 Auto-Approve — Bridge-Code-"
+                        "Kopplung, FP-Abgleich bleibt Anzeige)",
+                        gw_chat_id)
+            return True
+        except Exception:
+            logger.warning(
+                "FlipsiBridge: Auto-Approve für %s fehlgeschlagen — Gateway-"
+                "Pairing greift unverändert", gw_chat_id, exc_info=True)
+            return False
 
     def _stable_gateway_chat_id(self, relay_chat_id: str) -> str:
         """FIX-WELLE-2 B1: Relay-chat_id → stabile, identity-gebundene
@@ -1705,13 +1790,20 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # E2E-Session-Wechsel (App-/Relay-Restart, Neu-Handshake). Read-
         # Receipts und der Wire laufen weiter über die echte Relay-chat_id.
         gw_chat_id = self._stable_gateway_chat_id(chat_id)
+        # W3-02 Auto-Approve: Bridge-Code-gepaarte Phone-Identity ist je
+        # ALLE Agenten automatisch chat-freigegeben — VOR der Gateway-
+        # Zustellung freigeben, damit KEIN pending-request-Frame entsteht
+        # (0 Code-DMs, 0 'Unauthorized'-Hinhalten). Legacy-IDs (kein
+        # Identity-Präfix) laufen unverändert durch die Gateway-Pairing-
+        # Schiene.
+        self._ensure_phone_auto_approved(gw_chat_id)
         if _UNDER_HERMES:
             try:  # Echter Gateway-Pfad: MessageEvent → handle_message (Session je chat_id)
                 source = self.build_source(chat_id=gw_chat_id,
                                            chat_name=self.get_chat_info(gw_chat_id)["name"],
                                            chat_type="dm",
                                            user_id=str(envelope.get("device_id", gw_chat_id)),
-                                           user_name=str(envelope.get("sender", "Agent-Gerät")),
+                                           user_name=str(envelope.get("sender", "FlipsiBridge Phone")),
                                            message_id=str(envelope.get("msg_id", "")))
                 from gateway.platforms.event import MessageEvent, MessageType  # noqa: F401
                 event = MessageEvent(source=source, text=text,

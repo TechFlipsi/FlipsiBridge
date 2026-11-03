@@ -119,12 +119,12 @@ class TestAesGcmCrossVectors:
         pt = bytes.fromhex(
             "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
             "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
-        aad = b"fb-v1|fb3demo-0001|chat-123|jarvis"
+        aad = b"fb-v1|fb3demo-0001|chat-123|agent1"
         ct = A.AESGCM(self.KEY).encrypt(self.NONCE, pt, aad)
         assert ct.hex() == (
-            "8aa2a225ae7f491c4e0257d6771087301d31d242cb0c7c6356c61e6aa2947be"
-            "08d71e365e5f16f450e7202431eae0e4a69659b6297bfbee71bab4b0782d989"
-            "7dbab0dcde2a4e88c56bc9dbf2355f8ad4")
+            "8aa2a225ae7f491c4e0257d6771087301d31d242cb0c7c6356c61e6aa2947be0"
+            "8d71e365e5f16f450e7202431eae0e4a69659b6297bfbee71bab4b0782d9897d"
+            "328c04f0224b457f63ec5982a4c750dd")
 
     def test_wrong_key_fails_without_plaintext_leak(self):
         from cryptography.exceptions import InvalidTag
@@ -149,7 +149,7 @@ SPK_A = ("0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
 RA_PRIV = "1111111111111111111111111111111111111111111111111111111111111111"
 RA_PUB = "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13"
 SESSION_ID = "fb3demo-0001"
-AGENT_ID = "jarvis"
+AGENT_ID = "agent1"
 
 IDENTITY = {"identity_priv": IK_A[0], "identity_pub": IK_A[1],
             "prekey_priv": SPK_A[0], "prekey_pub": SPK_A[1]}
@@ -171,38 +171,38 @@ class TestFbV1DerivationChain:
     def test_root0_k_init_session_fp_match_fixtures(self):
         sess, _ = A.AgentCryptoSession.respond_to_hello(HELLO, IDENTITY)
         assert sess.fingerprint == \
-            "b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4"
+            "2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f"
         # root0/k_init indirekt: hello_ack-ct (§5.6) entschlüsselt mit k_init
         k_init = A.hkdf_expand(
             A.hkdf_extract(
-                h("90e5e2470948ac61604050364d47d435b5bdaa6b005e176123c71e1f63bd7eef"),
+                h("fcf3ffdd1ba183e7743b3cc0775441ec1ec9e6cef753a15477f34adfa37f2147"),
                 h("74faf45844c64bac4576b625d9df7d611b806e193276eea42ebfd3cbbe698014"
                   "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
                   "b67caf683bb48069685a0d9f0572a0d26c4037d1bacc49553054ded8b04ab44e"
-                  "4c48bbcb6f2330d240d2e166af25459ff4ecf6dddf6defb60cd8b3a01578b0c0"),
+                  "07e64bf2f09f9520f3d0a4ee3d9007e0da93a389f40db451f16d9f9d38e79fa4"),
             ),
             # info = "fb-init" + context (konkateniert)
             b"fb-init" + h(IK_P[1]) + h(EK_P[1]) + h(SPK_P[1]) + h(IK_A[1])
             + h(SPK_A[1]) + AGENT_ID.encode() + SESSION_ID.encode(),
             32,
         )
-        assert k_init.hex() == "86d1d3197651d9201fde04f92d470404167b35b5490bdcdd4325912e69bb6cc7"
+        assert k_init.hex() == "1a531068f5603c0056763523e67e12827572c84dbb786b4ea8e8efff9803cb82"
 
     def test_hello_ack_verify_vector(self):
         """§5.6: hello_ack-ct mit fixem Nonce muss exakt dem Fixture entsprechen
         (AES-256-GCM über k_init aus der Fixture-Kette, PT = Verify-String)."""
         ack_nonce = bytes.fromhex("00112233445566778899aabb")
         ack_ct = A.AESGCM(bytes.fromhex(
-            "86d1d3197651d9201fde04f92d470404167b35b5490bdcdd4325912e69bb6cc7")
+            "1a531068f5603c0056763523e67e12827572c84dbb786b4ea8e8efff9803cb82")
         ).encrypt(ack_nonce, b"flipsi-verify-v1|" + SESSION_ID.encode(),
                   f"fb-v1|{SESSION_ID}|{AGENT_ID}".encode())
         assert ack_ct.hex() == (
-            "8594ae09b2c2ff5687b9571e973fc61e81c6c803c169c3866d3852362000c0c4"
-            "90124785819a12feaecd82cd2d")
+            "2dacd90dd0fa8c92b42c199dc64f7f5af1f67add37e69ccb4a6c7a2897eef035"
+            "0aac6292cd9fa18bf298169c19")
         # Gegenprobe: Phone-seitige Verify-Entschlüsselung mit k_init gelingt —
         # fälscht man EIN Byte des ct, scheitert der GCM-Tag (Wrong-Key-Pfad).
         k_init = bytes.fromhex(
-            "86d1d3197651d9201fde04f92d470404167b35b5490bdcdd4325912e69bb6cc7")
+            "1a531068f5603c0056763523e67e12827572c84dbb786b4ea8e8efff9803cb82")
         pt = A.AESGCM(k_init).decrypt(
             ack_nonce, ack_ct, f"fb-v1|{SESSION_ID}|{AGENT_ID}".encode())
         assert pt == b"flipsi-verify-v1|" + SESSION_ID.encode()
@@ -222,22 +222,22 @@ class TestFbV1DerivationChain:
             b"", SESSION_ID, AGENT_ID,
             h(IK_P[1]), h(EK_P[1]), h(SPK_P[1]), h(IK_A[1]), h(SPK_A[1]))
         root0 = bytes.fromhex(
-            "ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724")
+            "c92a15332695cc9878aeecd1060916fd7729746286a7852e5317b99cfaeb68aa")
         assert kdf["root0"] == root0
         rk1, cks1 = A._kdf_rk(root0, A._x25519_dh(h(RA_PRIV), h(EK_P[1])))
-        assert rk1.hex() == "99488063b00f1538fb27c3b919aa13fa0ac6e6881183c6c733c5f868530f791e"
-        assert cks1.hex() == "adf933b72c8a0ed7ad1e0e77fde5cb892480ab58fd4190b56b04096b14a9f2d1"
+        assert rk1.hex() == "21da3b1d06e44bd94b113c6b091282e4804cc57685ed20aa16dccb33a102cc86"
+        assert cks1.hex() == "ead4a92a2da607d8848e641e999a5fd82ef86b9f54b57b76738aa2c4327218e7"
         ck_next, mk0 = A._kdf_ck(cks1)
-        assert ck_next.hex() == "b96c49be7953ea8b0f0736c2453e46c99a6ecad11288eef175e19617bf6cd3fa"
-        assert mk0.hex() == "40fcf41504a57364220d5afb03903a4dac383ebb138288767591ca7d61961e65"
+        assert ck_next.hex() == "f03904549576fcb0f6da724c8493c7bfb43bac1578b29651894d00e812e3913a"
+        assert mk0.hex() == "62a14aa5a1f1fa806b2d557d16f01fcadeba281215f24f5797105eb67197bcfd"
         assert A._msg_aes_key(mk0).hex() == \
-            "625c9b03d93e91d004b47c33a9c0ab3e8392ac6059fc2f7bad53e9fe4ae527c4"
+            "01fd0b5bcd5e609aeaa5bcc3944d026b05eb89baba94788d9be9ba87533a5ca5"
 
     def test_message_zero_ct_vector(self):
         """§5.7 Nachricht 0: PT/Nonce/AAD → ct‖tag exakt (deterministische Kette)."""
         # Kette deterministisch aufbauen: root0 aus Fixture, RA fix
         root0 = bytes.fromhex(
-            "ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724")
+            "c92a15332695cc9878aeecd1060916fd7729746286a7852e5317b99cfaeb68aa")
         ratchet = A.DoubleRatchet(root0)
         ratchet.dh_priv, ratchet.dh_pub = h(RA_PRIV), h(RA_PUB)
         ratchet.dh_r = h(EK_P[1])
@@ -252,18 +252,18 @@ class TestFbV1DerivationChain:
         assert header == {"rk": RA_PUB, "n": 0, "pn": 0}
         assert nonce.hex() == "aabbccdd0000000000000000"
         assert ct.hex() == (
-            "e8037ede3d217516e20699b67a6b49521af116bc117968f93318ac741b78cb42"
-            "7b86d8564b8ec243066ae56f050c5b0c9abc623ca04f9003")
+            "de187bf40ddbdc2c4b0b0403e75bffa64c2f31e71e7818c32cbc6c7f004b375a"
+            "dcf37399f14ea6ec4d7b54a7f56fe1ec600dbb63cec59c75")
 
     def test_phone_first_send_chain_vector(self):
         """§5.7 Gegenprobe: Phone-Sendekette aus RP fix."""
         rk1 = bytes.fromhex(
-            "99488063b00f1538fb27c3b919aa13fa0ac6e6881183c6c733c5f868530f791e")
+            "21da3b1d06e44bd94b113c6b091282e4804cc57685ed20aa16dccb33a102cc86")
         rp_priv = "2222222222222222222222222222222222222222222222222222222222222222"
         rk2, cks_phone = A._kdf_rk(rk1, A._x25519_dh(h(rp_priv), h(RA_PUB)))
-        assert rk2.hex() == "996bd586dcc7f5d286584c519602fbc778b870c02e1ce6a96c64adcd48bd5c64"
+        assert rk2.hex() == "249d2fde5c77a3c978855906086559b839031a1e1c92735b79804fff6ed3db24"
         assert cks_phone.hex() == \
-            "d6882bd3845d9665702a81e422b7bb6cccfd5b64d3b651009e9612c4261ebd01"
+            "5a95f954b581b55c27880fb7ab3ed152d42b66e98c9b2ccf80574815a5259157"
         # Agent-Seite derselben Kette: X25519(RA_priv, RP_pub)
         rp_pub = A.X25519PrivateKey.from_private_bytes(h(rp_priv)).public_key() \
             .public_bytes(A.Encoding.Raw, A.PublicFormat.Raw)
@@ -289,10 +289,10 @@ class TestFingerprints:
         assert peer.fingerprint == sess.fingerprint
 
     def test_fingerprint_display_format(self):
-        fp = "b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4"
+        fp = "2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f"
         assert A.fingerprint_display(fp) == (
-            "B9D3C701 CCE4CBC6 466FBE98 419AB0F3 "
-            "F1BC67B6 1FE3DABA C6A5D640 31F0B8F4")
+            "2B3327CC 77090E33 FC235FDC 49659C26 "
+            "507CFAE7 C1B843E6 AF7D150D E3E8D52F")
 
     def test_psk_binding_changes_keys(self):
         """§5.5 Negativ-Vektor (Zusatz-Order 02.11.2026): psk≠b\"\" ändert die
@@ -320,11 +320,11 @@ class TestFixturesDocConsistency:
             # AES-GCM
             "5b0a77e3716cc7e86cf71b26dee7d5a4",
             # fb-v1-Kette
-            "b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4",
-            "ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724",
-            "99488063b00f1538fb27c3b919aa13fa0ac6e6881183c6c733c5f868530f791e",
-            "adf933b72c8a0ed7ad1e0e77fde5cb892480ab58fd4190b56b04096b14a9f2d1",
-            "e8037ede3d217516e20699b67a6b49521af116bc117968f93318ac741b78cb42",
+            "2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f",
+            "c92a15332695cc9878aeecd1060916fd7729746286a7852e5317b99cfaeb68aa",
+            "21da3b1d06e44bd94b113c6b091282e4804cc57685ed20aa16dccb33a102cc86",
+            "ead4a92a2da607d8848e641e999a5fd82ef86b9f54b57b76738aa2c4327218e7",
+            "de187bf40ddbdc2c4b0b0403e75bffa64c2f31e71e7818c32cbc6c7f004b375a",
         ]:
             assert expected in text, f"Fixtures-Doc verliert den Vektor {expected}"
 
@@ -342,7 +342,7 @@ class TestPh3JaegerFixrunde:
     """PH-3 FIX-WELLE nach 4-Jäger-Abnahme: die Guards der Ratchet-/Session-
     Schicht gegen die lebende Python-Referenz (Kotlin spiegelt identisch)."""
 
-    ROOT0 = "ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724"
+    ROOT0 = "c92a15332695cc9878aeecd1060916fd7729746286a7852e5317b99cfaeb68aa"
 
     def test_pn_cap_blockt_angreifer_kontrolliertes_pn(self):
         """F2: hdr.pn ist angreifer-kontrolliert (bis 2³¹) — decrypt weist

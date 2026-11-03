@@ -1,0 +1,10 @@
+[Unit]
+Description=FlipsiBridge Botnet-Wächter Timer (alle 5 min, still wenn OK)
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=30s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

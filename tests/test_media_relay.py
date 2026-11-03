@@ -111,15 +111,15 @@ class TestMediaBroker:
     def _write_config(self, tmp_path, with_keys=True):
         cfg = tmp_path / "relay-config.json"
         data = {
-            "ANDROID_AGENT_TOKEN_JARVIS": self.TOKEN,
-            "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
             "CHAT_RATE_PER_SECOND": 50,
         }
         if with_keys:
             data.update({
-                "ANDROID_AGENT_IDENTITY_JARVIS": self.IK_A_PUB,
-                "ANDROID_AGENT_PREKEY_JARVIS": self.SPK_A_PUB,
-                "ANDROID_AGENT_FINGERPRINT_JARVIS":
+                "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+                "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+                "ANDROID_AGENT_FINGERPRINT_ALPHA":
                     _ph3_adapter.fingerprint_of_pub(bytes.fromhex(self.IK_A_PUB)),
             })
         cfg.write_text(json.dumps(data), encoding="utf-8")
@@ -135,11 +135,11 @@ class TestMediaBroker:
 
     async def _handshake(self, session, base, agent_ws, phone_ws, session_id):
         """Voller E2E-Handshake: phone hello → agent ack → ack ans Phone."""
-        got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+        got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                 headers={"Authorization": f"Bearer {self.CODE}"})
         assert got.status == 200
         keys = await got.json()
-        peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+        peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
         hello = peer.make_hello(session_id)
         resp = await session.post(f"{base}/crypto_hello", json=hello,
                                   headers={"Authorization": f"Bearer {self.CODE}"})
@@ -206,7 +206,7 @@ class TestMediaBroker:
                     frame = peer.encrypt_frame(
                         "chat.media.enc", chat_id, payload,
                         clear={"media_id": media_id, "seq": seq, "total": total})
-                    body = {"agent_id": "jarvis", "chat_id": chat_id,
+                    body = {"agent_id": "alpha", "chat_id": chat_id,
                             "session_id": frame["session_id"],
                             "ts": frame["ts"], "hdr": frame["hdr"],
                             "nonce": frame["nonce"], "ct": frame["ct"],
@@ -263,10 +263,10 @@ class TestMediaBroker:
         async def scenario():
             async with aiohttp.ClientSession() as session:
                 for body in (
-                    {"agent_id": "jarvis", "chat_id": "chat-media-0002",
+                    {"agent_id": "alpha", "chat_id": "chat-media-0002",
                      "media_id": "med-clear-0001", "seq": 0, "total": 1,
                      "kind": "file", "name": "a.txt", "size": 10},
-                    {"agent_id": "jarvis", "chat_id": "chat-media-0002",
+                    {"agent_id": "alpha", "chat_id": "chat-media-0002",
                      "text": "klartext", "ct": "AAAA", "nonce": "AAAA",
                      "session_id": "media-e2e-session-0001",
                      "hdr": {"rk": "aa" * 32, "n": 0, "pn": 0},
@@ -290,7 +290,7 @@ class TestMediaBroker:
             async with aiohttp.ClientSession() as session:
                 resp = await session.post(
                     f"{base}/media",
-                    json={"agent_id": "jarvis", "chat_id": "chat-media-0003",
+                    json={"agent_id": "alpha", "chat_id": "chat-media-0003",
                           "session_id": "media-e2e-session-0001",
                           "ts": 1, "hdr": {"rk": "aa" * 32, "n": 0, "pn": 0},
                           "nonce": _ph3_adapter._b64e(b"\x00" * 12),
@@ -324,7 +324,7 @@ class TestMediaBroker:
                     {"media_id": "med-replay-0001", "seq": 0, "total": 1,
                      "data": _ph3_adapter._b64e(b"x" * 16)},
                     clear={"media_id": "med-replay-0001", "seq": 0, "total": 1})
-                body = {"agent_id": "jarvis", "chat_id": "chat-media-0004",
+                body = {"agent_id": "alpha", "chat_id": "chat-media-0004",
                         "session_id": frame["session_id"], "ts": frame["ts"],
                         "hdr": frame["hdr"], "nonce": frame["nonce"],
                         "ct": frame["ct"], "media_id": "med-replay-0001",
@@ -351,7 +351,7 @@ class TestMediaBroker:
             async with aiohttp.ClientSession() as session:
                 resp = await session.post(
                     f"{base}/media",
-                    json={"agent_id": "jarvis", "chat_id": "chat-media-0005",
+                    json={"agent_id": "alpha", "chat_id": "chat-media-0005",
                           "session_id": "media-e2e-session-0001",
                           "ts": 1, "hdr": {"rk": "aa" * 32, "n": 0, "pn": 0},
                           "nonce": _ph3_adapter._b64e(b"\x00" * 12),
@@ -398,7 +398,7 @@ class TestMediaBroker:
                                "total": 2})
                     resp = await session.post(
                         f"{base}/media",
-                        json={"agent_id": "jarvis", "chat_id": "chat-media-0006",
+                        json={"agent_id": "alpha", "chat_id": "chat-media-0006",
                               "session_id": frame["session_id"],
                               "ts": frame["ts"], "hdr": frame["hdr"],
                               "nonce": frame["nonce"], "ct": frame["ct"],
@@ -430,7 +430,7 @@ class TestMediaBroker:
         async def scenario():
             async with aiohttp.ClientSession() as session:
                 resp = await session.post(
-                    f"{base}/media", json={"agent_id": "jarvis"},
+                    f"{base}/media", json={"agent_id": "alpha"},
                     headers={"Authorization": "Bearer WRONGCODE"})
                 assert resp.status == 401
 
@@ -499,19 +499,19 @@ class TestMediaBroker:
 
                 await agent.send_json({
                     "type": "chat.media.chunk_ack", "v": 1,
-                    "chat_id": "chat-media-0008", "agent_id": "jarvis",
+                    "chat_id": "chat-media-0008", "agent_id": "alpha",
                     "media_id": "med-ack-00000001", "seq": 3, "ok": True})
 
                 got = await _recv_until(phone, "chat.media.chunk_ack", timeout=6)
                 assert got["media_id"] == "med-ack-00000001"
                 assert got["seq"] == 3
                 assert got["ok"] is True
-                assert got["agent_id"] == "jarvis"
+                assert got["agent_id"] == "alpha"
 
                 # Ungültiger ack (kein media_id) → verworfen, kein Phone-Frame.
                 await agent.send_json({
                     "type": "chat.media.chunk_ack", "v": 1,
-                    "chat_id": "chat-media-0008", "agent_id": "jarvis",
+                    "chat_id": "chat-media-0008", "agent_id": "alpha",
                     "seq": 4})
                 with pytest.raises(Exception):
                     await _recv_until(phone, "chat.media.chunk_ack", timeout=1.5)
@@ -538,7 +538,7 @@ class TestMediaBroker:
 
                 await agent.send_json({
                     "type": "chat.media", "v": 1,
-                    "chat_id": "chat-media-0009", "agent_id": "jarvis",
+                    "chat_id": "chat-media-0009", "agent_id": "alpha",
                     "media_id": "med-clear-000009", "seq": 0, "total": 1,
                     "data": "aGVsbG8="})
                 with pytest.raises(Exception):

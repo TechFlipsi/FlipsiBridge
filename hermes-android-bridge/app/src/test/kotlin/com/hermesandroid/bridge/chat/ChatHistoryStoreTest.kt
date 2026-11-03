@@ -28,7 +28,7 @@ class ChatHistoryStoreTest {
 
     private fun entry(
         seq: Long,
-        agentId: String = "jarvis",
+        agentId: String = "alpha",
         chatId: String = "chat-abc123",
         fromAgent: Boolean = true,
         text: String = "Antwort des Agenten",
@@ -45,7 +45,7 @@ class ChatHistoryStoreTest {
             text = "Antwort (KI)", time = "07:53"))
         ChatHistoryStore.append(root, entry(3_000L, fromAgent = false,
             text = "Noch eine Frage", time = "07:54", status = "read"))
-        ChatHistoryStore.append(root, entry(4_000L, agentId = "edwin",
+        ChatHistoryStore.append(root, entry(4_000L, agentId = "beta",
             chatId = "chat-def456", text = "Andere Session", time = "08:01"))
 
         // „Neuer Prozess“ = frisches loadAll auf demselben Verzeichnis.
@@ -56,7 +56,7 @@ class ChatHistoryStoreTest {
             restored.map { it.seq })
         val own = restored[0]
         assertEquals("Hallo Agent", own.text)
-        assertEquals("jarvis", own.agentId)
+        assertEquals("alpha", own.agentId)
         assertEquals("chat-abc123", own.chatId)
         assertEquals(false, own.fromAgent)
         assertEquals("07:52", own.time)
@@ -64,17 +64,17 @@ class ChatHistoryStoreTest {
         val failed = restored[2]
         assertEquals("read", failed.status)
         val other = restored[3]
-        assertEquals("edwin", other.agentId)
+        assertEquals("beta", other.agentId)
         assertEquals("chat-def456", other.chatId)
     }
 
     @Test
     fun perAgentIsolationAndEmptyHistory() {
         val root = tmp.newFolder("chat_history")
-        ChatHistoryStore.append(root, entry(1L, agentId = "jarvis"))
-        ChatHistoryStore.append(root, entry(2L, agentId = "edwin"))
-        assertEquals(listOf(2L), ChatHistoryStore.load(root, "edwin").map { it.seq })
-        assertEquals(listOf(1L), ChatHistoryStore.load(root, "jarvis").map { it.seq })
+        ChatHistoryStore.append(root, entry(1L, agentId = "alpha"))
+        ChatHistoryStore.append(root, entry(2L, agentId = "beta"))
+        assertEquals(listOf(2L), ChatHistoryStore.load(root, "beta").map { it.seq })
+        assertEquals(listOf(1L), ChatHistoryStore.load(root, "alpha").map { it.seq })
         assertTrue("leerer Agent = leerer Verlauf",
             ChatHistoryStore.load(root, "unbekannt").isEmpty())
     }
@@ -85,7 +85,7 @@ class ChatHistoryStoreTest {
         repeat(ChatHistoryStore.MAX_PER_AGENT + 2) { i ->
             ChatHistoryStore.append(root, entry(seq = 100L + i, text = "Nachricht $i"))
         }
-        val stored = ChatHistoryStore.load(root, "jarvis")
+        val stored = ChatHistoryStore.load(root, "alpha")
         assertEquals(ChatHistoryStore.MAX_PER_AGENT, stored.size)
         // Die NEUESTEN überleben, die 2 ältesten fliegen raus:
         assertEquals("Nachricht 2", stored.first().text)
@@ -100,12 +100,12 @@ class ChatHistoryStoreTest {
         repeat(40) { i ->
             ChatHistoryStore.append(root, entry(seq = 1_000L + i, text = bigText))
         }
-        val file = ChatHistoryStore.fileFor(root, "jarvis")
+        val file = ChatHistoryStore.fileFor(root, "alpha")
         assertTrue(
             "Agent-Datei muss unter der Obergrenze bleiben (ist ${file.length()} B)",
             file.length() <= ChatHistoryStore.MAX_FILE_BYTES,
         )
-        val stored = ChatHistoryStore.load(root, "jarvis")
+        val stored = ChatHistoryStore.load(root, "alpha")
         assertTrue("Obergrenze kürzt, verliert aber NIE alles", stored.isNotEmpty())
         // FIFO gilt auch beim Byte-Kürzen: der NEUESTE Eintrag bleibt erhalten.
         assertEquals(1_000L + 39, stored.last().seq)
@@ -114,13 +114,13 @@ class ChatHistoryStoreTest {
     @Test
     fun corruptLineCostsOneEntryNotTheWholeHistory() {
         val root = tmp.newFolder("chat_history")
-        val file = ChatHistoryStore.fileFor(root, "jarvis")
+        val file = ChatHistoryStore.fileFor(root, "alpha")
         file.writeText(
             gsonJsonOf(entry(1L)) + "\n" +
                 "definitiv kein json\n" +
                 gsonJsonOf(entry(2L)) + "\n",
         )
-        val stored = ChatHistoryStore.load(root, "jarvis")
+        val stored = ChatHistoryStore.load(root, "alpha")
         assertEquals("korrupte Zeile = 1 Eintrag weg, nie der ganze Verlauf",
             listOf(1L, 2L), stored.map { it.seq })
     }
@@ -163,11 +163,11 @@ class ChatHistoryStoreTest {
         repeat(ChatHistoryStore.MAX_PER_AGENT + 2) { i ->
             ChatHistoryStore.append(root, entry(seq = 100L + i, text = "N$i"))
         }
-        val file = ChatHistoryStore.fileFor(root, "jarvis")
+        val file = ChatHistoryStore.fileFor(root, "alpha")
         assertEquals(ChatHistoryStore.MAX_PER_AGENT + 2,
             file.readLines().count { it.isNotBlank() })
         // Erst das LADEN kürzt (Kürzungszeitpunkt verschoben — FIFO bleibt).
-        val stored = ChatHistoryStore.load(root, "jarvis")
+        val stored = ChatHistoryStore.load(root, "alpha")
         assertEquals(ChatHistoryStore.MAX_PER_AGENT, stored.size)
         assertEquals("N${ChatHistoryStore.MAX_PER_AGENT + 1}", stored.last().text)
         // …und die Kürzung ist persistiert:
@@ -180,11 +180,11 @@ class ChatHistoryStoreTest {
         val root = tmp.newFolder("chat_history")
         // Bestandsverlauf unter ALTEM Namen (ohne Hash-Suffix) bleibt erhalten
         // und wird beim ersten Zugriff auf den neuen Namen übernommen.
-        val legacy = File(root, "jarvis.jsonl")
+        val legacy = File(root, "alpha.jsonl")
         legacy.writeText(gsonJsonOf(entry(7L)) + "\n")
-        assertEquals(listOf(7L), ChatHistoryStore.load(root, "jarvis").map { it.seq })
+        assertEquals(listOf(7L), ChatHistoryStore.load(root, "alpha").map { it.seq })
         ChatHistoryStore.append(root, entry(8L))
-        assertEquals(listOf(7L, 8L), ChatHistoryStore.load(root, "jarvis").map { it.seq })
+        assertEquals(listOf(7L, 8L), ChatHistoryStore.load(root, "alpha").map { it.seq })
         assertFalse("alte Datei muss nach Übernahme weg sein", legacy.exists())
     }
 

@@ -1,7 +1,7 @@
 # Fix-Welle 2 Backend-Lane (02.11.2026):
 #   B5 — /screen_record-Antwortfenster konfigurierbar
 #        (ANDROID_RELAY_SCREEN_RECORD_TIMEOUT, Default 55) — übernimmt den
-#        JARVIS-Live-Hot-Patch als Repo-Feature (Herz-Test Befund 5).
+#        ALPHA-Live-Hot-Patch als Repo-Feature (Herz-Test Befund 5).
 #   B6 — /media bekommt einen EIGENEN Burst-Bucket (ANDROID_RELAY_MEDIA_RATE,
 #        Default 20); Media-Chunk-Bursts teilen nicht mehr den 2/s-Chat-Bucket
 #        (Herz-Test Befund 6: 6 Chunks <1 s → 4× 429).
@@ -72,7 +72,7 @@ def reset_fixwelle2_state():
 
 
 class TestB5ScreenRecordTimeout:
-    """B5: ANDROID_RELAY_SCREEN_RECORD_TIMEOUT — Default 55 (JARVIS-Hot-Patch
+    """B5: ANDROID_RELAY_SCREEN_RECORD_TIMEOUT — Default 55 (ALPHA-Hot-Patch
     als Repo-Feature), Untergrenze 30, ungültige Werte → 55."""
 
     def test_default_55(self, monkeypatch):
@@ -171,12 +171,12 @@ class TestB6MediaBurstDrill:
         """Chat bewusst auf dem harten Default 2/s — wie Produktion."""
         cfg = tmp_path / "relay-config.json"
         cfg.write_text(json.dumps({
-            "ANDROID_AGENT_TOKEN_JARVIS": self.TOKEN,
-            "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
             "CHAT_RATE_PER_SECOND": 2,
-            "ANDROID_AGENT_IDENTITY_JARVIS": _media_tests.TestMediaBroker.IK_A_PUB,
-            "ANDROID_AGENT_PREKEY_JARVIS": _media_tests.TestMediaBroker.SPK_A_PUB,
-            "ANDROID_AGENT_FINGERPRINT_JARVIS":
+            "ANDROID_AGENT_IDENTITY_ALPHA": _media_tests.TestMediaBroker.IK_A_PUB,
+            "ANDROID_AGENT_PREKEY_ALPHA": _media_tests.TestMediaBroker.SPK_A_PUB,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA":
                 _ph3_adapter.fingerprint_of_pub(
                     bytes.fromhex(_media_tests.TestMediaBroker.IK_A_PUB)),
         }), encoding="utf-8")
@@ -190,11 +190,11 @@ class TestB6MediaBurstDrill:
         return f"http://127.0.0.1:{port}"
 
     async def _handshake(self, session, base, agent_ws, phone_ws, session_id):
-        got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+        got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                 headers={"Authorization": f"Bearer {self.CODE}"})
         assert got.status == 200
         keys = await got.json()
-        peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+        peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
         hello = peer.make_hello(session_id)
         resp = await session.post(f"{base}/crypto_hello", json=hello,
                                   headers={"Authorization": f"Bearer {self.CODE}"})
@@ -226,7 +226,7 @@ class TestB6MediaBurstDrill:
             {"media_id": media_id, "seq": seq, "total": total,
              "data": base64.b64encode(b"chunkdata-%d" % seq).decode("ascii")},
             clear={"media_id": media_id, "seq": seq, "total": total})
-        body = {"agent_id": "jarvis", "chat_id": chat_id,
+        body = {"agent_id": "alpha", "chat_id": chat_id,
                 "session_id": frame["session_id"], "ts": frame["ts"],
                 "hdr": frame["hdr"], "nonce": frame["nonce"], "ct": frame["ct"],
                 "media_id": media_id, "seq": seq, "total": total}
@@ -256,7 +256,7 @@ class TestB6MediaBurstDrill:
                         "chat.send.enc", chat_id, {"text": "chat-burst"})
                     resp = await session.post(
                         f"{base}/chat",
-                        json={"agent_id": "jarvis", "chat_id": chat_id,
+                        json={"agent_id": "alpha", "chat_id": chat_id,
                               "session_id": frame["session_id"], "ts": frame["ts"],
                               "hdr": frame["hdr"], "nonce": frame["nonce"],
                               "ct": frame["ct"]},
@@ -267,7 +267,7 @@ class TestB6MediaBurstDrill:
                     "Chat-Rate-Limit muss weiter greifen (Bucket unangetastet)"
                 err = await (await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "chat_id": chat_id,
+                    json={"agent_id": "alpha", "chat_id": chat_id,
                           "session_id": "x", "ts": 0, "hdr": {}, "nonce": "",
                           "ct": ""},   # nur Fehlermeldung lesen (kein n-Verbrauch)
                     headers={"Authorization": f"Bearer {self.CODE}"})).json()

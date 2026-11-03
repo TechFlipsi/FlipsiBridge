@@ -112,9 +112,9 @@ class PhoneCryptoPeerTest {
     private fun freshPair(rotateEvery: Int = 100): Pair<PhoneCryptoPeer, TestAgentResponder> {
         val agentIdentity = CryptoEngine.x25519Generate()
         val agentPrekey = CryptoEngine.x25519Generate()
-        val responder = TestAgentResponder("jarvis", agentIdentity, agentPrekey, rotateEvery)
+        val responder = TestAgentResponder("agent1", agentIdentity, agentPrekey, rotateEvery)
         val phone = PhoneCryptoPeer(
-            agentId = "jarvis",
+            agentId = "agent1",
             agentIkPubHex = h(agentIdentity.pub),
             agentSpkPubHex = h(agentPrekey.pub),
             rotateEvery = rotateEvery,
@@ -143,12 +143,12 @@ class PhoneCryptoPeerTest {
     fun helloFrameSchemaMatchesProtocol() {
         val agentIdentity = CryptoEngine.x25519Generate()
         val agentPrekey = CryptoEngine.x25519Generate()
-        val phone = PhoneCryptoPeer("jarvis", h(agentIdentity.pub), h(agentPrekey.pub))
+        val phone = PhoneCryptoPeer("agent1", h(agentIdentity.pub), h(agentPrekey.pub))
         val hello = phone.makeHello("sess-schema-00001", "chat-schema-0001")
         assertEquals("crypto.hello", hello.get("type").asString)
         assertEquals(1, hello.get("v").asInt)
         assertEquals("sess-schema-00001", hello.get("session_id").asString)
-        assertEquals("jarvis", hello.get("agent_id").asString)
+        assertEquals("agent1", hello.get("agent_id").asString)
         listOf("ik_pub", "ek_pub", "spk_pub").forEach { key ->
             assertEquals("hello.$key = 64 Hex", 64, hello.get(key).asString.length)
         }
@@ -229,8 +229,8 @@ class PhoneCryptoPeerTest {
     fun wrongKeyAckRejectedSessionDiscarded() {
         val agentIdentity = CryptoEngine.x25519Generate()
         val agentPrekey = CryptoEngine.x25519Generate()
-        val responder = TestAgentResponder("jarvis", agentIdentity, agentPrekey)
-        val phone = PhoneCryptoPeer("jarvis", h(agentIdentity.pub), h(agentPrekey.pub))
+        val responder = TestAgentResponder("agent1", agentIdentity, agentPrekey)
+        val phone = PhoneCryptoPeer("agent1", h(agentIdentity.pub), h(agentPrekey.pub))
         val hello = phone.makeHello("sess-wrongkey-001", "chat-wrongkey-01")
         val ack = responder.respondToHello(hello)
         // Tag kippen = Wrong-Key/MITM-Simulation (Spec §6: KEIN Cleartext-Fallback)

@@ -24,7 +24,7 @@ class DoubleRatchetTest {
     private val rpPriv = h("2222222222222222222222222222222222222222222222222222222222222222")
     private val rpPub = "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20"
     private val ekPPriv = h("98a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f")
-    private val msg0Aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|chat-123|jarvis")
+    private val msg0Aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|chat-123|agent1")
 
     @Test
     fun kdfRkAndKdfCkVectors() {
