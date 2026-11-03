@@ -114,8 +114,13 @@ def _env(key: str) -> Optional[str]:
 
 
 def _bridge_url() -> str:
-    """URL of the relay (default) or direct phone connection."""
-    return _env("ANDROID_BRIDGE_URL") or "http://localhost:8766"
+    """URL of the relay (default) or direct phone connection.
+
+    02.11.26 Security-Audit-Fix (RF-01): localhost-8766-Fallback war tot
+    (Relay bindet nur 192.168.178.24:8766). Echter Fallback = Relay-LAN-IP;
+    ANDROID_BRIDGE_URL in .env überschreibt weiterhin bewusst.
+    """
+    return _env("ANDROID_BRIDGE_URL") or "http://192.168.178.24:8766"
 
 
 def _bridge_token() -> Optional[str]:

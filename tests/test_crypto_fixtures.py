@@ -295,7 +295,10 @@ class TestFingerprints:
             "F1BC67B6 1FE3DABA C6A5D640 31F0B8F4")
 
     def test_psk_binding_changes_keys(self):
-        """§5.5 PSK-Bindungs-Beweis: gleiche Inputs, anderer PSK → andere Keys."""
+        """§5.5 Negativ-Vektor (Zusatz-Order 02.11.2026): psk≠b\"\" ändert die
+        Keys — exakt diese Abweichung war Bug 1 (Adapter mit PSK, App ohne).
+        LIVE gilt ausschließlich psk=b\"\" (Adapter-Codepfad entfernt); dieser
+        Test pinnst die Abweichungs-Eigenschaft der KDF, nicht den Live-Pfad."""
         sess_a, _ = A.AgentCryptoSession.respond_to_hello(HELLO, IDENTITY, psk=b"")
         sess_b, _ = A.AgentCryptoSession.respond_to_hello(HELLO, IDENTITY, psk=b"PAIRCODE12")
         assert sess_a.fingerprint != sess_b.fingerprint

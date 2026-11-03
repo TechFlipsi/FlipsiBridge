@@ -424,6 +424,67 @@ async def test_ph3_handshake_roundtrip_and_fingerprint() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ph3_psk_config_is_dead_warned_and_ignored(tmp_path, caplog) -> None:
+    """Zusatz-Order 02.11.2026 („EIN Code für alles", PIPELINE-BUGS Bug 1):
+    FLIPSI_PAIRING_PSK ist TOD — ein konfigurierter Wert wird NICHT mehr in
+    die KDF eingespeist (sondern EINMAL laut gewarnt), der Handshake läuft
+    mit hartem psk=b"". Beweis: Session gegen einen Phone-Peer OHNE psk
+    (App-Default, PhoneCryptoPeer psk=ByteArray(0)) kommt zustande —
+    vor dem Fix wäre genau diese Kombination der Deadlock gewesen."""
+    import logging
+    with caplog.at_level(logging.WARNING, logger="flipsibridge.chat"):
+        a, ws = _make_crypto_adapter(
+            tmp_path, env_extra={"FLIPSI_PAIRING_PSK": "PAIRCODE12"})
+    assert not hasattr(a, "pairing_psk"), (
+        "pairing_psk-Attribut muss ENTFERNT sein (kein zweiter Code am Adapter)")
+    warned = [r for r in caplog.records if "FLIPSI_PAIRING_PSK" in r.getMessage()]
+    assert warned, "konfigurierter FLIPSI_PAIRING_PSK muss EINMAL laut warnen"
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    # _establish_session nutzt den Phone-Default psk=b"" — klappt der
+    # Fingerprint-Abgleich, wurde der konfigurierte PSK wirklich ignoriert.
+    peer = await _establish_session(a, ws)
+    assert a._crypto_session is not None
+    assert peer.fingerprint == a._crypto_session.fingerprint
+    await a.disconnect()
+    print("OK PSK-Tod: konfigurierter Wert ignoriert+gewarnt, psk=b\"-Handshake lebt")
+
+
+@pytest.mark.asyncio
+async def test_ph3_future_ts_frame_rejected(tmp_path) -> None:
+    """JÄGER J11 (P2, JAEGE-RFULL 02.11.2026): ts-Zukunfts-Grenze — der Adapter
+    prüfte nur die Vergangenheit (>10 min); ein ts aus der Zukunft passierte
+    die Freshness (Relay W1C-8 + PhoneCryptoPeer prüfen ±10 min). Parität:
+    Zukunfts-ts = verworfen (fail-closed), Session bleibt, Socket bleibt."""
+    import time as _time
+    a, ws = _make_crypto_adapter(tmp_path)
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    frame = _phone_frame(peer, "chat.send.enc", "device-1",
+                         {"text": "ZUKUNFTS-INHALT", "msg_id": "f1"}, msg_id="f1")
+    frame["ts"] = int(_time.time() * 1000) + 3_600_000  # +1 h aus der Zukunft
+    ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+    await asyncio.sleep(0.5)  # _DECRYPT_FAIL_DELAY = 0,25 s konstante Verzögerung
+    assert received == [], "Zukunfts-ts-Frame darf NIE ankommen"
+    reasons = [r.get("reason", "") for r in a.rejected_frames if r.get("type") == "chat.send.enc"]
+    assert any("Zukunft" in r for r in reasons), (
+        f"Zukunfts-ts muss als CryptoFrameError geloggt werden, reasons: {reasons}")
+
+    # Gegenprobe: normaler ts-Frame kommt weiterhin an (Fenster nach oben offen).
+    ok_frame = _phone_frame(peer, "chat.send.enc", "device-1",
+                            {"text": "Jetzt-Zeit-Inhalt", "msg_id": "f2"}, msg_id="f2")
+    ws.inbox.append(_Msg("TEXT", json.dumps(ok_frame)))
+    await asyncio.sleep(0.1)
+    assert len(received) == 1 and received[0]["text"] == "Jetzt-Zeit-Inhalt"
+    await a.disconnect()
+    print("OK J11: Zukunfts-ts verworfen (Parität Relay/Phone), Frisch-Frame kommt an")
+
+
+@pytest.mark.asyncio
 async def test_ph3_fingerprint_chat_check_ok() -> None:
     """Sirs Revision (iii): 'FP-ABGLEICH: <hex>' mit RICHTIGEM Fingerprint →
     Auto-Antwort 'Fingerprint-Abgleich: OK — Code ist gleich', Session bleibt."""
@@ -1071,3 +1132,301 @@ async def test_sirs03_fingerprint_check_sends_read_receipt() -> None:
     assert a._crypto_session is not None, "OK-Abgleich darf die Session NICHT killen"
     await a.disconnect()
     print("OK SIRS-03: FP-ABGLEICH → Auto-Antwort + Lese-Bestätigung (Chip 'Gelesen')")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MEDIA-T1: Medien-/Datei-Versand im Chat — chunked, E2E über die Ratchet-
+# Sitzung (kein eigener Key-Pfad, Klartext-Fallback FORBIDDEN). Phone-Gegen-
+# stelle = PhoneCryptoPeer (Referenz), Agent-Seite = Adapter-Media-Pfad.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _media_chunk_frame(peer, chat_id, media_id, seq, total, data_b64,
+                       sha=None, kind="image", name="foto.jpg", size=None):
+    """chat.media.enc im Relay-Format: klare Metadaten, Daten im ct."""
+    payload = {"media_id": media_id, "seq": seq, "total": total,
+               "data": data_b64}
+    if seq == 0:
+        payload["sha256"] = sha
+    clear = {"media_id": media_id, "seq": seq, "total": total}
+    if seq == 0:
+        clear.update({"kind": kind, "name": name, "mime": "image/jpeg",
+                      "size": size})
+    return peer.encrypt_frame("chat.media.enc", chat_id, payload, clear=clear)
+
+
+@pytest.mark.asyncio
+async def test_media_phone_to_agent_chunks_reassembled(tmp_path) -> None:
+    """MEDIA-T1 Kern-Drill: 2-Chunk-Foto vom Phone → Adapter reassembliert,
+    prüft sha256, schreibt die Datei ins Media-Dir, quittiert JE Chunk
+    (chunk_ack ok=True) und liefert die Nachricht in die Gateway-Pipeline."""
+    import base64
+    import hashlib
+    media_dir = tmp_path / "media"
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(media_dir)})
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    raw = os.urandom(250_000)  # 2 Chunks (192 KiB + Rest)
+    sha = hashlib.sha256(raw).hexdigest()
+    media_id = "med-d41d8cd98f00"
+    chunks = [raw[i:i + 192 * 1024] for i in range(0, len(raw), 192 * 1024)]
+    for seq, chunk in enumerate(chunks):
+        frame = _media_chunk_frame(peer, "device-1", media_id, seq, len(chunks),
+                                   base64.b64encode(chunk).decode("ascii"),
+                                   sha=sha, size=len(raw))
+        ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+        await asyncio.sleep(0.03)
+    await a.drain_bg_tasks()
+    await asyncio.sleep(0.03)
+
+    # JE Chunk bestätigt (Progress), ok=True, media_id/seq korrekt.
+    acks = [f for f in ws.sent if f["type"] == "chat.media.chunk_ack"]
+    assert len(acks) == 2, f"2 chunk_acks erwartet, got {len(acks)}"
+    assert all(ack.get("ok") is True for ack in acks)
+    assert [ack["seq"] for ack in acks] == [0, 1]
+    assert acks[0]["media_id"] == media_id
+
+    # Datei geschrieben (Inhalt byte-genau), Nachricht in der Pipeline.
+    files = list(media_dir.glob("*"))
+    assert len(files) == 1, f"genau 1 Datei erwartet: {files}"
+    assert files[0].read_bytes() == raw, "Reassembly ergibt nicht die Original-Bytes"
+    assert len(received) == 1
+    text = received[0]["text"]
+    assert "[Foto]" in text and "foto.jpg" in text and str(files[0]) in text
+
+    # Klartext-Verbot: kein Chunk-Inhalt (b64) im Envelope.
+    assert base64.b64encode(chunks[0]).decode()[:48] not in json.dumps(ws.sent)
+    await a.disconnect()
+    print("OK MEDIA-T1: 2-Chunk-Foto reassembliert, sha geprüft, acks + Pipeline")
+
+
+@pytest.mark.asyncio
+async def test_media_assembler_out_of_order(tmp_path) -> None:
+    """Reassembly verkraftet Out-of-Order-Chunks (Relay-Spool/Flush-Gaps):
+    erst Chunk 1, dann Chunk 0 — Datei kommt trotzdem vollständig an."""
+    import base64
+    import hashlib
+    media_dir = tmp_path / "media"
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(media_dir)})
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    raw = b"ORDER" * 60_000  # 2 Chunks (300 KB < 2 × 192 KiB)
+    sha = hashlib.sha256(raw).hexdigest()
+    media_id = "med-oooo00000001"
+    chunks = [raw[i:i + 192 * 1024] for i in range(0, len(raw), 192 * 1024)]
+    for seq in (1, 0):  # absichtlich verkehrt herum
+        frame = _media_chunk_frame(peer, "device-1", media_id, seq, len(chunks),
+                                   base64.b64encode(chunks[seq]).decode("ascii"),
+                                   sha=sha, size=len(raw))
+        ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+        await asyncio.sleep(0.03)
+    await a.drain_bg_tasks()
+    await asyncio.sleep(0.03)
+
+    files = list(media_dir.glob("*"))
+    assert len(files) == 1 and files[0].read_bytes() == raw
+    await a.disconnect()
+    print("OK MEDIA-T1: Out-of-Order-Chunks reassembliert")
+
+
+@pytest.mark.asyncio
+async def test_media_sha_mismatch_fail_closed(tmp_path) -> None:
+    """Integrität: falscher sha256 im Chunk-0 → Assembly verworfen
+    (fail-closed), chunk_ack ok=False, KEINE Datei, KEINE Pipeline-Nachricht."""
+    import base64
+    import hashlib
+    media_dir = tmp_path / "media"
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(media_dir)})
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    raw = b"tamper-me" * 10
+    wrong_sha = hashlib.sha256(b"ANDERER-INHALT").hexdigest()
+    media_id = "med-bad-sha-00001"
+    frame = _media_chunk_frame(peer, "device-1", media_id, 0, 1,
+                               base64.b64encode(raw).decode("ascii"),
+                               sha=wrong_sha, size=len(raw))
+    ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+    await a.drain_bg_tasks()
+    await asyncio.sleep(0.03)
+
+    bad_acks = [f for f in ws.sent
+                if f["type"] == "chat.media.chunk_ack" and f.get("ok") is False]
+    assert bad_acks, "sha-Mismatch MUSS ok=False acken"
+    assert not list(media_dir.glob("*")), "keine Datei bei Integritäts-Bruch"
+    assert received == [], "keine Pipeline-Nachricht bei Integritäts-Bruch"
+    reasons = [r.get("reason", "") for r in a.rejected_frames
+               if r.get("type") == "chat.media.enc"]
+    assert any("sha256" in r for r in reasons)
+    await a.disconnect()
+    print("OK MEDIA-T1: sha-Mismatch fail-closed (ack ok=False, nichts geliefert)")
+
+
+@pytest.mark.asyncio
+async def test_media_inbound_without_session_dropped(tmp_path) -> None:
+    """Fail-closed: chat.media.enc ohne E2E-Session → verworfen (kein
+    Klartext-Pfad, kein Ack-Betrug)."""
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "media")})
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    import time as _time
+    frame = {"type": "chat.media.enc", "v": 1, "agent_id": a.agent_id,
+             "chat_id": "device-1", "session_id": "unbekannt-0001",
+             "media_id": "med-nosess-00001", "seq": 0, "total": 1,
+             "hdr": {"rk": "aa" * 32, "n": 0, "pn": 0},
+             "nonce": "", "ct": "", "ts": int(_time.time() * 1000)}
+    ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+    await asyncio.sleep(0.05)
+    assert received == []
+    reasons = [r.get("reason", "") for r in a.rejected_frames
+               if r.get("type") == "chat.media.enc"]
+    assert any("E2E-Session" in r for r in reasons)
+    await a.disconnect()
+    print("OK MEDIA-T1: enc ohne Session verworfen")
+
+
+@pytest.mark.asyncio
+async def test_media_send_fail_closed_without_session(tmp_path) -> None:
+    """Senden ohne aktive E2E-Session = Fehler, KEIN Klartext-Media-Fallback
+    (der Adapter schickt in dem Fall keinen einzigen Frame)."""
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "media")})
+    await a.connect()
+    src = tmp_path / "quelle.jpg"
+    src.write_bytes(b"bild" * 100)
+
+    result = await a.send_media("device-1", str(src))
+    assert result.success is False
+    assert "E2E" in result.error or "Session" in result.error
+    media_frames = [f for f in ws.sent if f["type"].startswith("chat.media")]
+    assert not media_frames, "ohne Session darf KEIN Media-Frame rausgehen"
+    await a.disconnect()
+    print("OK MEDIA-T1: send_media ohne Session fail-closed")
+
+
+@pytest.mark.asyncio
+async def test_media_send_agent_to_phone_enc_chunks(tmp_path) -> None:
+    """Agent→Phone: send_media() zerlegt in chat.media.enc-Chunks (Daten nur
+    im ct, klare Metadaten am seq=0-Frame), PhoneCryptoPeer reassembliert
+    byte-genau; working=true/false-Rahmen wie bei Text-Antworten."""
+    import base64
+    import hashlib
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "media")})
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    raw = os.urandom(400_000)  # 3 Chunks
+    src = tmp_path / "bericht.pdf"
+    src.write_bytes(raw)
+
+    result = await a.send_media("device-1", str(src), kind="file")
+    assert result.success is True, result.error
+    frames = [f for f in ws.sent if f["type"] == "chat.media.enc"]
+    assert len(frames) == 3, f"3 Chunks erwartet: {len(frames)}"
+    # Klare Metadaten NUR am Chunk 0 (kind/name/size).
+    assert frames[0]["kind"] == "file"
+    assert frames[0]["name"] == "bericht.pdf"
+    assert frames[0]["size"] == len(raw)
+    assert frames[0]["media_id"] == result.message_id
+    for f in frames[1:]:
+        assert "kind" not in f and "name" not in f
+    assert [f["seq"] for f in frames] == [0, 1, 2]
+    assert all(f["total"] == 3 for f in frames)
+
+    # Phone-Seite: Entschlüsseln + Reassembly byte-genau.
+    reassembled = b""
+    sha = None
+    for f in frames:
+        payload = peer.decrypt_frame(f)
+        reassembled += base64.b64decode(payload["data"])
+        if f["seq"] == 0:
+            sha = payload["sha256"]
+    assert reassembled == raw
+    assert sha == hashlib.sha256(raw).hexdigest()
+
+    # Klartext-Verbot: Chunk-Daten nie im Envelope.
+    assert base64.b64encode(raw[:192 * 1024]).decode()[:48] not in json.dumps(ws.sent)
+    # working-Rahmen (PH2-T11-Parität).
+    acts = [f["working"] for f in ws.sent if f["type"] == "chat.activity.enc"]
+    assert acts == [True, False]
+    await a.disconnect()
+    print("OK MEDIA-T1: send_media 3 enc-Chunks, Phone-Reassembly byte-genau")
+
+
+@pytest.mark.asyncio
+async def test_media_send_too_large_fail_closed(tmp_path, monkeypatch) -> None:
+    """Größen-Deckel (Parität zum Relay): über _MEDIA_MAX_BYTES → Fehler
+    VOR dem ersten Frame (kein halber Upload)."""
+    import adapter as _adapter
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "media")})
+    await a.connect()
+    peer = await _establish_session(a, ws)
+
+    src = tmp_path / "riesig.bin"
+    src.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(_adapter, "_MEDIA_MAX_BYTES", 1024)
+    result = await a.send_media("device-1", str(src))
+    assert result.success is False
+    assert "zu groß" in result.error
+    frames = [f for f in ws.sent if f["type"] == "chat.media.enc"]
+    assert not frames, "über-Deckel-Datei darf keinen Chunk auslösen"
+    await a.disconnect()
+    print("OK MEDIA-T1: Größen-Deckel greift vor dem ersten Chunk")
+
+
+@pytest.mark.asyncio
+async def test_media_dir_retention_prunes_oldest(tmp_path) -> None:
+    """Retention: übersteigt das Media-Dir das Budget (hier winzig gepatcht),
+    fliegen die ältesten Dateien zuerst raus — nie die gerade gesicherte."""
+    raw = b"bild" * 1024
+    sha = None
+    import base64
+    import hashlib
+    media_dir = tmp_path / "media"
+    a, ws = _make_crypto_adapter(
+        tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(media_dir)})
+    received: list[dict] = []
+    a.message_callback = received.append
+    await a.connect()
+    peer = await _establish_session(a, ws)
+    a.media_dir_max_bytes = 8192  # Budget: ~2 der 4-KB-Bilder
+
+    import time as _time
+    for index in range(4):
+        media_id = f"med-retention-{index:04d}"
+        frame = _media_chunk_frame(
+            peer, "device-1", media_id, 0, 1,
+            base64.b64encode(raw).decode("ascii"),
+            sha=hashlib.sha256(raw).hexdigest(),
+            kind="image", name=f"alt{index}.jpg", size=len(raw))
+        ws.inbox.append(_Msg("TEXT", json.dumps(frame)))
+        await asyncio.sleep(0.03)
+        await a.drain_bg_tasks()
+        # mtime der Dateien staffeln (älteste zuerst fliegen).
+        for p in media_dir.glob("*"):
+            stamp = _time.time() - 1000 + index * 100
+            os.utime(p, (stamp, stamp))
+    await asyncio.sleep(0.05)
+
+    remaining = sorted(p.name for p in media_dir.glob("*"))
+    total_bytes = sum(p.stat().st_size for p in media_dir.glob("*"))
+    assert total_bytes <= 8192 + len(raw), \
+        f"Retention hält Budget nicht: {total_bytes} Bytes, Dateien: {remaining}"
+    assert len(remaining) <= 3, "älteste Datei muss geflogen sein"
+    await a.disconnect()
+    print(f"OK MEDIA-T1: Retention hält Budget ({total_bytes} Bytes, "
+          f"{len(remaining)} Dateien)")

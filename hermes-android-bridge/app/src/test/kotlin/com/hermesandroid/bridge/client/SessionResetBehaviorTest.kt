@@ -43,6 +43,20 @@ class SessionResetBehaviorTest {
     }
 
     @Test
+    fun crossSessionTakeoverIsSecurityEventWithOwnLanguageNoAutoHeal() {
+        // FIX-WELLE-2 B8 (HERZ-Befund 8): Takeover-Sonde des Adapters — eigene
+        // Sprache (KEINE MitM-Behauptung), sichtbares Ereignis, kein Auto-
+        // Handshake (sonst sofortiges Wieder-Verdrängen durch die übernehmende
+        // Session = Ping-Pong).
+        val decision = sessionResetDecision("cross-session-takeover")
+        assertTrue(decision.isSecurityEvent)
+        assertFalse("Takeover heilt sich NICHT selbst weg", decision.startHandshakeNow)
+        val banner = decision.banner!!
+        assertTrue("Takeover-Banner muss Übernahme benennen", banner.contains("übernommen"))
+        assertFalse("Takeover ist KEINE MitM-Behauptung", banner.contains("Man-in-the-Middle"))
+    }
+
+    @Test
     fun unknownOrNullReasonFailsClosedToFingerprintMismatch() {
         // Der Relay-Forwarder allowlistet nur bekannte Reasons — für die App
         // gilt dasselbe fail-closed: unbekannt/fehlend = Sicherheitsereignis.

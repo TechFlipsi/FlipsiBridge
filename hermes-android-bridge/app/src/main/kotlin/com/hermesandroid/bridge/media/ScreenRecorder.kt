@@ -20,6 +20,20 @@ object ScreenRecorder {
         "No MediaProjection. Grant Screen Recording in the app before each capture on Android 16."
     private const val MAX_DURATION_MS = 30_000L
 
+    // JÄGER-J4 (P1, JAEGE-RFULL-20261102): Der Relay capped Phone-WS-Textframes
+    // bei 2 MB (max_msg_size, android_relay.py) — das /screen_record-Result lief
+    // als EIN Base64-JSON-Frame, ab ~6 s Aufnahme (2 Mbit/s ≈ 1,4 MB Base64)
+    // riss die Verbindung (1009) inkl. Reconnect-Sturm. Budget: Video-Bytes B
+    // werden Base64 ≈ 4/3·B + JSON-Hülle; 1,3 MB Video ≈ 1,73 MB Base64 + Hülle
+    // < 2 MB mit Luft. Bitrate dynamisch aufs Budget geklemmt (30 s → ~347
+    // kbit/s, Default 5 s → 2 Mbit/s) + harte Größenkontrolle NACH der
+    // Aufnahme: Überschreitung (Encoder-Overshoot) = ehrliches Fehler-Result
+    // statt Connection-Kill. Bewusste App-Lane-Alternative zum Stream-
+    // Protokoll (wie /file): bräuchte Relay-+Adapter-Seite, Out-of-Scope.
+    private const val MAX_VIDEO_BYTES = 1_300_000L
+    private const val MIN_VIDEO_BITRATE = 300_000
+    private const val MAX_VIDEO_BITRATE = 2_000_000
+
     @Volatile private var projectionResultCode: Int? = null
     @Volatile private var projectionData: Intent? = null
     @Volatile private var recorder: MediaRecorder? = null
@@ -114,7 +128,10 @@ object ScreenRecorder {
                     setOutputFile(outputFile.absolutePath)
                     setVideoSize(width, height)
                     setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-                    setVideoEncodingBitRate(2_000_000)
+                    // JÄGER-J4: Bitrate aufs Frame-Budget geklemmt —
+                    // bytes ≈ bitrate · dauer / 8 bleibt unter der 2-MB-
+                    // Framegrenze des Relays, für JEDE erlaubte Dauer.
+                    setVideoEncodingBitRate(frameBudgetBitRate(safeDuration))
                     setVideoFrameRate(30)
                     prepare()
                 }
@@ -145,21 +162,32 @@ object ScreenRecorder {
                 virtualDisplay = null
 
                 val bytes = outputFile.readBytes()
-                val base64Video = Base64.encodeToString(bytes, Base64.NO_WRAP)
                 outputFile.delete()
 
-                resultHolder[0] = mapOf(
-                    "success" to true,
-                    "message" to "Recorded ${safeDuration}ms",
-                    "data" to mapOf(
-                        "video" to base64Video,
-                        "width" to width,
-                        "height" to height,
-                        "durationMs" to safeDuration,
-                        "sizeBytes" to bytes.size,
-                        "mimeType" to "video/mp4"
+                if (bytes.size > MAX_VIDEO_BYTES) {
+                    // JÄGER-J4-Härtung: Encoder-Overshoot — NIEMALS als
+                    // >2-MB-Einzelframe senden (riss sonst die Phone-WS mit
+                    // 1009): ehrliches Fehler-Result, Verbindung bleibt.
+                    resultHolder[0] = mapOf(
+                        "success" to false,
+                        "message" to "Video zu groß für den Relay-Frame " +
+                            "(${bytes.size / 1024} KiB nach ${safeDuration}ms) — kürzere Dauer wählen",
                     )
-                )
+                } else {
+                    val base64Video = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    resultHolder[0] = mapOf(
+                        "success" to true,
+                        "message" to "Recorded ${safeDuration}ms",
+                        "data" to mapOf(
+                            "video" to base64Video,
+                            "width" to width,
+                            "height" to height,
+                            "durationMs" to safeDuration,
+                            "sizeBytes" to bytes.size,
+                            "mimeType" to "video/mp4",
+                        ),
+                    )
+                }
             } catch (e: Exception) {
                 cleanupRecording()
                 outputFile?.delete()
@@ -194,6 +222,15 @@ object ScreenRecorder {
         recorder = null
         virtualDisplay = null
     }
+
+    /**
+     * JÄGER-J4: maximale H264-Bitrate, damit das Base64-JSON-Result der
+     * Aufnahme sicher UNTER der 2-MB-Framegrenze des Relays bleibt —
+     * bytes ≈ bitrate · dauer / 8 ≤ MAX_VIDEO_BYTES.
+     */
+    internal fun frameBudgetBitRate(durationMs: Long): Int =
+        (MAX_VIDEO_BYTES * 8L / (durationMs / 1000L).coerceAtLeast(1L))
+            .toInt().coerceIn(MIN_VIDEO_BITRATE, MAX_VIDEO_BITRATE)
 
     fun release() {
         cleanupRecording()

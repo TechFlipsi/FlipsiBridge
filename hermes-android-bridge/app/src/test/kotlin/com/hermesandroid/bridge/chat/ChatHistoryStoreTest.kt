@@ -1,10 +1,12 @@
 package com.hermesandroid.bridge.chat
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
+import java.io.File
 
 /**
  * SIRS-02 (P2, Volltest 03.11.2026): Persist-Roundtrip des Chat-Verlaufs —
@@ -132,6 +134,58 @@ class ChatHistoryStoreTest {
         assertTrue("kein Pfad-Escape: Datei bleibt im Store-Verzeichnis",
             files[0].endsWith(".jsonl") && !files[0].contains('/'))
         assertEquals(1, ChatHistoryStore.load(root, "../../evil/agent").size)
+    }
+
+    // ── J12 (JÄGER-RFULL, Fix-Welle 2 Backend-Lane) ──────────────────────────
+
+    @Test
+    fun j12_fileForHashSuffixPreventsSanitizeCollision() {
+        val root = tmp.newFolder("chat_history")
+        // Vorher kollidierten „a b“ und „a/b“ beide auf a_b.jsonl → die
+        // Verläufe mischten sich; der Hash-Suffix macht jeden Namen eindeutig.
+        val fileA = ChatHistoryStore.fileFor(root, "a b")
+        val fileB = ChatHistoryStore.fileFor(root, "a/b")
+        assertTrue("Dateinamen dürfen bei sanitize-Kollision nicht identisch sein",
+            fileA.name != fileB.name)
+        ChatHistoryStore.append(root, entry(1L, agentId = "a b", text = "Erster Agent"))
+        ChatHistoryStore.append(root, entry(2L, agentId = "a/b", text = "Zweiter Agent"))
+        assertEquals(listOf("Erster Agent"),
+            ChatHistoryStore.load(root, "a b").map { it.text })
+        assertEquals(listOf("Zweiter Agent"),
+            ChatHistoryStore.load(root, "a/b").map { it.text })
+    }
+
+    @Test
+    fun j12_appendIsAppendOnlyNoFullRewrite() {
+        val root = tmp.newFolder("chat_history")
+        // 502 appends OHNE load: die Datei hält alle 502 Zeilen — append
+        // schreibt O(1) eine Zeile, kein Voll-Rewrite je Nachricht mehr.
+        repeat(ChatHistoryStore.MAX_PER_AGENT + 2) { i ->
+            ChatHistoryStore.append(root, entry(seq = 100L + i, text = "N$i"))
+        }
+        val file = ChatHistoryStore.fileFor(root, "jarvis")
+        assertEquals(ChatHistoryStore.MAX_PER_AGENT + 2,
+            file.readLines().count { it.isNotBlank() })
+        // Erst das LADEN kürzt (Kürzungszeitpunkt verschoben — FIFO bleibt).
+        val stored = ChatHistoryStore.load(root, "jarvis")
+        assertEquals(ChatHistoryStore.MAX_PER_AGENT, stored.size)
+        assertEquals("N${ChatHistoryStore.MAX_PER_AGENT + 1}", stored.last().text)
+        // …und die Kürzung ist persistiert:
+        assertEquals(ChatHistoryStore.MAX_PER_AGENT,
+            file.readLines().count { it.isNotBlank() })
+    }
+
+    @Test
+    fun j12_legacyFileWithoutHashIsAdopted() {
+        val root = tmp.newFolder("chat_history")
+        // Bestandsverlauf unter ALTEM Namen (ohne Hash-Suffix) bleibt erhalten
+        // und wird beim ersten Zugriff auf den neuen Namen übernommen.
+        val legacy = File(root, "jarvis.jsonl")
+        legacy.writeText(gsonJsonOf(entry(7L)) + "\n")
+        assertEquals(listOf(7L), ChatHistoryStore.load(root, "jarvis").map { it.seq })
+        ChatHistoryStore.append(root, entry(8L))
+        assertEquals(listOf(7L, 8L), ChatHistoryStore.load(root, "jarvis").map { it.seq })
+        assertFalse("alte Datei muss nach Übernahme weg sein", legacy.exists())
     }
 
     private fun gsonJsonOf(entry: ChatHistoryStore.Entry): String =

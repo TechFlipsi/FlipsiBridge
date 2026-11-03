@@ -160,3 +160,46 @@ async def _recv_until(ws, frame_type, timeout=6.0):
         frame = await ws.receive_json(timeout=max(0.1, remaining))
         if frame.get("type") == frame_type:
             return frame
+
+# ── PH-FIX-BACKEND-B: Zusatz-Order „EIN Code für alles" (02.11.2026) ────────
+
+class TestPskCodepathRemoved:
+    """Zusatz-Order 02.11.2026 (PIPELINE-BUGS): Der zweite Code
+    (FLIPSI_PAIRING_PSK) ist TOD — der einzige Ort, der ihn je las, war der
+    FlipsiBridge-Chat-Adapter (Bug-1-Wurzel: agent-seitig psk in die KDF,
+    app-seitig nie übergeben). Der Adapter ignoriert ihn jetzt laut-warnend;
+    der KDF-Live-Vertrag ist psk=b"" (PH3-KDF-FIXTURES-v1.md kanonisch).
+    SCOPE-GUARD: FlipsiBridge-spezifisch — KEIN anderer Plattform-Adapter
+    (Discord/Telegram/Signal/WhatsApp/…) darf pairing_psk je referenzieren.
+    """
+
+    def test_pairing_psk_referenced_only_by_flipsibridge_chat_adapter(self):
+        import pathlib
+        repo = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        for path in sorted(repo.rglob("*.py")):
+            if any(part in {"build", "__pycache__", "scratch"} for part in path.parts):
+                continue
+            if path.name.startswith("test_") or path.name == "conftest.py":
+                continue  # Tests pinnen den PSK-Tod absichtlich (Text-Treffer ok)
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+            if "pairing_psk" in text or "FLIPSI_PAIRING_PSK" in text:
+                offenders.append(str(path))
+        expected = str(repo / "contrib" / "hermes-chat-plugin" / "adapter.py")
+        assert offenders == [expected], (
+            "pairing_psk/FLIPSI_PAIRING_PSK außerhalb des FlipsiBridge-Chat-"
+            f"Adapters entdeckt (SCOPE-GUARD-Verstoß): {offenders}")
+
+    def test_adapter_handshake_uses_hard_empty_psk(self):
+        """Adapter-responder_to_hello-Pfad im Quelltext: hartes psk=b"" statt
+        Config-Lookup — der alte 'psk=self.pairing_psk...'-Ausdruck ist weg."""
+        import inspect
+        source = inspect.getsource(_ph3_adapter.FlipsiBridgeChatAdapter)
+        assert "self.pairing_psk" not in source, (
+            "FlipsiBridgeChatAdapter darf pairing_psk als Config-Attribut nicht "
+            "mehr kennen (Zusatz-Order: EIN Code = Relay-Pairing-Code)")
+        assert 'psk=b""' in source, (
+            "_handle_crypto_hello muss hart psk=b\"\" übergeben (Zusatz-Order)")

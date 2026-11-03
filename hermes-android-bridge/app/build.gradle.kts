@@ -16,8 +16,8 @@ android {
         // targetSdk bewusst auf 34 belassen (Verhaltenssprung FGS/Rechte im Release
         // kontrolliert trennen; compileSdk 36 ist nur für Bibliotheksauswahl).
         targetSdk = 34
-        versionCode = 36
-        versionName = "0.14.0"
+        versionCode = 37
+        versionName = "0.14.1"
     }
 
     buildFeatures {
