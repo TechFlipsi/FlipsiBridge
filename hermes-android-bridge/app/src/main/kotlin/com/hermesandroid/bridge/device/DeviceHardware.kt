@@ -17,6 +17,31 @@ object DeviceHardware {
 
     data class PhotoResult(val ok: Boolean, val path: String, val error: String?)
 
+    /**
+     * JÄGER-J2 (P1, JAEGE-RFULL-20261102): Dateiname-Sanitizing für /photo.
+     * `File(dir, "../../Download/x.jpg")` löste auf und schrieb ÜBERALL unter
+     * /storage/emulated/0 — die Route ist nur hinter der Capability `device`
+     * (Taschenlampe/Wecker) gegated, NICHT hinter files_write. Vertrag: nur
+     * [A-Za-z0-9._-] (≤128 Zeichen), kein Pfad-Separator, kein "..", kein
+     * reiner Verweis wie "." — Muster wie MicrophoneRecordingFiles.safeName.
+     * null = Name wurde verworfen (Aufrufer meldet Fehler statt zu schreiben).
+     */
+    private val safePhotoName = Regex("[A-Za-z0-9._-]{1,128}")
+
+    /** JÄGER-J2: prüft UND begrenzt den Namen auf reine Dateinamen. */
+    internal fun safePhotoFileName(rawName: String): String? {
+        val name = rawName.trim()
+        if (name.isEmpty()) return null
+        // PC-GATE-FUND (Fix-Welle 2, vorbelastet aus J2/8b5a54f — der Test lief
+        // nie auf einer JVM): „.“ passierte Regex + contains(„..“) + File-Check
+        // (File(".").name == „.“) und wäre als Dateiname durchgegangen.
+        if (name == "." || name == "..") return null
+        if (!safePhotoName.matches(name)) return null
+        if (name.contains("..")) return null
+        if (java.io.File(name).name != name) return null
+        return name
+    }
+
     /** Nimmt ein JPEG auf (r_ckseitige Kamera, maximal verf_ugbare Aufl_sung ohne Preview). */
     fun capturePhoto(context: Context, fileName: String): Pair<String, String?> {
         return try {
@@ -37,7 +62,23 @@ object DeviceHardware {
                 "Agent",
             )
             if (!dir.exists()) dir.mkdirs()
-            val out = java.io.File(dir, fileName.ifBlank { "agent_foto_${System.currentTimeMillis()}.jpg" })
+            // JÄGER-J2 (P1): Pfad-Traversal — der filename kam unvalidiert
+            // vom Relay und schrieb mit "../.." ÜBERALL unter /storage.
+            // Sanitizing + Canonical-Confinement: nur noch Namen OHNE Pfad-
+            // Bestandteile durch, und das Ergebnis muss canonical IM
+            // Foto-Verzeichnis liegen (letzter Riegel gegen Symlink-/Mount-
+            // Tricks).
+            val requestedName = fileName.trim()
+            val safeName = if (requestedName.isBlank()) {
+                "agent_foto_${System.currentTimeMillis()}.jpg"
+            } else {
+                safePhotoFileName(requestedName)
+                    ?: return Pair("", "Ungültiger Dateiname: nur Buchstaben, Zahlen, . _ - erlaubt (keine Pfade)")
+            }
+            val out = java.io.File(dir, safeName)
+            if (out.canonicalFile.parentFile != dir.canonicalFile) {
+                return Pair("", "Dateiname verlässt das Foto-Verzeichnis")
+            }
             val latch = java.util.concurrent.CountDownLatch(1)
             var failure: String? = null
             val handlerThread = android.os.HandlerThread("BridgeCamera").apply { start() }
@@ -89,11 +130,32 @@ object DeviceHardware {
                                                     // Empirie 21.09., Foto 5 (roh): Rohbild ist 90 Grad gegen den
                                                     // Uhrzeigersinn gedreht -> deterministisch +90 (CW) drehen,
                                                     // OHNE EXIF-Tag (der war der Störfaktor in allen Vorversionen).
+                                                    // J9 (JÄGER-RFULL, Fix-Welle 2): decodeByteArray am VOLL-
+                                                    // aufgelösten JPEG (bis 50 MP ≈ 200 MB Bitmap) + createBitmap-
+                                                    // Kopie = OOM-Risiko. Erst Bounds dekodieren, inSampleSize bis
+                                                    // ~4 MP wählen, dann dekodieren + drehen (Anzeige-Qualität
+                                                    // reicht; das Original-File bekommt der Aufrufer ohnehin nie).
                                                     val rotated = try {
-                                                        val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                                                        val bounds = android.graphics.BitmapFactory.Options().apply {
+                                                            inJustDecodeBounds = true
+                                                        }
+                                                        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                                                        var sample = 1
+                                                        val targetPixels = 4_000_000
+                                                        while ((bounds.outWidth / sample).toLong() *
+                                                            (bounds.outHeight / sample) > targetPixels
+                                                        ) {
+                                                            sample *= 2
+                                                        }
+                                                        val opts = android.graphics.BitmapFactory.Options().apply {
+                                                            inSampleSize = sample
+                                                        }
+                                                        val src = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                                                            ?: error("Bitmap-Dekodierung fehlgeschlagen")
                                                         val m = android.graphics.Matrix()
                                                         m.postRotate(90f)
                                                         val bmp = android.graphics.Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+                                                        if (bmp !== src) src.recycle()
                                                         java.io.ByteArrayOutputStream().use { bo ->
                                                             bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, bo)
                                                             bmp.recycle()

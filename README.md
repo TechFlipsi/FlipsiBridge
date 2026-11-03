@@ -216,7 +216,8 @@ ones after successful finalization.
 See [SECURITY.md](SECURITY.md) for details. Key points:
 - Pairing code authentication with rate limiting
 - Phone connects out (never directly exposed)
-- Currently unencrypted (`ws://`) — use TLS proxy for production
+- Transport encryption: native TLS (`ANDROID_RELAY_TLS=1` + cert/key, `wss://`) or
+  via TLS reverse proxy — the relay refuses plaintext binds off-localhost by default
 - Full device access once paired — only connect to trusted servers
 
 ## Development
@@ -240,7 +241,7 @@ direct SMS/calls, location, microphone recording, screen-wake key, text-to-speec
 and a persistent systemd relay are all in. What's still ahead:
 
 ### Upcoming
-- TLS/WSS support for encrypted phone↔server communication
+- Certificate pinning in the app (with backup pins for CA rotation)
 - Server-side call counter to prevent tool call loops
 - Better error reporting (screenshot + annotated explanation on failure)
 - File transfer — send files/photos between phone and server

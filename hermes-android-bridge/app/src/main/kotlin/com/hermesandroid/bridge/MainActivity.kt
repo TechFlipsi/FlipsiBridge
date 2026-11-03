@@ -25,6 +25,18 @@ import com.hermesandroid.bridge.ui.FlipsiTheme
  */
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        /**
+         * PH-FIX-CHAT-A (F4): Foreground-Merker der App — RelayClient
+         * unterdrückt Chat-Notifications für die gerade OFFENE Conversation,
+         * solange die App im Vordergrund steht (im Hintergrund ist die
+         * Notification gewollt, auch bei offener Conversation).
+         */
+        @Volatile
+        var isForeground: Boolean = false
+            private set
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // SEC-W3 (W3-1): FLAG_SECURE — Task-Switcher/Recents + Screenshots zeigen
@@ -52,6 +64,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // PH-FIX-CHAT-A (F4): Foreground-Merker für den Notification-Spam-Schutz.
+        isForeground = true
         // X-1: Rückkehr aus dem Hintergrund → Gate neu bewerten (Auto-Sperr-
         // Frist abgelaufen?); v0.12.0 QA-Fix (CHEF-03): Freigabe-Badges neu
         // ziehen statt „fehlt“ stehen zu lassen.
@@ -61,6 +75,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        // PH-FIX-CHAT-A (F4): siehe onResume — Merker zurücksetzen.
+        isForeground = false
         // X-1: Hintergrund-Zeitstempel für die Auto-Sperre (30 s/3 min/Nie).
         AppLockManager.get().onAppBackground()
     }

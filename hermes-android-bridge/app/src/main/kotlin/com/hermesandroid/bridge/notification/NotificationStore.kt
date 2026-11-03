@@ -27,6 +27,13 @@ object NotificationStore {
 
     fun add(entry: NotificationEntry) {
         synchronized(lock) {
+            // JÄGER-J8 (P2, JAEGE-RFULL-20261102): aktualisierte Notification
+            // (gleicher sbn.key, z. B. jede neue WhatsApp-Nachricht) = EIN
+            // Eintrag statt einer Duplikat-Kette. Vorher blieben ältere
+            // Duplikate für immer „aktiv“ in der Liste, /notifications
+            // lieferte Geister-Notifications, und notify_reply {key} war
+            // mehrdeutig — markRemoved erfasste nur den ERSTEN Treffer.
+            notifications.removeAll { it.key == entry.key }
             if (notifications.size >= maxCapacity) {
                 notifications.removeLast()
             }
@@ -59,13 +66,16 @@ object NotificationStore {
     fun markRemoved(key: String) {
         synchronized(lock) {
             val now = System.currentTimeMillis()
-            val idx = notifications.indexOfFirst { it.key == key }
-            if (idx >= 0) {
-                // Keep the entry (flagged as removed) so the PA can log it
-                // AFTER the user has read/cleared it — the old behaviour
-                // deleted it instantly and the 2-min poll missed the event.
-                val e = notifications[idx]
-                notifications[idx] = e.copy(removedAt = now)
+            // JÄGER-J8: ALLE Treffer des Keys markieren (vorher nur der
+            // erste) — mit der add()-Dedupe gibt es nur noch einen je Key,
+            // der Filter bleibt aber auch gegen ältere Bestände robust.
+            notifications.indices.forEach { i ->
+                if (notifications[i].key == key) {
+                    // Keep the entry (flagged as removed) so the PA can log it
+                    // AFTER the user has read/cleared it — the old behaviour
+                    // deleted it instantly and the 2-min poll missed the event.
+                    notifications[i] = notifications[i].copy(removedAt = now)
+                }
             }
         }
     }

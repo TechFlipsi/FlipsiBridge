@@ -112,12 +112,15 @@ object CapabilityGate {
     )
 
     private const val PREFS = "flipsibridge_caps"
+    // J6 (JÄGER-RFULL): DIESE Datei schreibt RelayClient (PREFS_NAME) —
+    // legacy_had_relay + relay_server_url leben hier, nicht in flipsibridge_caps.
+    private const val BRIDGE_PREFS = "hermes_bridge_prefs"
     private const val MIGRATION_KEY = "migrated_v0_10_8"
     private var prefs: SharedPreferences? = null
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        migrateLegacyInstall()
+        migrateLegacyInstall(context)
     }
 
     /**
@@ -130,12 +133,21 @@ object CapabilityGate {
      * starten strikt bei AUS. Der Migration-Key verhindert Wiederholung; was der
      * User danach ausschaltet, bleibt aus.
      */
-    private fun migrateLegacyInstall() {
+    private fun migrateLegacyInstall(context: Context) {
         val p = prefs ?: return
         if (p.getBoolean(MIGRATION_KEY, false)) return
-        // Bestandsinstallation erkennen: RelayClient-Prefs (hermes_bridge_prefs)
-        // enthalten relay_server_url, wenn die App vor dem Gating verbunden war.
-        val hadRelayBefore = p.getBoolean("legacy_had_relay", false)
+        // J6 (JÄGER-RFULL, Fix-Welle 2): legacy_had_relay wird von RelayClient
+        // in DIESEN Prefs geschrieben ("hermes_bridge_prefs", PREFS_NAME bei
+        // RelayClient) — der alte Code las aus flipsibridge_caps, hatteRelay
+        // war damit IMMER false und die „Bestandsinstallation behält alles
+        // aktiv“-Migration griff nie. Zusätzlich relay_server_url prüfen: Der
+        // Marker wird erst beim nächsten connect() gesetzt — eine Alt-
+        // Installation, die nach dem Upgrade noch nie neu verbunden hat,
+        // hat nur die URL gespeichert.
+        val bridgePrefs =
+            context.getSharedPreferences(BRIDGE_PREFS, Context.MODE_PRIVATE)
+        val hadRelayBefore = bridgePrefs.getBoolean("legacy_had_relay", false) ||
+            !bridgePrefs.getString("relay_server_url", null).isNullOrBlank()
         if (hadRelayBefore) {
             for ((cap, _) in userFacing) {
                 p.edit().putBoolean("cap_$cap", true).apply()

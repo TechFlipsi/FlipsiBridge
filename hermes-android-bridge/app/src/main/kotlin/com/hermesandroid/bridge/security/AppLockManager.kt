@@ -325,6 +325,14 @@ class AppLockManager internal constructor(
             val option = autoLockOption()
             if (option != AutoLockOption.NEVER && now - bg >= option.millis) unlocked = false
         }
+        // JÄGER-J7 (P2, JAEGE-RFULL-20261102): Kurzer Hintergrund (onPause →
+        // onResume INNERHALB der Frist) ließ backgroundSince am ALTEN Wert
+        // stehen — ist die App danach Minuten offen in aktiver Nutzung,
+        // sperrte jede Gate-Rekomposition (Rotation/Activity-Recreate) die
+        // App MITTEN in der Bedienung. Hintergrund-Zeitraum ist mit dem
+        // Resume ABGESCHLOSSEN: nicht gesperrt = Zeitstempel löschen (nur
+        // unlock() räumte bisher).
+        if (unlocked) backgroundSince = null
         val visible = !unlocked
         _gateVisible.value = visible
         return visible

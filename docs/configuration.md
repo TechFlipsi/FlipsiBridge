@@ -16,6 +16,9 @@ Config lives in `~/.hermes/.env` (only needed for direct USB/LAN; relay mode is 
 | `ANDROID_RELAY_PORT` | `8766` | Port the relay listens on |
 | `ANDROID_RELAY_HOST` | `localhost` | Relay bind address (see #38) |
 | `ANDROID_BRIDGE_TIMEOUT` | `30` | HTTP request timeout (seconds) |
+| `ANDROID_RELAY_SCREEN_RECORD_TIMEOUT` | `55` | Response window for `/screen_record` (seconds); the recording runs on the phone, so it needs more than the standard 30 s window (min 30) |
+| `ANDROID_RELAY_CHAT_RATE_PER_SEC` | `2` | Chat messages per second per IP (chat bucket) |
+| `ANDROID_RELAY_MEDIA_RATE` | `20` | Media chunks per second per IP (own burst bucket — media uploads do not share the chat bucket) |
 
 ## Connection modes
 

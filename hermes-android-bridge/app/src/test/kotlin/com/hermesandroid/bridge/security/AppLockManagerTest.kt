@@ -240,7 +240,14 @@ class AppLockManagerTest {
         assertFalse(m.evaluateGate())
         m.onAppBackground(now)
         assertFalse("179,999 s < 3-min-Frist", m.evaluateGate(now + 179_999))
-        assertTrue("Frist abgelaufen = gesperrt", m.evaluateGate(now + 180_000))
+        // FIX-WELLE-2 (Vorbestand-Fail, Test-Bug): J7 (e3bb338) schließt den
+        // Hintergrund-Zeitraum mit dem Resume INNERHALB der Frist ab — ein
+        // in-Frist-Resume löscht den Zeitstempel (bewusst: keine Sperre mitten
+        // in aktiver Nutzung). Die Sperre greift erst, wenn eine NEUE
+        // Hintergrund-Periode die Frist überschreitet.
+        m.onAppBackground(now + 180_000)
+        assertTrue("Frist abgelaufen = gesperrt",
+                   m.evaluateGate(now + 180_000 + 180_000))
     }
 
     @Test
@@ -250,7 +257,10 @@ class AppLockManagerTest {
         m.setAutoLockOption(AutoLockOption.AFTER_30_SECONDS)
         assertTrue(m.verifyPin("1234") is PinVerifyResult.Success)
         m.onAppBackground(now)
-        assertFalse(m.evaluateGate(now + 29_999))
+        // FIX-WELLE-2 (Vorbestand-Fail, Test-Bug): keine Zwischen-Bewertung
+        // innerhalb der Frist mehr — J7 schließt den Hintergrund-Zeitraum mit
+        // jedem in-Frist-Resume ab, der sperrende Ablauf braucht daher eine
+        // ungebrochene 30-s-Hintergrund-Periode.
         assertTrue(m.evaluateGate(now + 30_000))
     }
 

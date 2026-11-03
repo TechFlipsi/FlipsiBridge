@@ -1346,6 +1346,70 @@ class TestAgentWsChatBridge:
 
         asyncio.run(scenario())
 
+    def test_agent_register_updates_display_name_no_discard(self, tmp_path, monkeypatch, caplog):
+        """PH-FIX-BACKEND-B (PIPELINE-BUGS Log-Rauschen-Fund): agent.register
+        ist allowlisted und wird VERARBEITET — display_name übernehmen (die
+        WS-Identität gewinnt, eine im Frame mitgeschickte agent_id wird
+        IGNORIERT) + Presence-Push bei echter Änderung. KEIN
+        'verworfen (Allowlist'-Log mehr je Agent-Connect/Reconnect."""
+        import asyncio
+        import aiohttp
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT)
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"},
+                )
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"},
+                )
+                # Hallo-Frame + Connect-Presence-Push des Agenten wegkonsumieren.
+                await _drain_phone_state_frame(phone, expected=2)
+                assert get_agent_registry()["jarvis"]["display_name"] == "J.A.R.V.I.S."
+
+                # Register-Frame: display_name übernehmen; frame-agent_id
+                # (hier fremd) muss ignoriert werden — NIE ein Rename-Fenster.
+                await agent.send_json({
+                    "type": "agent.register", "agent_id": "evil-other",
+                    "display_name": "Jarvis Live-Name"})
+                frame = await phone.receive_json(timeout=2)
+                assert frame["type"] == "relay.state", (
+                    f"Änderung muss als Presence-Push kommen, kam aber: {frame}")
+                entry = next(a for a in frame["agents"] if a["agent_id"] == "jarvis")
+                assert entry["display_name"] == "Jarvis Live-Name"
+                assert get_agent_registry()["jarvis"]["display_name"] == "Jarvis Live-Name"
+                # KEIN Allowlist-Verwurf: das Connect-Log-Rauschen ist weg.
+                for record in caplog.records:
+                    message = record.getMessage()
+                    assert not ("agent.register" in message and "verworfen" in message), (
+                        f"agent.register darf nicht mehr verworfen werden: {message}")
+
+                # Identischer Name (nach Strip) = No-Op, KEIN zweiter Push.
+                await agent.send_json({
+                    "type": "agent.register", "display_name": "  Jarvis Live-Name  "})
+                await asyncio.sleep(0.2)
+                with pytest.raises(asyncio.TimeoutError):
+                    await phone.receive_json(timeout=0.3)
+
+                # Ungültiger Register-Frame (display_name fehlt) = No-Op;
+                # der Socket lebt und ein gültiger chat.reply kommt weiter an.
+                await agent.send_json({"type": "agent.register", "agent_id": "jarvis"})
+                await agent.send_json(
+                    {"type": "chat.reply", "chat_id": "ws-reg-1", "text": "Noch da"})
+                frame = await phone.receive_json(timeout=2)
+                assert frame["type"] == "chat.event"
+                assert frame["chat_id"] == "ws-reg-1"
+
+                await agent.close()
+                await phone.close()
+
+        asyncio.run(scenario())
+
     def test_phone_state_frame_empty_registry_fallback(self, tmp_path, monkeypatch):
         """Leere Server-Config → relay.state.agents = [] (App-Demo-Fallback,
         kein Crash, kein fehlendes Feld)."""
@@ -2659,6 +2723,168 @@ class TestPh3CryptoE2E:
 
         asyncio.run(scenario())
 
+    def test_j3_spooled_enc_gets_fresh_ts_phone_to_agent(self, tmp_path, monkeypatch):
+        """JÄGER J3 (P1, JAEGE-RFULL 02.11.2026): enc-Frame >10 min im Agent-
+        Spool darf bei Zustellung NICHT an der Adapter-Freshness sterben —
+        der Flush schreibt ts neu, die Entschlüsselung klappt, 'delivered' ist
+        ehrlich. Vorher: stiller Verwurf + Lügen-Chip."""
+        import aiohttp
+        import tools.android_relay as R
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT + 14)
+        base = f"http://127.0.0.1:{self.PORT + 14}"
+        session_id = self.SESSION_ID + "-j3a"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 14}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                await _drain_phone_state_frame(phone, expected=1)
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 14}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6)
+
+                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                                        headers={"Authorization": f"Bearer {self.CODE}"})
+                keys = await got.json()
+                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                hello = peer.make_hello(session_id)
+                resp = await session.post(f"{base}/crypto_hello", json=hello,
+                                          headers={"Authorization": f"Bearer {self.CODE}"})
+                assert resp.status == 200
+                hello_frame = await agent.receive_json(timeout=6)
+                agent_session, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+                    hello_frame, self.identity)
+                await agent.send_json(ack)
+                peer.consume_ack(await _recv_until(phone, "crypto.hello_ack", timeout=6))
+
+                # Agent OFFLINE → Phone-Nachricht landet im Spool.
+                await agent.close()
+                deadline = time.monotonic() + 5
+                while get_agent_registry()["jarvis"]["online"] is not False:
+                    assert time.monotonic() < deadline, "Agent bleibt online"
+                    time.sleep(0.01)
+
+                enc_frame = peer.encrypt_frame(
+                    "chat.send.enc", "chat-j3-a", {"text": "Spool-Geheimnis", "msg_id": "j3a"})
+                resp = await session.post(
+                    f"{base}/chat",
+                    json={"agent_id": "jarvis", "session_id": session_id,
+                          "chat_id": "chat-j3-a", "ts": enc_frame["ts"],
+                          "hdr": enc_frame["hdr"], "nonce": enc_frame["nonce"],
+                          "ct": enc_frame["ct"]},
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                assert resp.status == 200, await resp.text()
+                body = await resp.json()
+                assert body["queued"] is True and body["delivered"] is False
+
+                # Gespoolte Frame-ts ALT machen (simuliert >10 min Offline-Phase).
+                state = R._relay_instance
+                assert state is not None, "Relay-Instanz für Spool-Introspektion fehlt"
+                queue = state.chat_inbound.get("jarvis")
+                assert queue, "chat.send.enc wurde nicht gespoolt"
+                queued_frame = queue[0][1]
+                assert queued_frame["type"] == "chat.send.enc"
+                stale_ts = int(time.time() * 1000) - 3_600_000  # 1 h alt
+                queued_frame["ts"] = stale_ts
+
+                # Reconnect → Flush: frische ts + Entschlüsselung klappt
+                # (ohne Fix: 'Frame zu alt'-Verwurf beim Agenten STILL,
+                # obwohl der Flush delivered markiert hat).
+                agent2 = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 14}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                got_frame = await agent2.receive_json(timeout=6)
+                assert got_frame["type"] == "chat.send.enc", got_frame
+                assert got_frame["ts"] > stale_ts + 3_500_000, (
+                    "Flush muss die enc-ts neu schreiben (J3)")
+                payload = agent_session.decrypt_frame(got_frame)
+                assert payload["text"] == "Spool-Geheimnis"
+
+                await agent2.close()
+                await phone.close()
+
+        asyncio.run(scenario())
+
+    def test_j3_spooled_enc_gets_fresh_ts_agent_to_phone(self, tmp_path, monkeypatch):
+        """JÄGER J3, Gegenrichtung: chat.reply.enc in der Phone-Outbox bekommt
+        beim Flush eine frische ts — PhoneCryptoPeer.decryptFrame verwirft
+        sonst alles >10 min STILL (Antwort weg, Chip sagt zugestellt)."""
+        import aiohttp
+        import tools.android_relay as R
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT + 15)
+        base = f"http://127.0.0.1:{self.PORT + 15}"
+        session_id = self.SESSION_ID + "-j3b"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 15}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                await _drain_phone_state_frame(phone, expected=1)
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 15}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6)
+
+                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                                        headers={"Authorization": f"Bearer {self.CODE}"})
+                keys = await got.json()
+                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                hello = peer.make_hello(session_id)
+                resp = await session.post(f"{base}/crypto_hello", json=hello,
+                                          headers={"Authorization": f"Bearer {self.CODE}"})
+                assert resp.status == 200
+                hello_frame = await agent.receive_json(timeout=6)
+                agent_session, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+                    hello_frame, self.identity)
+                await agent.send_json(ack)
+                peer.consume_ack(await _recv_until(phone, "crypto.hello_ack", timeout=6))
+
+                # Phone OFFLINE → Agent-Antwort landet in der Outbox.
+                await phone.close()
+                state = R._relay_instance
+                assert state is not None
+                deadline = time.monotonic() + 5
+                while state.phone_ws is not None:
+                    assert time.monotonic() < deadline, "Phone-WS bleibt am Relay hängen"
+                    time.sleep(0.01)
+
+                reply = agent_session.encrypt_frame(
+                    "chat.reply.enc", "chat-j3-b",
+                    {"text": "Spool-Antwort", "msg_id": "rj3b"}, clear={"msg_id": "rj3b"})
+                await agent.send_json(reply)
+                deadline = time.monotonic() + 5
+                while not state.phone_outbox:
+                    assert time.monotonic() < deadline, "chat.reply.enc wurde nicht gespoolt"
+                    time.sleep(0.01)
+                queued_frame = state.phone_outbox[0][1]
+                assert queued_frame["type"] == "chat.event.enc"
+                stale_ts = int(time.time() * 1000) - 3_600_000  # 1 h alt
+                queued_frame["ts"] = stale_ts
+
+                # Phone-Reconnect → Flush: frische ts + Entschlüsselung klappt.
+                phone2 = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 15}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                hello_state = await phone2.receive_json(timeout=6)
+                assert hello_state["type"] == "relay.state", hello_state
+                event = await phone2.receive_json(timeout=6)
+                assert event["type"] == "chat.event.enc", event
+                assert event["ts"] > stale_ts + 3_500_000, (
+                    "Flush muss die enc-ts neu schreiben (J3)")
+                assert peer.decrypt_frame(event)["text"] == "Spool-Antwort"
+
+                await phone2.close()
+                await agent.close()
+
+        asyncio.run(scenario())
+
     def test_post_rotation_counters_not_rejected_as_replay(self, tmp_path, monkeypatch):
         """P1c (vc36-Drill 02.11.): Nach dem ersten Antwort-Durchlauf rotiert
         das Phone die Ratchet-Kette — die nächste Nachricht trägt NEUEN
@@ -3151,6 +3377,58 @@ class TestPh3CryptoE2E:
 
         asyncio.run(scenario())
 
+    def test_fw2_b8_cross_session_takeover_reason_forwarded_verbatim(self,
+                                                                     tmp_path, monkeypatch):
+        """FIX-WELLE-2 B8 (HERZ-Befund 8): Der Adapter stößt bei fremder
+        session_id session_reset mit reason='cross-session-takeover' an —
+        der Relay leitet den Allowlist-Reason 1:1 ans Phone weiter (die App
+        zeigt Takeover-Sprache statt MitM) und entfernt die Session."""
+        import asyncio
+        import aiohttp
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT + 8)
+        base = f"http://127.0.0.1:{self.PORT + 8}"
+        headers = {"Authorization": f"Bearer {self.CODE}"}
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 8}/ws", headers=headers)
+                await _drain_phone_state_frame(phone, expected=1)
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 8}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6)
+
+                peer = _ph3_adapter.PhoneCryptoPeer(
+                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                hello = peer.make_hello(self.SESSION_ID)
+                await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
+                hello_frame = await _recv_until(agent, "crypto.hello", timeout=6)
+                _, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+                    hello_frame, self.identity)
+                await agent.send_json(ack)
+                await _recv_until(phone, "crypto.hello_ack", timeout=6)
+
+                # Adapter-Seite: fremde Session-ID erkannt → Takeover-Reset.
+                await agent.send_json({"type": "crypto.session_reset", "v": 1,
+                                       "session_id": self.SESSION_ID,
+                                       "agent_id": "jarvis",
+                                       "reason": "cross-session-takeover"})
+                reset = await _recv_until(phone, "crypto.session_reset", timeout=6)
+                assert reset["reason"] == "cross-session-takeover", \
+                    "Allowlist-Reason muss VERBATIM ans Phone (Takeover ≠ MitM-Sprache)"
+                import tools.android_relay as _relay_mod
+                state = _relay_mod._relay_instance
+                assert self.SESSION_ID not in state.crypto_sessions, \
+                    "Takeover-Reset entfernt die Session wie jeder andere Reset"
+
+                await agent.close()
+                await phone.close()
+
+        asyncio.run(scenario())
+
     def test_hello_spooled_when_agent_offline(self, tmp_path, monkeypatch):
         """Agent offline: crypto.hello wird gespoolt und BEI DER NEXSTEN
         Agent-Verbindung VOR allen enc-Nachrichten ausgeliefert (FIFO)."""
@@ -3339,6 +3617,26 @@ class TestSecW1RelayIdentityConfigHaertung:
         state = _RelayState("code", 0)
         with pytest.raises(RuntimeError, match="ANDROID_RELAY_ALLOW_PLAINTEXT"):
             asyncio.run(_serve(state, threading.Event()))
+
+    def test_tls_flag_without_cert_fails_closed(self, monkeypatch):
+        """W3-01: ANDROID_RELAY_TLS=1 ohne CERT/KEY = Deploy-Fehler —
+        _ssl_context wirft RuntimeError statt still auf Plaintext zu fallen
+        (fail-closed, gleiche Härte wie das D5b-Gate)."""
+        from tools.android_relay import _ssl_context
+        monkeypatch.setenv("ANDROID_RELAY_TLS", "1")
+        monkeypatch.delenv("ANDROID_RELAY_CERT", raising=False)
+        monkeypatch.delenv("ANDROID_RELAY_KEY", raising=False)
+        with pytest.raises(RuntimeError, match="ANDROID_RELAY_TLS=1 ohne"):
+            _ssl_context()
+
+    def test_tls_flag_zero_forces_plaintext_even_with_cert(self, monkeypatch, tmp_path):
+        """W3-01: ANDROID_RELAY_TLS=0 = bewusster Interims-/QA-Kill-Switch —
+        CERT/KEY vorhanden, aber der Socket bleibt Plaintext."""
+        from tools.android_relay import _ssl_context
+        monkeypatch.setenv("ANDROID_RELAY_TLS", "0")
+        monkeypatch.setenv("ANDROID_RELAY_CERT", str(tmp_path / "relay.crt"))
+        monkeypatch.setenv("ANDROID_RELAY_KEY", str(tmp_path / "relay.key"))
+        assert _ssl_context() is None
 
     def test_external_host_with_optin_starts(self, monkeypatch):
         """D5b: Mit ANDROID_RELAY_ALLOW_PLAINTEXT=1 startet der Plaintext-
@@ -3678,3 +3976,41 @@ class TestSecW2RequirementsFloors:
             f"aiohttp-Floor {floors['aiohttp']} < CVE-freier 3.9.4")
         assert tuple(int(x) for x in floors["cryptography"].split(".")) >= (42, 0, 4), (
             f"cryptography-Floor {floors['cryptography']} < CVE-freier 42.0.4")
+
+
+class TestJ3RefreshEncFrameTs:
+    """JÄGER J3 (P1): _refresh_enc_frame_ts — nur *.enc-Frames mit numerischer
+    ts bekommen beim Flush eine frische ts; Klartext- und crypto.*-Frames
+    bleiben unberührt (Live-Path = kein Spool, ts schon frisch)."""
+
+    def test_only_enc_frames_with_numeric_ts_get_refreshed(self):
+        import tools.android_relay as R
+        now = int(time.time() * 1000)
+
+        enc = {"type": "chat.send.enc", "ts": now - 3_600_000}
+        out = R._refresh_enc_frame_ts(enc)
+        assert out is enc, "In-Place-Rewrite (kein Frame-Klon — Spool-Identität bleibt)"
+        assert enc["ts"] >= now - 1_000, "enc-ts muss frisch sein"
+
+        for untouched_type in ("chat.send", "chat.event", "crypto.session_reset"):
+            frame = {"type": untouched_type, "ts": now - 3_600_000}
+            R._refresh_enc_frame_ts(frame)
+            assert frame["ts"] == now - 3_600_000, (
+                f"{untouched_type} darf keine neue ts bekommen")
+
+        no_ts = {"type": "chat.event.enc"}
+        R._refresh_enc_frame_ts(no_ts)
+        assert "ts" not in no_ts, "Fehlende ts wird NICHT erfunden"
+
+        bool_ts = {"type": "chat.event.enc", "ts": True}
+        R._refresh_enc_frame_ts(bool_ts)
+        assert bool_ts["ts"] is True, "bool ist kein valider Frame-ts (Parität F-03)"
+
+    def test_a2p_and_p2a_flush_paths_use_the_refresh(self):
+        """Statischer Spiegel-Beweis: BEIDE Flush-Loops rufen den Helfer."""
+        import inspect
+        import tools.android_relay as R
+        agent_src = inspect.getsource(R._flush_agent_queue)
+        phone_src = inspect.getsource(R._flush_phone_outbox)
+        assert "_refresh_enc_frame_ts" in agent_src, "Agent-Spool-Flush muss ts neu schreiben"
+        assert "_refresh_enc_frame_ts" in phone_src, "Phone-Outbox-Flush muss ts neu schreiben"

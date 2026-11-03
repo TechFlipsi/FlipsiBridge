@@ -56,7 +56,9 @@ logger = logging.getLogger("flipsibridge.chat")
 # Lesebestätigungen); chat.deliver = Skeleton-Namespace (kompatibel gehalten).
 _INBOUND_ENVELOPE_ALLOWLIST = frozenset(
     {"chat.send", "chat.deliver", "chat.ack", "roster", "presence", "pong",
-     "crypto.hello", "chat.send.enc", "chat.event.enc"}
+     "crypto.hello", "chat.send.enc", "chat.event.enc",
+     # MEDIA-T1: chunked Media-Versand (E2E-only) — Daten NUR im Ratchet-ct.
+     "chat.media.enc"}
 )
 _PROTOCOL_VERSION = 1
 
@@ -90,6 +92,89 @@ _FP_FAIL_TEXT = ("Fingerprint-Abgleich: FEHLGESCHLAGEN — Abweichung! "
                  "Mögliches Man-in-the-Middle. Session sofort ungültig!")
 _ENC_CT_MAX_BYTES = 512 * 1024    # Relay-seitig identisches Limit (Fail-closed)
 _SEEN_PEER_PUBS_MAX = 4           # Replay-Schutz: gesehene Peer-Ratchet-Pubs
+
+# ── MEDIA-T1: chunked Medien-/Datei-Versand im Chat (E2E-only) ────────────────
+# Protokoll: chat.media.enc je Chunk — klare Metadaten (media_id/seq/total,
+# seq=0 zusätzlich kind/name/mime/size), Daten NUR im AES-GCM-ct (Payload:
+# {media_id, seq, total, data(b64), sha256(Chunk 0)}). Der Agent bestätigt
+# JE Chunk mit chat.media.chunk_ack (Progress für die Phone-UI). Parität
+# zu tools/android_relay.py (MEDIA-T1) und PhoneCryptoPeer (Kotlin Welle).
+_MEDIA_CHUNK_BYTES = 192 * 1024   # raw je Chunk → Frame ~350 KB (J4: < 2 MB)
+_MEDIA_MAX_CHUNKS = 4096
+_MEDIA_MAX_BYTES = 50 * 1024 * 1024      # Deckel je Datei (Relay prüft size)
+_MEDIA_DIR_MAX_BYTES = 200 * 1024 * 1024  # Retention: Media-Dir-Gesamtbudget
+_MEDIA_ASSEMBLERS_MAX = 8                 # gleichzeitige halbfertige Uploads
+_MEDIA_ASSEMBLER_TTL_S = 30 * 60          # halbfertige Assemblies entsorgen
+_MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
+
+
+class MediaError(RuntimeError):
+    """Media-Übertragung fehlgeschlagen (Struktur/Größe/Integrität)."""
+
+
+class MediaAssembler:
+    """Reassembly verschlüsselbarer chat.media.enc-Chunks je media_id.
+
+    Thread-sicher per Aufrufer-Lock; add() liefert die VOLLSTÄNDIGEN Bytes
+    zurück, sobald der letzte erwartete Chunk angekommen ist. Integrität:
+    sha256 aus dem Chunk-0-Payload wird gegen die fertigen Bytes geprüft
+    (fail-closed: Mismatch = MediaError, Assembly wird verworfen).
+    """
+
+    def __init__(self, total: int):
+        if not isinstance(total, int) or total < 1 or total > _MEDIA_MAX_CHUNKS:
+            raise MediaError("total ungültig")
+        self.total = total
+        self.chunks: list[Optional[bytes]] = [None] * total
+        self.received = 0
+        self.sha256: Optional[str] = None
+
+    def add(self, seq: int, payload: dict) -> Optional[bytes]:
+        """Chunk einsortieren; Rückgabe = komplette Datei beim LETZTEN Chunk."""
+        if not isinstance(seq, int) or isinstance(seq, bool) \
+                or seq < 0 or seq >= self.total:
+            raise MediaError("seq außerhalb [0, total)")
+        raw_b64 = payload.get("data")
+        if not isinstance(raw_b64, str) or not raw_b64:
+            raise MediaError("Chunk ohne Daten")
+        try:
+            data = base64.b64decode(raw_b64, validate=True)
+        except Exception as exc:
+            raise MediaError("Chunk nicht base64") from exc
+        if len(data) > _MEDIA_CHUNK_BYTES:
+            raise MediaError("Chunk über Größen-Deckel")
+        if seq == 0:
+            claimed = payload.get("sha256")
+            if isinstance(claimed, str) and len(claimed) == 64:
+                self.sha256 = claimed.lower()
+        if self.chunks[seq] is None:
+            self.chunks[seq] = data
+            self.received += 1
+        if self.received < self.total:
+            return None
+        blob = b"".join(c for c in self.chunks if c is not None)
+        if self.sha256 is not None:
+            import hashlib as _hashlib
+            if _hashlib.sha256(blob).hexdigest() != self.sha256:
+                raise MediaError("sha256-Integrität verletzt")
+        return blob
+
+
+def _media_kind_label(kind: str) -> str:
+    """Anzeige-Label je Media-Art (deutsch, kein Emoji-only — A11y)."""
+    return {
+        "image": "Foto",
+        "video": "Video",
+        "file": "Datei",
+        "voice": "Sprachnachricht",
+    }.get(kind, "Datei")
+
+
+def _format_media_bytes(size: int) -> str:
+    """Byte-Größe als deutsche Anzeige (KB/MB, eine Nachkommastelle)."""
+    if size >= 1024 * 1024:
+        return f"{size / (1024 * 1024):.1f} MB"
+    return f"{max(1, size // 1024)} KB"
 
 
 class CryptoFrameError(RuntimeError):
@@ -462,6 +547,13 @@ class _CryptoSessionBase:
                 raise CryptoFrameError("ts nicht endlich (NaN/inf)")
             if ts < int(time.time() * 1000) - _FRAME_MAX_AGE_MS:
                 raise CryptoFrameError("Frame zu alt (>10 min)")
+            # JÄGER J11 (P2, JAEGE-RFULL 02.11.2026): Zukunfts-Grenze fehlte —
+            # SEC-W1 W1C-8 fixierte das ±10-min-Fenster nur am Relay + Phone
+            # (PhoneCryptoPeer.decryptFrame), der Adapter prüfte nur die
+            # Vergangenheit: ein ts aus der Zukunft (+1 h) passierte die
+            # Freshness. Symmetrische Obergrenze, Parität zur Untergrenze.
+            if ts > int(time.time() * 1000) + _FRAME_MAX_AGE_MS:
+                raise CryptoFrameError("Frame aus der Zukunft (>10 min)")
             nonce = _b64d(str(frame.get("nonce") or ""))
             if len(nonce) != 12:
                 raise CryptoFrameError("Nonce nicht 12 Byte")
@@ -739,7 +831,28 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self.phone_pin_file: str = _cfg(extra, "FLIPSI_PHONE_PIN_FILE") or os.path.join(
             os.path.dirname(os.path.abspath(self.identity_file)) or ".",
             "phone-pin.json")
-        self.pairing_psk: str = _cfg(extra, "FLIPSI_PAIRING_PSK")
+        # --- Zusatz-Order 02.11.2026 („EIN Code für alles", PIPELINE-BUGS): ---
+        # FLIPSI_PAIRING_PSK ist TOD. Der zweite Code existierte NUR hier
+        # (App-Seite hat nie einen PSK übergeben — genau diese Asymmetrie
+        # war Bug 1: agent-seitig k_init mit psk_comp≠konstant abgeleitet,
+        # app-seitig mit psk=b"" → hello_ack-Verify still gescheitert →
+        # E2E-Deadlock mit Relay-403 auf jede Klartext-Nachricht).
+        # EIN Code = der Relay-Pairing-Code (App↔Relay: Bearer je Route;
+        # Relay↔Agent: Agent-Token). E2E-Identity-Verifikation läuft über
+        # das bestehende Fingerprint-Abgleich-Fenster (FP-ABGLEICH-Chat +
+        # TOFU-Phone-Pin) — das Fenster bleibt unverändert.
+        # Härtung gegen Wiedereinführung: konfigurierter PSK wird NICHT mehr
+        # verwendet, sondern EINMAL laut gewarnt (Ops sieht den toten Key).
+        # SCOPE-GUARD (Sir, 02.11.2026): FlipsiBridge-spezifisch — KEIN
+        # Plattform-übergreifender Eingriff, andere Adapter (Discord/
+        # Telegram/Signal/WhatsApp/…) bleiben unberührt.
+        _configured_psk = _cfg(extra, "FLIPSI_PAIRING_PSK")
+        if _configured_psk:
+            logger.warning(
+                "FlipsiBridge: FLIPSI_PAIRING_PSK ist ENTFERNT/TOT — E2E nutzt "
+                "psk=b\"\" + Fingerprint-Abgleich; der Config-Schlüssel wird "
+                "IGNORIERT. Bitte 'flipsi_pairing_psk' aus der config.yaml "
+                "streichen (Zusatz-Order 02.11.2026: EIN Code = Relay-Pairing-Code).")
         try:
             self.ratchet_rotate: int = max(
                 1, int(_cfg(extra, "FLIPSI_RATCHET_ROTATE", default=str(_RATCHET_ROTATE_EVERY))
@@ -769,6 +882,49 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # elapsed_ms (Empfang→Antwort) und started_at des Activity-Frames.
         # Bewusst begrenzt (FIFO-Cap): Empfangs-Zeiten sind kein Archiv.
         self._received_at: dict[str, int] = {}
+
+        # --- MEDIA-T1: Media-Empfang/-Versand (chunked, E2E-only) ---
+        # Empfangene Dateien landen im konfigurierbaren Media-Dir (0700);
+        # Retention = Gesamtbudget je Dir (älteste Dateien fliegen zuerst).
+        self.media_dir: str = _cfg(extra, "FLIPSI_MEDIA_DIR") or os.path.join(
+            os.path.expanduser("~"), ".flipsibridge", "media")
+        try:
+            self.media_dir_max_bytes: int = max(
+                _MEDIA_CHUNK_BYTES,
+                int(_cfg(extra, "FLIPSI_MEDIA_DIR_MAX_BYTES",
+                          default=str(_MEDIA_DIR_MAX_BYTES))
+                    or _MEDIA_DIR_MAX_BYTES))
+        except ValueError:
+            self.media_dir_max_bytes = _MEDIA_DIR_MAX_BYTES
+        # media_id → {"assembler", "kind", "name", "mime", "size", "ts"}
+        self._media_pending: dict[str, dict] = {}
+        self._media_lock = __import__("threading").Lock()
+
+        # --- FIX-WELLE-2 B1 (P1): Gateway-Freigabe an die Phone-IDENTITÄT
+        # binden statt an die Session-chat_id. Hintergrund (HERZ-Befund 1):
+        # die Relay-chat_id ist je E2E-Session NEU (App-Restart, Relay-Restart,
+        # Neu-Konversation) — die Gateway-Pairing-Freigabe ('hermes pairing
+        # approve') lief je chat_id und verfiel bei JEDEM Session-Wechsel
+        # (3× manuelle Neu-Freigabe im Realtest). Der Adapter übersetzt am
+        # Gateway-Rand: Hermes sieht die STABILE, identity-gebundene ID
+        # 'flipsi-phone-<ik8>' (ik_pub des Phones, TOFU-gepint / FP-geprüft),
+        # auf dem Wire (Envelope + AES-GCM-AAD) läuft weiter die echte
+        # Relay-chat_id — Freigabe bleibt über Session-Wechsel hinweg.
+        self._gw_chat_by_relay: dict[str, str] = {}
+        self._relay_chat_by_gw: dict[str, str] = {}
+        self._active_phone_ik: str = ""
+
+        # --- FIX-WELLE-2 B2 (P3): TOFU-Pin-Warnung je NEUEM Key nur EINMAL —
+        # sonst warnte JEDE Reconnect-Wiederholung denselben Identity-Wechsel
+        # erneut (HERZ-Befund 2: Warn-Spam, Alarm-Fatigue). Bestätigt der
+        # FP-Abgleich die neue Identity, pint der Adapter sie persistent um
+        # (siehe _confirm_phone_pin).
+        self._pin_warned_ik: str = ""
+
+        # --- FIX-WELLE-2 B3 (P3): Home-Kanal-Hinweis des Gateways flutete je
+        # Turn die Konversation (HERZ-Befund 3). Der Adapter drosselt die
+        # Zustellung: 1 Hinweis je Agent (Adapter-Instanz) pro Zeitfenster.
+        self._home_notice_last_ts: float = 0.0
 
     # ------------------------------------------------------------------ Pinning
     def _pin_relay_url(self) -> str:
@@ -871,6 +1027,46 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             self._ws = None
         logger.info("FlipsiBridge-Adapter getrennt")
 
+    # ------------------------------------------------------ FIX-WELLE-2 B1/B3
+    _STABLE_CHAT_PREFIX = "flipsi-phone-"
+    _HOME_NOTICE_WINDOW_S = 24 * 3600  # 1 Hinweis je Agent pro 24-h-Fenster
+    _HOME_NOTICE_MARKERS = ("No home channel is set for",
+                            "kein Home-Kanal festgelegt")
+
+    def _stable_gateway_chat_id(self, relay_chat_id: str) -> str:
+        """FIX-WELLE-2 B1: Relay-chat_id → stabile, identity-gebundene
+        Gateway-chat_id ('flipsi-phone-<ik8>').
+
+        Ohne aktive E2E-Session (Legacy-Klartext) gibt es keine Identity —
+        dann bleibt die Relay-chat_id unverändert (Freigabe weiter je
+        Session; E2E ist die Primärroute). Die Übersetzung ist eine 1:1-
+        Zuordnung je Richtung: das LATEST Mapping gewinnt (Session-Wechsel
+        zeigt dem Gateway dieselbe stabile ID, dem Wire die neue Relay-ID).
+        """
+        ik = self._active_phone_ik
+        if not ik:
+            return relay_chat_id
+        stable = self._STABLE_CHAT_PREFIX + ik[:8]
+        self._gw_chat_by_relay[relay_chat_id] = stable
+        self._relay_chat_by_gw[stable] = relay_chat_id
+        return stable
+
+    def _relay_chat_id_for(self, chat_id: str) -> str:
+        """FIX-WELLE-2 B1: Gateway-chat_id → Relay-chat_id für den Wire
+        (Envelope + AES-GCM-AAD). Unbekannte IDs (schon Relay-IDs, z. B.
+        interne Protokoll-Antworten wie der FP-Abgleich) laufen unverändert
+        durch — Namensräume 'chat-*' vs. 'flipsi-phone-*' kollidieren nicht.
+        """
+        return self._relay_chat_by_gw.get(chat_id, chat_id)
+
+    def _is_home_channel_notice(self, content: str) -> bool:
+        """FIX-WELLE-2 B3: erkennt den Home-Kanal-Hinweis des Gateways
+        (EN- und DE-Locale-Variante; verlässlicher Marker = der /sethome-
+        Befehlshinweis, den beide Varianten tragen)."""
+        if "/sethome" not in content:
+            return False
+        return any(marker in content for marker in self._HOME_NOTICE_MARKERS)
+
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict] = None) -> SendResult:
         """Text über die Agent-WS als JSON an die Relay-/chat-Route (type=chat.reply).
@@ -884,10 +1080,25 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         """
         if not self._connected or self._ws is None:
             return SendResult(success=False, error="nicht verbunden", retryable=True)
+        # FIX-WELLE-2 B1: Gateway ruft mit der stabilen Identity-ID — auf
+        # dem Wire (Envelope, AES-GCM-AAD, _received_at) läuft die echte
+        # Relay-chat_id. Bereits vorliegende Relay-IDs laufen unverändert.
+        wire_chat_id = self._relay_chat_id_for(chat_id)
+        # FIX-WELLE-2 B3: Home-Kanal-Hinweis des Gateways nur 1× je Agent
+        # pro Zeitfenster zustellen — sonst flutet der Hinweis JEDE Turn
+        # (HERZ-Befund 3). Unterdrückung meldet success=True: der Hinweis
+        # ist informativ, kein Fehlerfall.
+        is_home_notice = self._is_home_channel_notice(content)
+        if is_home_notice and \
+                (time.time() - self._home_notice_last_ts) < self._HOME_NOTICE_WINDOW_S:
+            logger.info("FlipsiBridge: Home-Kanal-Hinweis im %d-h-Fenster bereits "
+                        "zugestellt — unterdrückt (FIX-WELLE-2 B3)",
+                        self._HOME_NOTICE_WINDOW_S // 3600)
+            return SendResult(success=True)
         msg_id = uuid.uuid4().hex[:16]
-        received_ms = self._received_at.get(chat_id)
+        received_ms = self._received_at.get(wire_chat_id)
         started_at = received_ms if received_ms is not None else int(time.time() * 1000)
-        await self._send_activity(chat_id, working=True, started_at=started_at)
+        await self._send_activity(wire_chat_id, working=True, started_at=started_at)
         # PH-3: aktive E2E-Session → chat.reply.enc (Text NUR im AES-GCM-ct).
         session = self._active_session()
         if session is not None:
@@ -895,12 +1106,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             if reply_to:
                 payload["reply_to"] = reply_to
             envelope = session.encrypt_frame(
-                "chat.reply.enc", chat_id, payload, clear={"msg_id": msg_id})
+                "chat.reply.enc", wire_chat_id, payload, clear={"msg_id": msg_id})
         else:
             envelope = {
                 "type": "chat.reply", "v": _PROTOCOL_VERSION, "msg_id": msg_id,
                 "route": self.chat_route,  # Relay routet den Payload an /chat
-                "agent_id": self.agent_id, "chat_id": chat_id,
+                "agent_id": self.agent_id, "chat_id": wire_chat_id,
                 "reply_to": reply_to,
                 # SEC-W1 Drill-Fund P2 (vc36): Der Relay liest Top-Level
                 # 'text' (_handle_agent_chat_reply — Vertrag, den auch die
@@ -919,18 +1130,24 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             except Exception as exc:
                 logger.warning("FlipsiBridge: send fehlgeschlagen: %s", exc)
                 return SendResult(success=False, error=str(exc), retryable=True, message_id=msg_id)
+            # FIX-WELLE-2 B3: erst nach ERFOLGREICHEM Zustellen zählt der
+            # Hinweis als gezeigt (Sendefehler → nächster Turn darf wieder).
+            if is_home_notice:
+                self._home_notice_last_ts = time.time()
             return SendResult(success=True, message_id=msg_id, raw_response=envelope)
         finally:
             # PH2-FIX (Jäger B5): working=false IMMER feuern — auch wenn der
             # Reply-Send scheitert oder dazwischen ein Fehler fliegt. Sonst
             # bleibt der Phone-Header-Spinner ('arbeitet …') dauerhaft stecken.
-            await self._send_activity(chat_id, working=False, started_at=started_at)
+            await self._send_activity(wire_chat_id, working=False, started_at=started_at)
 
     async def send_typing(self, chat_id: str) -> None:
         """Tipp-Indikator (presence-Event, gedrosselt — kein Polling)."""
         if self._connected and self._ws is not None:
+            # FIX-WELLE-2 B1: stabile Gateway-ID → Relay-Wire-ID.
             await self._send_json({"type": "typing", "v": _PROTOCOL_VERSION,
-                                   "agent_id": self.agent_id, "chat_id": chat_id})
+                                   "agent_id": self.agent_id,
+                                   "chat_id": self._relay_chat_id_for(chat_id)})
 
     async def send_image(self, chat_id: str, image_url: str,
                          caption: Optional[str] = None) -> SendResult:
@@ -938,9 +1155,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         if not self._connected or self._ws is None:
             return SendResult(success=False, error="nicht verbunden", retryable=True)
         msg_id = uuid.uuid4().hex[:16]
+        # FIX-WELLE-2 B1: stabile Gateway-ID → Relay-Wire-ID.
+        wire_chat_id = self._relay_chat_id_for(chat_id)
         await self._send_json({
             "type": "chat.reply", "v": _PROTOCOL_VERSION, "msg_id": msg_id,
-            "route": self.chat_route, "agent_id": self.agent_id, "chat_id": chat_id,
+            "route": self.chat_route, "agent_id": self.agent_id,
+            "chat_id": wire_chat_id,
             "body": {"image": image_url, "caption": caption or ""}})
         return SendResult(success=True, message_id=msg_id)
 
@@ -1072,6 +1292,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             self._handle_crypto_hello(envelope)
             return
 
+        # MEDIA-T1: chunked Media (E2E-only) — eigener Zweig VOR dem Text-enc-
+        # Pfad (Media-Payload hat kein 'text'; ack + Reassembly innen).
+        if etype == "chat.media.enc":
+            self._handle_media_chunk(envelope, chat_id)
+            return
+
         # PH-3-T3: chat.*.enc — entschlüsseln (Klartext NUR intern, nie geloggt).
         if etype in ("chat.send.enc", "chat.event.enc"):
             text = self._decrypt_inbound(envelope, etype)
@@ -1140,7 +1366,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         try:
             session, ack = AgentCryptoSession.respond_to_hello(
                 envelope, self._identity,
-                psk=self.pairing_psk.encode("utf-8"),
+                psk=b"",  # Zusatz-Order 02.11.2026: PSK-Codepfad entfernt —
+                # hart b"" = PH3-KDF-Live-Default (App-Seite hat nie einen
+                # psk übergeben; jeder konfigurierte Wert erzeugte die
+                # Bug-1-KDF-Asymmetrie). FP-Abgleich bleibt die Verifikation.
                 rotate_every=self.ratchet_rotate)
         except CryptoFrameError as exc:
             self.rejected_frames.append({"type": "crypto.hello", "reason": str(exc)})
@@ -1148,6 +1377,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             return
         self._crypto_session = session
         self._session_reset_pending = False
+        # FIX-WELLE-2 B1: Phone-Identity-Key dieser Session merken — Basis
+        # für die STABILE Gateway-chat_id ('flipsi-phone-<ik8>') und für die
+        # TOFU-Pin-Aktualisierung nach bestätigtem FP-Abgleich (B2).
+        self._active_phone_ik = str(envelope.get("ik_pub") or "").strip().lower()
         # SEC-W1 W1A-5: TOFU-Bindung der Phone-Identity (ik_pub-Pin) — siehe
         # _check_phone_identity_pin. Warnung bei Wechsel (kein Blockade-
         # Design: echtes Neu-Gerät vs. Übernahme klärt der FP-Abgleich).
@@ -1166,6 +1399,25 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             if self._crypto_session is session:
                 self._crypto_session = None
 
+    def _read_phone_pin(self) -> Optional[dict]:
+        """FIX-WELLE-2 B2: Phone-Pin-Datei lesen (dict) — None = unlesbar.
+
+        FileNotFoundError = {} (erste Sichtung); OSError/ValueError = None
+        (Warnung + Prüfung überspringen, wie bisher)."""
+        try:
+            with open(self.phone_pin_file, "r", encoding="utf-8") as fh:
+                loaded = json.load(fh)
+            if isinstance(loaded, dict):
+                return loaded
+            return {}
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError):
+            logger.warning(
+                "FlipsiBridge: Phone-Pin-Datei unlesbar (%s) — TOFU-Prüfung übersprungen",
+                os.path.basename(self.phone_pin_file))
+            return None
+
     def _check_phone_identity_pin(self, hello: dict) -> None:
         """SEC-W1 W1A-5: TOFU-Bindung der Phone-Identity.
 
@@ -1177,22 +1429,21 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         (0600, neben dem Identity-File); ein WECHSEL ist ein lautes
         Warn-Ereignis (Neu-Gerät ODER Übernahme — klärt der FP-Abgleich).
         Bewusst Warnung statt Blockade (echtes Gerät-Wechseln bleibt
-        möglich); Datei unlesbar = Warnung + Prüfung übersprungen."""
+        möglich); Datei unlesbar = Warnung + Prüfung übersprungen.
+
+        FIX-WELLE-2 B2 (P3, HERZ-Befund 2): Der Pin erneuerte sich NIE —
+        JEDE Reconnect-Wiederholung desselben Identity-Wechsels warnte
+        erneut (Warn-Spam, Alarm-Fatigue: eine echte Übernahme ging in der
+        Flut unter). Jetzt: (a) je NEUEM ik_pub genau EINE Warnung
+        (_pin_warned_ik-Dedupe je Adapter-Lebenszeit), (b) nach BESTÄTIGTEM
+        FP-Abgleich pint der Adapter die neue Identity persistent um
+        (_confirm_phone_pin) — danach ist der neue Key der gepinnte
+        Normalzustand, keine weitere Warnung."""
         ik_pub = str(hello.get("ik_pub") or "").strip().lower()
         if not ik_pub:
             return
-        pin: dict = {}
-        try:
-            with open(self.phone_pin_file, "r", encoding="utf-8") as fh:
-                loaded = json.load(fh)
-            if isinstance(loaded, dict):
-                pin = loaded
-        except FileNotFoundError:
-            pin = {}
-        except (OSError, ValueError):
-            logger.warning(
-                "FlipsiBridge: Phone-Pin-Datei unlesbar (%s) — TOFU-Prüfung übersprungen",
-                os.path.basename(self.phone_pin_file))
+        pin = self._read_phone_pin()
+        if pin is None:
             return
         pinned = pin.get("ik_pub")
         if not isinstance(pinned, str) or not pinned:
@@ -1204,11 +1455,42 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             return
         if pinned == ik_pub:
             return
+        if ik_pub == self._pin_warned_ik:
+            # B2: für DIESEN Key wurde bereits gewarnt — Wiederholungs-/
+            # Reconnect-Spam unterdrücken, bis ein ANDERER Key auftaucht.
+            logger.info("FlipsiBridge: PHONE-IDENTITY-WECHSEL (gepinnt %s… → neu %s…) "
+                        "bereits gemeldet — Wiederholungswarnung unterdrückt (B2)",
+                        pinned[:8], ik_pub[:8])
+            return
+        self._pin_warned_ik = ik_pub
         logger.warning(
             "FlipsiBridge: PHONE-IDENTITY-WECHSEL erkannt (gepinnt %s… → neu %s…) — "
             "neues Gerät ODER Übernahme-Versuch (weiterer Paarungs-Code-Inhaber). "
             "Fingerprint-Abgleich am NEUEN Phone prüfen!",
             pinned[:8], ik_pub[:8])
+
+    def _confirm_phone_pin(self) -> None:
+        """FIX-WELLE-2 B2: FP-Abgleich BESTANDEN = die neue Phone-Identity
+        ist vom User bestätigt → Pin persistent auf den Session-Key des
+        Phones umstellen. Nur wenn der aktuelle Pin wirklich abweicht; ein
+        Schreibfehler bricht nichts (nächster Handshake warnt erneut)."""
+        ik_pub = self._active_phone_ik
+        if not ik_pub:
+            return
+        pin = self._read_phone_pin()
+        if pin is None:
+            return
+        pinned = pin.get("ik_pub")
+        if isinstance(pinned, str) and pinned == ik_pub:
+            return
+        try:
+            self._write_phone_pin(ik_pub)
+            self._pin_warned_ik = ""
+            logger.info("FlipsiBridge: Phone-Identity nach BESTÄTIGTEM Fingerprint-"
+                        "Abgleich übernommen (Pin aktualisiert: %s…) — künftige "
+                        "Handshakes dieses Geräts warnen nicht mehr (B2)", ik_pub[:8])
+        except OSError as exc:
+            logger.warning("FlipsiBridge: Phone-Pin-Aktualisierung fehlgeschlagen: %s", exc)
 
     def _write_phone_pin(self, ik_pub: str) -> None:
         """Phone-ik_pub-Pin schreiben — 0600, ATOMAR (SEC-W2 W2-3).
@@ -1275,9 +1557,33 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: %s ohne aktive E2E-Session verworfen", etype)
             return None
         if str(envelope.get("session_id") or "") != sess.session_id:
-            self.rejected_frames.append({"type": etype,
-                                        "reason": "fremde session_id (Cross-Session-Replay)"})
-            logger.warning("FlipsiBridge: %s mit fremder session_id verworfen", etype)
+            # FIX-WELLE-2 B8 (P3, HERZ-Befund 8): fremde session_id bei
+            # AKTIVER Session war ein STILLER Verwurf — Realtest-Szenario:
+            # eine zweite Pairing-Code-Inhaber-Session (Probe/zweites Gerät)
+            # hatte die Phone-Session am Adapter verdrängt; das echte Phone
+            # sendete weiter auf SEINER Session, der Adapter warf die Frames
+            # stumm weg (Chip blieb '✓✓ Zugestellt', Chat tot, kein Lebens-
+            # zeichen). Jetzt wirkt der fremde Frame als TAKEOVER-SONDE:
+            # crypto.session_reset für die FRAME-Session ans Relay (der Relay
+            # entfernt sie aus der Registry und informiert das Phone → Neu-
+            # Handshake) — derselbe Heilungspfad wie SIRS-01, Dedup über
+            # _session_reset_pending (nächstes crypto.hello hebt es auf).
+            # Replay-Altlasten (Session dem Relay schon unbekannt): Reset
+            # wird dort ignoriert, die AKTIVE Session bleibt unberührt
+            # (kein angreifbarer DoS-Hebel auf die legitime Session).
+            frame_session = str(envelope.get("session_id") or "").strip()
+            self.rejected_frames.append({
+                "type": etype,
+                "reason": "fremde session_id (Cross-Session-Replay/-Takeover) — "
+                          "crypto.session_reset + Neu-Handshake angestoßen"})
+            logger.warning(
+                "FlipsiBridge: %s mit fremder session_id %s verworfen — Cross-Session-"
+                "Takeover-/Replay-Sonde; crypto.session_reset ans Relay, Neu-Handshake "
+                "angestoßen (FIX-WELLE-2 B8)", etype, _log_id(frame_session, 16))
+            if frame_session and not self._session_reset_pending:
+                self._session_reset_pending = True
+                self._schedule(self._send_session_reset(
+                    frame_session, "cross-session-takeover"))
             return None
         try:
             payload = sess.decrypt_frame(envelope)
@@ -1342,6 +1648,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("FlipsiBridge: Fingerprint-Antwort fehlgeschlagen: %s", exc)
         if matches:
+            # FIX-WELLE-2 B2: BESTANDENER FP-Abgleich = Bestätigung der
+            # Phone-Identity → TOFU-Pin persistent auf diesen Key umstellen
+            # (endet den Warn-Spam bei jedem Reconnect, HERZ-Befund 2).
+            self._confirm_phone_pin()
             return
         session_id = session.session_id
         logger.warning("FlipsiBridge: Fingerprint-ABWEICHUNG in Session %s — Session invalidiert "
@@ -1390,27 +1700,36 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         """
         if not text:
             return
+        # FIX-WELLE-2 B1: Dem Gateway die STABILE, identity-gebundene chat_id
+        # zeigen ('flipsi-phone-<ik8>') — die Pairing-Freigabe überlebt damit
+        # E2E-Session-Wechsel (App-/Relay-Restart, Neu-Handshake). Read-
+        # Receipts und der Wire laufen weiter über die echte Relay-chat_id.
+        gw_chat_id = self._stable_gateway_chat_id(chat_id)
         if _UNDER_HERMES:
             try:  # Echter Gateway-Pfad: MessageEvent → handle_message (Session je chat_id)
-                source = self.build_source(chat_id=chat_id, chat_name=self.get_chat_info(chat_id)["name"],
+                source = self.build_source(chat_id=gw_chat_id,
+                                           chat_name=self.get_chat_info(gw_chat_id)["name"],
                                            chat_type="dm",
-                                           user_id=str(envelope.get("device_id", chat_id)),
+                                           user_id=str(envelope.get("device_id", gw_chat_id)),
                                            user_name=str(envelope.get("sender", "Agent-Gerät")),
                                            message_id=str(envelope.get("msg_id", "")))
                 from gateway.platforms.event import MessageEvent, MessageType  # noqa: F401
                 event = MessageEvent(source=source, text=text,
                                      message_type=MessageType.TEXT)  # type: ignore[name-defined]
                 msg_id = str(envelope.get("msg_id", "") or "")
-                asyncio.get_running_loop().create_task(self._handle_and_ack(event, chat_id, msg_id))
+                asyncio.get_running_loop().create_task(
+                    self._handle_and_ack(event, chat_id, msg_id))
                 return
             except Exception:
                 logger.warning("FlipsiBridge: Gateway-Push fehlgeschlagen — Text verworfen",
                                exc_info=True)
                 return
         # Skeleton/Test-Pfad: Callback statt Gateway (kein Hermes installiert).
+        # FIX-WELLE-2 B1: auch hier die STABILE Identity-Sicht (der Skeleton
+        # simuliert das Gateway) — read receipt unten bleibt auf der Relay-ID.
         if self.message_callback is not None:
             self.message_callback({
-                "chat_id": chat_id, "text": text,
+                "chat_id": gw_chat_id, "text": text,
                 "envelope_type": str(envelope.get("type", "") or "chat.deliver"),
             })
         # PH2-FIX (Jäger B4): Text synchron verarbeitet → JETZT erst read.
@@ -1452,6 +1771,262 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             await self._send_json(envelope)
         except Exception as exc:
             logger.warning("FlipsiBridge: chat.activity-Frame fehlgeschlagen: %s", exc)
+
+    # ───────────────────────────────── MEDIA-T1: Medien im Chat (E2E-only)
+
+    def _handle_media_chunk(self, envelope: dict, chat_id: str) -> None:
+        """MEDIA-T1: EIN verschlüsselter Media-Chunk (chat.media.enc).
+
+        Kette: entschlüsseln (Ratchet) → chunk_ack an das Phone (Progress,
+        klar + light) → Reassembly je media_id → bei Vollständigkeit: Datei
+        ins Media-Dir schreiben, sha256 prüfen (fail-closed) und als Gateway-
+        NACHRICHT liefern (Pfad + Art + Größe — Text bleibt der Chat-Weg).
+        """
+        sess = self._active_session()
+        if sess is None or str(envelope.get("session_id") or "") != sess.session_id:
+            self.rejected_frames.append({
+                "type": "chat.media.enc",
+                "reason": "enc-Frame ohne passende E2E-Session"})
+            logger.warning(
+                "FlipsiBridge: chat.media.enc ohne passende E2E-Session verworfen")
+            return
+        media_id = str(envelope.get("media_id") or "").strip()
+        seq_raw = envelope.get("seq")
+        total_raw = envelope.get("total")
+        if (not media_id or not isinstance(seq_raw, int) or isinstance(seq_raw, bool)
+                or not isinstance(total_raw, int) or isinstance(total_raw, bool)):
+            self.rejected_frames.append({
+                "type": "chat.media.enc", "reason": "Metadaten ungültig"})
+            logger.warning("FlipsiBridge: chat.media.enc Metadaten ungültig — verworfen")
+            return
+        try:
+            payload = sess.decrypt_frame(envelope)
+        except CryptoFrameError as exc:
+            self.rejected_frames.append({"type": "chat.media.enc",
+                                         "reason": str(exc)})
+            logger.warning("FlipsiBridge: chat.media.enc-Entschlüsselung "
+                           "fehlgeschlagen (%s) — Frame verworfen", exc)
+            self._schedule(self._send_media_ack(chat_id, media_id, seq_raw,
+                                                ok=False, error="decrypt failed"))
+            return
+        try:
+            with self._media_lock:
+                blob, meta = self._media_assemble(media_id, seq_raw, total_raw,
+                                                   payload, envelope)
+        except MediaError as exc:
+            self.rejected_frames.append({"type": "chat.media.enc",
+                                         "reason": str(exc)})
+            logger.warning("FlipsiBridge: Media-Assembly fehlgeschlagen (%s) "
+                           "— Upload verworfen", exc)
+            self._schedule(self._send_media_ack(chat_id, media_id, seq_raw,
+                                                ok=False, error="assembly failed"))
+            return
+        # JE Chunk bestätigen (Progress) — NACH erfolgreichem Entschlüsseln,
+        # nie blind beim Empfang (kein Status-Betrug).
+        self._schedule(self._send_media_ack(chat_id, media_id, seq_raw, ok=True))
+        if blob is None:
+            return
+        # Vollständig → Datei schreiben + als Nachricht in die Gateway-Pipeline.
+        kind = str(meta.get("kind") or "file")
+        name = str(meta.get("name") or media_id)
+        size = len(blob)
+        try:
+            path = self._media_save(media_id, name, blob)
+        except OSError as exc:
+            logger.warning("FlipsiBridge: Media-Datei konnte nicht gespeichert "
+                           "werden: %s", exc)
+            return
+        label = _media_kind_label(kind)
+        text = (f"[{label}] {name} ({_format_media_bytes(size)}) — "
+                f"gespeichert unter: {path}")
+        # PH2-FIX (Jäger B4)-Parität: verarbeitet → read; media hat keine
+        # Broker-msg_id, der chunk_ack übernimmt die Empfangs-Bestätigung.
+        self._deliver_inbound(chat_id, text, {
+            "type": "chat.media.enc", "media_id": media_id, "kind": kind,
+            "name": name, "size": size, "path": path})
+
+    def _media_assemble(self, media_id: str, seq: int, total: int,
+                        payload: dict, envelope: dict) -> tuple[Optional[bytes], dict]:
+        """Chunk einsortieren (Aufrufer hält _media_lock). (None, meta) = noch
+        unvollständig, (bytes, meta) = fertig. Halbfertige Assemblies: TTL +
+        Cap-Verdrängung."""
+        now = time.time()
+        # TTL/Cap-Sweep: abgelaufene und älteste Assemblies entsorgen.
+        stale = [mid for mid, entry in self._media_pending.items()
+                 if now - entry["ts"] > _MEDIA_ASSEMBLER_TTL_S]
+        for mid in stale:
+            del self._media_pending[mid]
+        while len(self._media_pending) >= _MEDIA_ASSEMBLERS_MAX:
+            oldest = min(self._media_pending, key=lambda m: self._media_pending[m]["ts"])
+            if oldest == media_id:
+                break
+            del self._media_pending[oldest]
+        entry = self._media_pending.get(media_id)
+        if entry is None:
+            entry = {"assembler": MediaAssembler(total),
+                     "kind": envelope.get("kind"), "name": envelope.get("name"),
+                     "mime": envelope.get("mime"), "size": envelope.get("size"),
+                     "ts": now}
+            self._media_pending[media_id] = entry
+        else:
+            entry["ts"] = now
+        assembler: MediaAssembler = entry["assembler"]
+        if assembler.total != total:
+            raise MediaError("total weicht vom Chunk-0-Header ab")
+        meta = {"kind": entry.get("kind"), "name": entry.get("name"),
+                "mime": entry.get("mime")}
+        blob = assembler.add(seq, payload)
+        if blob is not None:
+            del self._media_pending[media_id]
+        return blob, meta
+
+    def _media_save(self, media_id: str, name: str, blob: bytes) -> str:
+        """Fertige Datei ins Media-Dir schreiben (0700-Dir, atomar via
+        rename) + Retention: Budget je Dir, älteste Dateien zuerst raus."""
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(name).strip())[:64] or "media"
+        stem, dot, ext = safe.rpartition(".")
+        if not dot:
+            stem, ext = safe, ""
+        stem = stem[:48].rstrip("._-") or "media"
+        filename = f"{re.sub(r'[^A-Za-z0-9_-]', '_', media_id)[:32]}-{stem}" \
+                   + (f".{ext}" if ext else "")
+        directory = os.path.abspath(self.media_dir)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        target = os.path.join(directory, filename)
+        import tempfile as _tempfile
+        fd, tmp_path = _tempfile.mkstemp(prefix=".media-", dir=directory)
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(blob)
+            os.replace(tmp_path, target)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+        self._media_prune_dir(directory)
+        return target
+
+    def _media_prune_dir(self, directory: str) -> None:
+        """Retention: liegt das Dir über dem Byte-Budget, fliegen die
+        ÄLTESTEN Dateien zuerst raus (nie die gerade gesicherte)."""
+        try:
+            entries = []
+            total = 0
+            for fn in os.listdir(directory):
+                p = os.path.join(directory, fn)
+                if os.path.isfile(p):
+                    stat = os.stat(p)
+                    entries.append((stat.st_mtime, stat.st_size, p))
+                    total += stat.st_size
+            if total <= self.media_dir_max_bytes:
+                return
+            entries.sort()
+            for mtime, size, p in entries:
+                if total <= self.media_dir_max_bytes:
+                    break
+                try:
+                    os.unlink(p)
+                    total -= size
+                    logger.info("FlipsiBridge: Media-Retention hat %s entfernt",
+                                os.path.basename(p))
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    async def _send_media_ack(self, chat_id: str, media_id: str, seq: int,
+                             ok: bool, error: str = "") -> None:
+        """MEDIA-T1: chunk_ack ans Phone (klar, light, fire-and-forget)."""
+        frame = {"type": "chat.media.chunk_ack", "v": _PROTOCOL_VERSION,
+                 "agent_id": self.agent_id, "chat_id": chat_id,
+                 "media_id": media_id, "seq": seq, "ok": ok}
+        if error:
+            frame["error"] = error[:128]
+        try:
+            await self._send_json(frame)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: chunk_ack-Send fehlgeschlagen: %s", exc)
+
+    async def send_media(self, chat_id: str, path: str,
+                        kind: Optional[str] = None,
+                        caption: Optional[str] = None) -> SendResult:
+        """MEDIA-T1: Datei chunked + E2E-verschlüsselt ans Phone senden.
+
+        Fail-closed: OHNE aktive E2E-Session gibt es KEINEN Klartext-Pfad
+        (SendResult-Fehler statt stiller Downgrade). Größe/Chunk-Zahl werden
+        vorab geprüft (Parität zum Relay-Deckel); jeder Chunk läuft als
+        chat.media.enc über die Ratchet-Sitzung.
+        """
+        if not self._connected or self._ws is None:
+            return SendResult(success=False, error="nicht verbunden", retryable=True)
+        session = self._active_session()
+        if session is None:
+            return SendResult(success=False,
+                              error="keine aktive E2E-Session — Medienversand "
+                                    "nur verschlüsselt möglich (fail-closed)",
+                              retryable=False)
+        # FIX-WELLE-2 B1: stabile Gateway-ID → Relay-Wire-ID (AAD muss die
+        # Relay-chat_id des Phones tragen, sonst verwirft GCM den Chunk).
+        chat_id = self._relay_chat_id_for(chat_id)
+        try:
+            size = os.path.getsize(path)
+        except OSError as exc:
+            return SendResult(success=False, error=str(exc), retryable=False)
+        if size < 1:
+            return SendResult(success=False, error="Datei leer", retryable=False)
+        if size > _MEDIA_MAX_BYTES:
+            return SendResult(success=False,
+                              error=f"Datei zu groß (max {_MEDIA_MAX_BYTES} Bytes)",
+                              retryable=False)
+        name = os.path.basename(path) or "datei"
+        if len(name) > 128:
+            name = name[-128:]
+        resolved_kind = (kind or "").strip() or (
+            "image" if name.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp"))
+            else "video" if name.lower().endswith((".mp4", ".mov", ".mkv", ".webm"))
+            else "voice" if name.lower().endswith((".m4a", ".aac", ".wav", ".ogg"))
+            else "file")
+        if resolved_kind not in _MEDIA_KINDS:
+            return SendResult(success=False, error="kind ungültig", retryable=False)
+        total = max(1, -(-size // _MEDIA_CHUNK_BYTES))
+        if total > _MEDIA_MAX_CHUNKS:
+            return SendResult(success=False, error="zu viele Chunks", retryable=False)
+        import hashlib as _hashlib
+        try:
+            with open(path, "rb") as fh:
+                blob = fh.read()
+        except OSError as exc:
+            return SendResult(success=False, error=str(exc), retryable=True)
+        sha = _hashlib.sha256(blob).hexdigest()
+        media_id = "med-" + uuid.uuid4().hex[:24]
+        # PH2-T11-Parität: working=true vor dem Upload, false danach.
+        started_at = int(time.time() * 1000)
+        await self._send_activity(chat_id, working=True, started_at=started_at)
+        try:
+            for seq in range(total):
+                chunk = blob[seq * _MEDIA_CHUNK_BYTES:(seq + 1) * _MEDIA_CHUNK_BYTES]
+                payload = {"media_id": media_id, "seq": seq, "total": total,
+                           "data": base64.b64encode(chunk).decode("ascii")}
+                if seq == 0:
+                    payload["sha256"] = sha
+                clear = {"media_id": media_id, "seq": seq, "total": total}
+                if seq == 0:
+                    clear.update({"kind": resolved_kind, "name": name,
+                                  "size": size})
+                frame = session.encrypt_frame("chat.media.enc", chat_id,
+                                              payload, clear=clear)
+                await self._send_json(frame)
+            if caption:
+                await self.send(chat_id, f"[{_media_kind_label(resolved_kind)}] "
+                                         f"{name}: {caption}")
+            return SendResult(success=True, message_id=media_id)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: Media-Send fehlgeschlagen: %s", exc)
+            return SendResult(success=False, error=str(exc), retryable=True)
+        finally:
+            await self._send_activity(chat_id, working=False, started_at=started_at)
 
     async def _send_json(self, envelope: dict) -> None:
         """JSON-Frame über die Agent-WS senden (Token bleibt im Auth-Header)."""

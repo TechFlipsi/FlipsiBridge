@@ -20,8 +20,12 @@ Command JSON format:
   Phone -> Relay:  {"request_id": "uuid", "result": {...}, "status": 200}
 """
 
-# TLS: Set ANDROID_RELAY_CERT and ANDROID_RELAY_KEY to PEM file paths
-# to enable wss:// connections. Without these, the relay uses plaintext http.
+# TLS (W3-01): ANDROID_RELAY_TLS=1 + ANDROID_RELAY_CERT/ANDROID_RELAY_KEY (PEM-
+# Dateipfade) aktivieren NATIVES TLS auf dem Relay-Socket (wss:// bzw. https://).
+# =1 ohne CERT/KEY = Konfig-Fehler (fail-closed, RuntimeError beim Start);
+# ANDROID_RELAY_TLS=0 erzwingt Plaintext (Interims-/QA-Kill-Switch); ohne Flag
+# gilt weiterhin: CERT+KEY vorhanden = TLS an (altbewährte Aktivierung). Ein
+# externer Host ohne TLS bleibt fail-closed (D5b, s. _serve).
 
 import asyncio
 import base64
@@ -366,6 +370,28 @@ def _chat_rate_per_second(config: Optional[dict] = None) -> int:
         return 2
 
 
+def _media_rate_per_second(config: Optional[dict] = None) -> int:
+    """B6 (Herz-Test Befund 6): eigenes Chunk-Burst-Limit für /media.
+
+    Media-Uploads sind Multi-Chunk (bis 50 MB, 192-KiB-Chunks) und dürfen
+    nicht am 2/s-Chat-Limit derselben IP zehren — sonst sind 6 Chunks <1 s
+    zum 429-Fall geworden (Herz-Test: 4× 429; ein 24-MB-File = 126 Chunks
+    war praktisch nicht übertragbar). relay-config.json
+    (MEDIA_RATE_PER_SECOND) überschreibt env ANDROID_RELAY_MEDIA_RATE; der
+    Chat-Bucket (chat:<ip>, ANDROID_RELAY_CHAT_RATE_PER_SEC) bleibt davon
+    unangetastet.
+    """
+    value = None
+    if config is not None:
+        value = config.get("MEDIA_RATE_PER_SECOND")
+    if value is None:
+        value = os.getenv("ANDROID_RELAY_MEDIA_RATE", "20")
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 20
+
+
 def _chat_retention_seconds() -> float:
     """Spool-Retention in Sekunden (env-konfigurierbar, Default 24 h)."""
     try:
@@ -393,6 +419,84 @@ _FRAME_MAX_AGE_MS = 10 * 60 * 1000  # Frame-Freshness (Replay-Fenster 100 + 10 m
 # fiel auf 429 'replay' → Session-DoS). 2^32 Nachrichten je Ratchet-Kette
 # sind physikalisch unerreichbar; alles darüber = Zähler-Gift → verwerfen.
 _REPLAY_N_MAX = 1 << 32
+
+# ── MEDIA-T1: chunked Medien-/Datei-Versand im Chat (E2E-only) ────────────────
+# Protokoll (Sir-Feature „Medien im Chat“, abgeleitet aus J4-Empfehlung):
+#   POST /media  {agent_id, chat_id, session_id, hdr, nonce, ct, ts,
+#                 media_id, seq, total[, kind, name, mime, size bei seq=0]}
+# - ct = E2E-Ratchet-Payload (Daten NUR verschlüsselt — Klartext-Fallback
+#   ist FORBIDDEN/fail-closed wie bei jedem enc-Frame).
+# - KLARE Metadaten je Frame (Relay-Validierung ohne Inhalts-Zugriff):
+#   media_id (8-64 Z., [A-Za-z0-9_-]), seq/total (0 ≤ seq < total).
+#   seq=0 trägt zusätzlich kind/name/mime/size (Größen-Deckel).
+# - Chunk-Größe wählt das Phone (192 KiB raw → ~350 KiB Frame — J4: die
+#   2-MB-WS-Grenze wird per Chunking NIE berührt, kein Einzel-Frame-Media).
+_MEDIA_MAX_CHUNKS = 4096
+_MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
+_MEDIA_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_MEDIA_ID_MAX_LEN = 64
+_MEDIA_NAME_MAX_LEN = 128
+_MEDIA_ACK_MAX_PER_SECOND = 30  # 1 ack je Chunk — Bursts bei großen Dateien
+
+
+def _media_max_bytes() -> int:
+    """Maximale Größe je Media (env-konfigurierbar, Default 50 MB)."""
+    default = 50 * 1024 * 1024
+    try:
+        return max(1024, int(os.getenv("ANDROID_RELAY_MEDIA_MAX_BYTES",
+                                       str(default))))
+    except ValueError:
+        return default
+
+
+def _media_meta_ok(value) -> bool:
+    """FIN-T1 RED-05-Parität: klare Media-Extras dürfen nur str ≤128 oder
+    endliche ints sein (Typ-Konvention am Endpunkt, kein NaN-Float)."""
+    if isinstance(value, str):
+        return len(value) <= _MEDIA_NAME_MAX_LEN
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    return False
+
+
+def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[str]:
+    """Klare Media-Metadaten prüfen (ct bleibt opak). Rückgabe = Fehlergrund
+    oder None (gültig). require_header=False für chunk_ack (nur media_id/seq)."""
+    media_id = data.get("media_id")
+    if not isinstance(media_id, str) or not _MEDIA_ID_RE.fullmatch(media_id):
+        return "media_id fehlt/ungültig (8-64 Z., [A-Za-z0-9_-])"
+    if not _utf8_encodable(media_id):
+        return "media_id nicht UTF-8-codierbar"
+    seq = data.get("seq")
+    total = data.get("total")
+    if not require_header:
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            return "seq ungültig"
+        return None
+    if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+        return "seq ungültig"
+    if not isinstance(total, int) or isinstance(total, bool) or total < 1 \
+            or total > _MEDIA_MAX_CHUNKS:
+        return "total ungültig"
+    if seq >= total:
+        return "seq ≥ total"
+    if seq == 0:
+        kind = data.get("kind")
+        if not isinstance(kind, str) or kind not in _MEDIA_KINDS:
+            return "kind fehlt/ungültig (image/video/file/voice)"
+        name = data.get("name")
+        if not isinstance(name, str) or not name.strip() \
+                or len(name) > _MEDIA_NAME_MAX_LEN:
+            return "name fehlt/zu lang (≤128)"
+        mime = data.get("mime")
+        if mime is not None and (not isinstance(mime, str)
+                                  or len(mime) > _MEDIA_NAME_MAX_LEN):
+            return "mime ungültig (≤128)"
+        size = data.get("size")
+        if not isinstance(size, int) or isinstance(size, bool) or size < 1 \
+                or size > _media_max_bytes():
+            return f"size ungültig (max {_media_max_bytes()} Bytes)"
+    return None
 
 # ── SEC-W1 B F-01: harte Größen-Grenzen (Relay-RAM-Schutz, Shared-Infra) ────
 _CHAT_TEXT_MAX_CHARS = 32 * 1024    # Chat-Text je Nachricht (413 darüber)
@@ -852,12 +956,30 @@ def _run_loop(state: _RelayState, ready: threading.Event) -> None:
 
 
 def _ssl_context() -> Optional["ssl.SSLContext"]:
-    """Build SSL context from env vars if configured."""
+    """Build SSL context from env vars if configured (W3-01 TLS-Schiene).
+
+    Aktivierung: ANDROID_RELAY_TLS=1 + ANDROID_RELAY_CERT/ANDROID_RELAY_KEY
+    (Pflicht-Konfig für den Domain-Betrieb). ANDROID_RELAY_TLS=1 ohne
+    CERT/KEY ist ein Deploy-Fehler → RuntimeError (fail-closed: der Relay
+    startet NICHT still als Plaintext). ANDROID_RELAY_TLS=0 erzwingt
+    Plaintext (bewusster Kill-Switch für LAN-Interims/QA). Ohne Flag gilt
+    CERT+KEY vorhanden = TLS an (klassische Aktivierung, Default bleibt
+    Plaintext-fähig für das LAN-Interim — externer Host ohne TLS bleibt
+    über das D5b-Gate in _serve verweigert).
+    """
     import ssl as _ssl
 
+    tls_flag = os.getenv("ANDROID_RELAY_TLS")
     cert_path = os.getenv("ANDROID_RELAY_CERT")
     key_path = os.getenv("ANDROID_RELAY_KEY")
 
+    if tls_flag == "0":
+        return None
+    if tls_flag == "1" and not (cert_path and key_path):
+        raise RuntimeError(
+            "ANDROID_RELAY_TLS=1 ohne ANDROID_RELAY_CERT/ANDROID_RELAY_KEY — "
+            "TLS-Pflicht-Konfig unvollständig (W3-01). Zertifikat + Key "
+            "hinterlegen oder ANDROID_RELAY_TLS entfernen.")
     if not cert_path or not key_path:
         return None
 
@@ -941,14 +1063,18 @@ _ROUTES = {
 "/key_publish":   "POST",
 "/key_get":       "GET",
 "/crypto_hello":  "POST",
+# MEDIA-T1: Medien-/Datei-Versand im Chat (chunked, E2E-only) — relay-nativ
+# (kein Device-Forward; Payload läuft DURCH die E2E-Ratchet-Sitzung).
+"/media":         "POST",
 # READ + WRITE
 "/clipboard":     "BOTH",
 }
 
 # PH2-T1: Routen mit eigenem Handler — werden in _serve() nicht über den
 # generischen Device-Command-Handler geforwardet, sondern vom Chat-Broker bedient.
+# MEDIA-T1: /media (chunked, E2E-only) ist relay-nativ wie /chat.
 _RELAY_NATIVE_ROUTES = frozenset(
-    {"/chat", "/chat_event", "/key_publish", "/key_get", "/crypto_hello"})
+    {"/chat", "/chat_event", "/key_publish", "/key_get", "/crypto_hello", "/media"})
 
 
 async def _serve(state: _RelayState, ready: threading.Event) -> None:
@@ -977,6 +1103,9 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     async def chat_event_handler(request: web.Request) -> web.StreamResponse:
         return await _handle_chat_event(request, state)
 
+    async def media_handler(request: web.Request) -> web.StreamResponse:
+        return await _handle_media(request, state)
+
     # PH-3-T2: Key-Registry-Routen (Phone-Seite, Pairing-Code-Auth) — der
     # Relay verwahrt NUR öffentliche Keys und leitet Handshake-Frames opak
     # weiter; er hat kein Private-Key-Material und kann Inhalte nie lesen.
@@ -992,6 +1121,7 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     app.router.add_get("/agent_ws", agent_ws_handler)
     app.router.add_post("/chat", chat_handler)
     app.router.add_post("/chat_event", chat_event_handler)
+    app.router.add_post("/media", media_handler)
     app.router.add_post("/key_publish", key_publish_handler)
     app.router.add_get("/key_get", key_get_handler)
     app.router.add_post("/crypto_hello", crypto_hello_handler)
@@ -1092,9 +1222,9 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     # SEC-W1 D5b: Externer Host ohne TLS war nur eine Warnung — ein Deploy-
     # Tippfehler (ANDROID_RELAY_HOST=0.0.0.0 o. ä.) lieferte Pairing-Code +
     # Chat-Inhalte im Klartext. Fail-closed: explizites Opt-in nötig (gleiches
-    # Muster wie FLIPSI_ALLOW_INSECURE im Adapter). Betriebshinweis: Der
-    # Live-Relay auf dem Heim-LAN braucht bis zur TLS-Umstellung
-    # ANDROID_RELAY_ALLOW_PLAINTEXT=1 in seiner Service-Unit.
+    # Muster wie FLIPSI_ALLOW_INSECURE im Adapter). W3-01: Der Live-Relay
+    # läuft seit 03.11.2026 MIT nativem TLS (ANDROID_RELAY_TLS=1 in der
+    # Unit) — das ALLOW_PLAINTEXT-Opt-in ist dort ENTFERNT, das Gate greift.
     if not ssl_ctx and host not in ("localhost", "127.0.0.1", "::1") \
             and os.getenv("ANDROID_RELAY_ALLOW_PLAINTEXT") != "1":
         raise RuntimeError(
@@ -1719,12 +1849,22 @@ _CHAT_QUEUE_MAXLEN = 500
 # bestätigung (PH2-T10: Status=read + chat.status-Frame ans Phone); chat.
 # activity = Arbeitsstatus (PH2-T10: je Wechsel ein chat.activity-Frame,
 # dedupliziert). read/activity sind bewusst NICHT rate-limited.
+# PH-FIX-BACKEND-B (02.11.2026, PIPELINE-BUGS „Kosmetik“-Fund): agent.register
+# ist allowlisted — der Adapter sendet ihn JEDES Connect/Reconnect (adapter.py
+# _read_ws_frames/send_json). Auth läuft NUR über den WS-Connect-Bearer, der
+# Frame ist reine Anzeige-Metadaten: display_name übernehmen (Config-Wert der
+# relay-config bleibt Fallback), kein Verwerfen mehr — das Log-Rauschen
+# („Frame type='agent.register' verworfen“ je Connect) verschleierte echte
+# Warnungen.
 _AGENT_FRAME_TYPES = frozenset(
-    {"keepalive", "ping", "presence", "chat.reply", "chat.read", "chat.activity",
+    {"keepalive", "ping", "presence", "agent.register",
+     "chat.reply", "chat.read", "chat.activity",
      # PH-3-T2: E2E-Frames — der Relay ist opaker Pass-Through (kein Key-
      # Material, ct wird nie geöffnet); Validierung = Struktur + Session.
      "crypto.hello_ack", "crypto.session_reset",
-     "chat.reply.enc", "chat.read.enc", "chat.activity.enc"}
+     "chat.reply.enc", "chat.read.enc", "chat.activity.enc",
+     # MEDIA-T1: chunked Media (Agent→Phone, opak) + Chunk-Ack (klar, light).
+     "chat.media.enc", "chat.media.chunk_ack"}
 )
 
 # SIRS-01 (Volltest 03.11.2026): Allowlist der session_reset-Reasons, die der
@@ -1732,7 +1872,13 @@ _AGENT_FRAME_TYPES = frozenset(
 # Agent-Restart (App: neutraler Hinweis + sofortiger Neu-Handshake statt
 # MitM-Warnung); alles Unbekannte/fehlende = fail-closed "fingerprint-mismatch"
 # (der bisherige hart-codierte Wert).
-_RESET_REASONS = frozenset({"fingerprint-mismatch", "agent-session-lost"})
+# FIX-WELLE-2 B8 (HERZ-Befund 8): "cross-session-takeover" = fremde Session-
+# ID-Frame bei aktiver Session (zweite Pairing-Code-Inhaber-Session hat die
+# Phone-Session verdrängt / Cross-Session-Replay-Sonde) — die App zeigt eine
+# Takeover-Warnung (KEINE MitM-Sprache) und verwirft die alte Session; der
+# User verbindet neu (Auto-Heal würde sofort wieder verdrängt werden).
+_RESET_REASONS = frozenset({"fingerprint-mismatch", "agent-session-lost",
+                            "cross-session-takeover"})
 
 # PH2-T10: Rangfolge der Chat-Status — nur aufsteigende Übergänge
 # (queued → delivered → read) erzeugen einen neuen chat.status-Frame.
@@ -1779,16 +1925,20 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
             agent_id, _log_id(msg_type, 64), sorted(_AGENT_FRAME_TYPES),
         )
         return
-    # SEC-W1 W1C-9: Flut-Schutz je Agent — keepalive/ping/presence waren
-    # unlimitiert (~76.000 Frames/s gemessen: je Frame JSON-Parse + Lock +
-    # last_seen-Write = Loop-Monopolisierung durch authentizierten Agent).
-    if msg_type in ("keepalive", "ping", "presence"):
+    # SEC-W1 W1C-9: Flut-Schutz je Agent — keepalive/ping/presence/agent.register
+    # waren/ sind unlimitiert (~76.000 Frames/s gemessen: je Frame JSON-Parse +
+    # Lock + last_seen-Write = Loop-Monopolisierung durch authentizierten Agent).
+    if msg_type in ("keepalive", "ping", "presence", "agent.register"):
         if not _chat_rate_allow(f"agentframes:{agent_id}",
                                 _AGENT_LIGHT_FRAME_MAX_PER_SECOND):
             logger.debug(
-                "Agent %s: keepalive/ping/presence über Frame-Cap — verworfen",
+                "Agent %s: keepalive/ping/presence/agent.register über Frame-Cap — verworfen",
                 agent_id)
             return
+    # PH-FIX-BACKEND-B: agent.register = Display-Name-Pflege (kein Verwerfen).
+    if msg_type == "agent.register":
+        await _handle_agent_register(state, agent_id, data)
+        return
     # PH-3-T2: E2E-Frames zuerst (opaker Pass-Through + Session-Broker).
     if msg_type == "crypto.hello_ack":
         await _handle_agent_hello_ack(state, agent_id, data)
@@ -1805,6 +1955,13 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
     if msg_type == "chat.activity.enc":
         await _handle_agent_chat_activity_enc(state, agent_id, data)
         return
+    # MEDIA-T1: chunked Media Agent→Phone (opak) + Chunk-Ack (klar, light).
+    if msg_type == "chat.media.enc":
+        await _handle_agent_media_enc(state, agent_id, data)
+        return
+    if msg_type == "chat.media.chunk_ack":
+        await _handle_agent_media_ack(state, agent_id, data)
+        return
     if msg_type == "chat.reply":
         await _handle_agent_chat_reply(state, agent_id, data)
         return
@@ -1816,6 +1973,33 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
         return
     # keepalive/ping/presence: nur Presence (oben bereits gepflegt).
     logger.debug("Agent %s: frame type=%r (Presence)", agent_id, msg_type)
+
+
+async def _handle_agent_register(state: _RelayState, agent_id: str, data: dict) -> None:
+    """PH-FIX-BACKEND-B: agent.register — display_name übernehmen, nichts verwerfen.
+
+    Authentifizierung läuft AUSSCHLIESSLICH über den WS-Connect-Bearer
+    (relay-config ANDROID_AGENT_TOKEN_<ID>); der Frame ist KEIN Auth-Mittel
+    und kein Registrierungsersatz — die WS-Identität (agent_id des Sockets)
+    gewinnt, eine im Frame mitgeschickte agent_id wird ignoriert. Zweck ist
+    einzig die Anzeige-Metadaten-Pflege: der Adapter meldet seinen
+    FLIPSI_DISPLAY_NAME (Config-Wert der relay-config bleibt Erst-Fallback
+    beim Connect). Cap 64 = Log/DOM-Hygiene (_log_id-Spiegel). Presence
+    wird nur bei TATSÄCHLICHER Änderung gepusht (kein Frame-Sturm je
+    Reconnect). last_seen pflegt der Aufrufer (_on_agent_message) bereits.
+    """
+    raw_name = data.get("display_name")
+    if not isinstance(raw_name, str) or not raw_name.strip():
+        logger.debug("Agent %s: agent.register ohne display_name — No-Op", agent_id)
+        return
+    display_name = raw_name.strip()[:64]
+    async with state.agent_ws_lock:
+        entry = state.agents.get(agent_id)
+        if entry is None or entry.get("display_name") == display_name:
+            return
+        entry["display_name"] = display_name
+    logger.info("Agent %s: display_name via agent.register aktualisiert", agent_id)
+    await _broadcast_agent_presence(state)
 
 
 async def _handle_agent_chat_reply(state: _RelayState, agent_id: str, data: dict) -> None:
@@ -2138,6 +2322,107 @@ async def _handle_agent_chat_activity_enc(state: _RelayState, agent_id: str,
         logger.debug("Agent %s: chat.activity.enc gespoolt (Phone offline)", agent_id)
 
 
+# ── MEDIA-T1: Agent→Phone Media (chunked, opak) + Chunk-Ack ───────────────────
+
+
+async def _handle_agent_media_enc(state: _RelayState, agent_id: str,
+                                  data: dict) -> None:
+    """MEDIA-T1: chat.media.enc → opak ans Phone (Typ bleibt erhalten, ct
+    unverändert). Guards wie chat.reply.enc — mit EIGENEM Media-Rate-Bucket
+    (B6: Multi-Chunk-Uploads zehren nicht am 2/s-Chat-Limit des Agenten):
+    Struktur, klare Media-Metadaten, E2E-Session, Replay-Fenster +
+    Konversations-Owner."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"media_event:{agent_id}", _media_rate_per_second(config)):
+        logger.info("Agent %s: chat.media.enc verworfen — Media-Rate-Limit", agent_id)
+        return
+    chat_id = data.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id.strip():
+        logger.warning("Agent %s: chat.media.enc ohne gültiges chat_id — verworfen", agent_id)
+        return
+    chat_id = chat_id.strip()
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: chat.media.enc ungültig (%s) — verworfen", agent_id, reason)
+        return
+    reason = _validate_media_meta(data)
+    if reason is not None:
+        logger.warning("Agent %s: chat.media.enc Metadaten ungültig (%s) — verworfen",
+                       agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: chat.media.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Agent %s: chat.media.enc Replay/Fenster-Verletzung — verworfen", agent_id)
+        return
+    frame = {
+        "type": "chat.media.enc", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "media_id": data["media_id"],
+        "seq": data["seq"],
+        "total": data["total"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    for extra in ("kind", "name", "mime", "size"):
+        value = data.get(extra)
+        if value is None:
+            continue
+        if _media_meta_ok(value):
+            frame[extra] = value
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if delivered is None:
+        return
+    if not delivered:
+        logger.info("Agent %s: chat.media.enc gespoolt (Phone offline)", agent_id)
+
+
+async def _handle_agent_media_ack(state: _RelayState, agent_id: str,
+                                  data: dict) -> None:
+    """MEDIA-T1: chat.media.chunk_ack → 1:1 ans Phone (klarer Progress-Frame,
+    fire-and-forget). Validierung: media_id/seq (Struktur) + eigenes Rate-
+    Limit (Bursts je Chunk großer Dateien); Ok/Fehler-Status des Agenten
+    werden als 'ok' (bool, default True) durchgereicht."""
+    if not _chat_rate_allow(f"media_ack:{agent_id}", _MEDIA_ACK_MAX_PER_SECOND):
+        logger.debug("Agent %s: chunk_ack über Rate-Limit — verworfen", agent_id)
+        return
+    chat_id = data.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id.strip() \
+            or not _utf8_encodable(chat_id.strip()):
+        logger.warning("Agent %s: chunk_ack ohne gültiges chat_id — verworfen", agent_id)
+        return
+    reason = _validate_media_meta(data, require_header=False)
+    if reason is not None:
+        logger.warning("Agent %s: chunk_ack ungültig (%s) — verworfen", agent_id, reason)
+        return
+    ok = data.get("ok")
+    frame = {
+        "type": "chat.media.chunk_ack", "v": 1,
+        "chat_id": chat_id.strip(),
+        "agent_id": agent_id,
+        "media_id": data["media_id"],
+        "seq": data["seq"],
+        "ts": int(time.time() * 1000),
+    }
+    if isinstance(ok, bool):
+        frame["ok"] = ok
+    if data.get("error") is not None and isinstance(data.get("error"), str) \
+            and len(data.get("error", "")) <= 128:
+        frame["error"] = data["error"][:128]
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.debug("Agent %s: chunk_ack gespoolt (Phone offline)", agent_id)
+
+
 # ── PH2-T10: Chat-Status-Frames (F2-S1/S2/S3) ────────────────────────────────
 
 
@@ -2391,7 +2676,10 @@ async def _flush_agent_queue(state: _RelayState, agent_id: str, ws: web.WebSocke
             return
         for index, (_ts, message) in enumerate(pending):
             try:
-                await ws.send_json(message)
+                # JÄGER J3: enc-Spool-Frames bekommen beim Flush eine frische
+                # ts — sonst verwirft der Adapter alles >10 min STILL, obwohl
+                # der Flush unten schon 'delivered' markiert hat.
+                await ws.send_json(_refresh_enc_frame_ts(message))
                 # PH2-T10: Spool-Auslieferung = delivered (wie ein Live-Send).
                 if _mark_chat_delivered_if_sent(message):
                     delivered_msgs.append(message)
@@ -2407,6 +2695,33 @@ async def _flush_agent_queue(state: _RelayState, agent_id: str, ws: web.WebSocke
     for message in delivered_msgs:
         await _mark_chat_delivered(state, message)
     logger.info("Agent %s: %d gespoolte Nachricht(en) ausgeliefert", agent_id, len(pending))
+
+
+def _refresh_enc_frame_ts(message: dict) -> dict:
+    """JÄGER J3 (P1, JAEGE-RFULL 02.11.2026): E2E-Spool vs. 10-min-Freshness.
+
+    Der Spool hält enc-Frames bis zu 24 h (_chat_retention_seconds), aber die
+    Empfänger-Freshness (adapter.py decrypt_frame / PhoneCryptoPeer.decrypt-
+    Frame) verwirft alles >10 min (_FRAME_MAX_AGE_MS): Kam der Empfänger erst
+    >10 min später online, lieferte der Flush STALE Frames, der Empfänger
+    verwarf sie bei der Entschlüsselung STILL — während der Flush die
+    Nachricht bereits 'delivered' markiert hatte (Lügen-Chip '✓✓ Zugestellt',
+    Nachricht weg). Beide Richtungen: chat.send.enc im Agent-Spool UND
+    chat.event.enc/activity.enc/read.enc in der Phone-Outbox.
+
+    Fix = Freshness zählt ab ZUSTELLUNG, nicht ab Einlieferung: Beim Flush
+    bekommt JEDES *.enc-Frame eine frische ts. ts ist Klartext-Metadatum
+    (NIE im AAD/ct — der AEAD bleibt unberührt); der Replay-Schutz bleibt
+    beim Accept-Zeitpunkt-Check (_relay_replay_allow, SEC-W1 W1C-8) plus
+    Ratchet-Zähler (hdr.n/rk). Klartext-Frames und crypto.*-Frames werden
+    nicht angefasst.
+    """
+    if (isinstance(message, dict)
+            and str(message.get("type") or "").endswith(".enc")
+            and isinstance(message.get("ts"), (int, float))
+            and not isinstance(message.get("ts"), bool)):
+        message["ts"] = int(time.time() * 1000)
+    return message
 
 
 def _mark_chat_delivered_if_sent(message: dict) -> bool:
@@ -2526,7 +2841,10 @@ async def _flush_phone_outbox(state: _RelayState) -> None:
             return
         for index, (_ts, message) in enumerate(pending):
             try:
-                await ws.send_json(message)
+                # JÄGER J3: enc-Spool-Frames bekommen beim Flush eine frische
+                # ts — sonst verwirft das Phone (PhoneCryptoPeer.decryptFrame)
+                # alles >10 min STILL, obwohl der Chip 'delivered' sagt.
+                await ws.send_json(_refresh_enc_frame_ts(message))
             except Exception as exc:
                 rest = pending[index:]
                 # Rest VORNE wieder einreihen (FIFO-Reihenfolge erhalten).
@@ -2979,9 +3297,171 @@ async def _handle_chat_event(request: web.Request, state: _RelayState) -> web.St
     )
 
 
+# ── MEDIA-T1: chunked Medien-/Datei-Versand (E2E-only) ───────────────────────
+
+
+async def _handle_media(request: web.Request, state: _RelayState) -> web.StreamResponse:
+    """MEDIA-T1: App→Agent, EIN verschlüsselter Media-Chunk via POST /media.
+
+    Fail-closed wie der enc-Zweig von /chat:
+    - ct ist PFLICHT (Klartext-Media existiert NICHT — jedes 'text'-Feld
+      ist ein Downgrade-Versuch → 400).
+    - Struktur-Check [_validate_enc_frame] + klare Media-Metadaten
+      [_validate_media_meta] + bestätigte E2E-Session + Replay-Fenster
+      + Konversations-Owner (Identität zum /chat-enc-Zweig).
+    - Zustellung über den normalen Agent-Broker (Spool + Retention, ts wird
+      beim Flush wie jeder enc-Frame aufgefrischt — J3-Parität).
+    """
+    remote_ip = _effective_remote_ip(request)
+    if _auth_is_blocked(remote_ip):
+        return web.json_response(
+            {"error": "Too many failed authentication attempts. Try again later."},
+            status=429,
+        )
+
+    config = _load_relay_config()
+    if not _constant_time_eq(_bearer_token(request), state.pairing_code):
+        _auth_record_failure(remote_ip)
+        logger.warning("HTTP /media rejected — bad auth from %s", remote_ip)
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    # B6: eigener Media-Burst-Bucket — Chunk-Bursts (bis 50 MB) teilen NICHT
+    # mehr den 2/s-Chat-Bucket derselben IP (Herz-Test Befund 6).
+    if not _chat_rate_allow(f"media:{remote_ip}", _media_rate_per_second(config)):
+        return web.json_response({"error": "Media rate limit exceeded"}, status=429)
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "JSON body required"}, status=400)
+
+    agent_id = str(body.get("agent_id") or "").strip().lower()
+    if agent_id not in _agent_tokens(config):
+        return web.json_response({"error": "Unknown agent"}, status=404)
+
+    # Media ist enc-ONLY: ein text-Feld ist per Definition ein Downgrade.
+    if body.get("ct") is None:
+        return web.json_response(
+            {"error": "media requires encrypted chunks (ct) — no cleartext path"},
+            status=400)
+    if body.get("text"):
+        return web.json_response(
+            {"error": "text not allowed in media frames"}, status=400)
+
+    reason = _validate_enc_frame(body)
+    if reason is not None:
+        logger.warning("HTTP /media: ungültiger enc-Body (%s) für Agent %s",
+                       reason, agent_id)
+        return web.json_response(
+            {"error": f"invalid enc frame: {reason}"}, status=400)
+
+    reason = _validate_media_meta(body)
+    if reason is not None:
+        logger.warning("HTTP /media: ungültige Media-Metadaten (%s) für Agent %s",
+                       reason, agent_id)
+        return web.json_response(
+            {"error": f"invalid media meta: {reason}"}, status=400)
+
+    chat_id = str(body.get("chat_id") or "").strip()
+    if not (8 <= len(chat_id) <= 128):
+        return web.json_response(
+            {"error": "chat_id required (8-128 chars) in media frames"}, status=400)
+    if not _utf8_encodable(chat_id):
+        return web.json_response(
+            {"error": "chat_id not UTF-8 encodable"}, status=400)
+
+    if await _enc_session_active(state, agent_id, body) is None:
+        logger.warning(
+            "HTTP /media: enc ohne bestätigte E2E-Session (Agent %s) — verworfen (fail-closed)",
+            agent_id)
+        return web.json_response({"error": "crypto session invalid"}, status=403)
+    if not _relay_replay_allow(state, body["session_id"], "p2a",
+                               body["hdr"]["n"], body.get("ts"),
+                               body["hdr"]["rk"]):
+        logger.warning("HTTP /media: enc Replay/Fenster-Verletzung (Agent %s) — verworfen",
+                       agent_id)
+        return web.json_response({"error": "replay detected"}, status=429)
+
+    # Klare Media-Metadaten (Whitelist, nie Inhalt) in den Agent-Frame.
+    media_id = body["media_id"]
+    message = {
+        "type": "chat.media.enc", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "session_id": body["session_id"],
+        "media_id": media_id,
+        "seq": body["seq"],
+        "total": body["total"],
+        "hdr": body["hdr"],
+        "nonce": body["nonce"],
+        "ct": body["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    for extra in ("kind", "name", "mime", "size"):
+        value = body.get(extra)
+        if value is None:
+            continue
+        if _media_meta_ok(value):
+            message[extra] = value
+
+    async with state.broker_lock:
+        _prune_chat_status(state)
+        # SEC-W1 W1A-2-Parität: chat_id-Übernahme nur, wenn frei oder derselbe
+        # Agent (Klartext-Zweig-Kontrakt, enc-Zweig übernimmt die Phone-chat_id).
+        owner = state.chat_owner.get(chat_id)
+        if owner is not None and owner[0] != agent_id:
+            logger.warning(
+                "HTTP /media: chat_id %s gehört Agent %s — Übernahme durch %s verweigert",
+                _log_id(chat_id), owner[0], agent_id)
+            return web.json_response(
+                {"error": "chat_id belongs to another agent"}, status=403)
+        state.chat_owner[chat_id] = (agent_id, time.time())
+
+    delivered = await _deliver_to_agent(state, agent_id, message)
+    return web.json_response(
+        {
+            "chat_id": chat_id,
+            "media_id": media_id,
+            "seq": body["seq"],
+            "agent_id": agent_id,
+            "delivered": delivered,
+            "queued": not delivered,
+        }
+    )
+
+
 # ── HTTP handler (tool side) ─────────────────────────────────────────────────
 
 _RESPONSE_TIMEOUT = 30  # seconds
+
+
+def _screen_record_response_timeout() -> float:
+    """B5 (Herz-Test Befund 5): Antwortfenster für /screen_record.
+
+    Der J4-Drill bewies eine legitime Laufzeit von 31,6 s — das Standard-
+    Fenster von 30 s war zu knapp, JARVIS hot-patchte deshalb das LIVE-Relay
+    auf 55 s (_RESPONSE_RECORD, Undeployed-Drift c6d9e0e≠3d14e31). Der
+    Hot-Patch wird hier als konfigurierbares Repo-Feature übernommen, damit
+    der nächste Deploy-Sync ihn nicht still verwirft.
+
+    ANDROID_RELAY_SCREEN_RECORD_TIMEOUT überschreibt (Sekunden); Default 55,
+    Untergrenze 30 (kürzer als das Standardfenster ergäbe für eine Aufnahme
+    keinen Sinn), ungültige Werte fallen auf 55 zurück.
+    """
+    try:
+        value = float(os.getenv("ANDROID_RELAY_SCREEN_RECORD_TIMEOUT", "55"))
+    except ValueError:
+        return 55.0
+    return max(float(_RESPONSE_TIMEOUT), value)
+
+
+def _response_timeout_for(path: str) -> float:
+    """Effektives Antwortfenster für einen Tool-Pfad (tool-seitig)."""
+    if path == "/screen_record":
+        return _screen_record_response_timeout()
+    return float(_RESPONSE_TIMEOUT)
 
 
 async def _handle_http(
@@ -3077,20 +3557,22 @@ async def _handle_http(
     if is_binary_stream:
         return await _relay_binary_stream(request, state, request_id, stream_queue, stream_path=path)
 
-    # Wait for the phone's response
+    # Wait for the phone's response — /screen_record bekommt sein eigenes,
+    # längeres Fenster (B5: Aufnahme läuft am Phone, nicht der HTTP-Call).
+    response_timeout = _response_timeout_for(path)
     try:
-        response_data = await asyncio.wait_for(future, timeout=_RESPONSE_TIMEOUT)
+        response_data = await asyncio.wait_for(future, timeout=response_timeout)
     except asyncio.TimeoutError:
         async with state.pending_lock:
             state.pending.pop(request_id, None)
         logger.warning(
-            "Phone did not respond within %ds for %s %s",
-            _RESPONSE_TIMEOUT,
+            "Phone did not respond within %.0fs for %s %s",
+            response_timeout,
             method,
             path,
         )
         return web.json_response(
-            {"error": f"Phone did not respond within {_RESPONSE_TIMEOUT}s"},
+            {"error": f"Phone did not respond within {response_timeout:.0f}s"},
             status=504,
         )
     except ConnectionError as exc:

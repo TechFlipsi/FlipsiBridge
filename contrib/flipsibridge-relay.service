@@ -11,6 +11,23 @@ WorkingDirectory=/opt/flipsibridge
 Environment=ANDROID_RELAY_HOST=0.0.0.0
 Environment=ANDROID_RELAY_PORT=8766
 EnvironmentFile=-/root/.secrets/flipsibridge-relay.env
+# ── TLS (PFLICHT-Konfig für jeden Netz-exponierten Betrieb) ──────────────────
+# Der Relay verweigert den Start auf einer nicht-localhost-Bindung OHNE TLS
+# (fail-closed, s. android_relay.py _serve/D5b). Zwei Wege:
+#  a) NATIVES TLS (empfohlen, auch hinter einem TLS-Reverse-Proxy — schließt
+#     die Klartext-Hop zwischen Proxy und Relay):
+#       Environment=ANDROID_RELAY_TLS=1
+#       Environment=ANDROID_RELAY_CERT=/etc/flipsibridge/tls/relay.crt
+#       Environment=ANDROID_RELAY_KEY=/etc/flipsibridge/tls/relay.key
+#     Zertifikat/Key als PEM (z. B. self-signed via openssl; LE-Zert geht am
+#     besten über den Reverse-Proxy). ANDROID_RELAY_TLS=1 ohne CERT/KEY =
+#     Start-Fehler (bewusst). Reverse-Proxy dann auf https:// weiterleiten.
+#  b) Nur für private Heim-LANs als bewusstes Interim (PAARUNG-CODE läuft
+#     sonst im Klartext): Environment=ANDROID_RELAY_ALLOW_PLAINTEXT=1
+#  Hinter einem Reverse-Proxy zusätzlich PFLICHT (sonst fasst der Relay alle
+#  Clients im selben IP-Rate-Limit-Bucket zusammen):
+#       Environment=ANDROID_RELAY_TRUSTED_PROXY_IP=<Proxy-IP>
+Environment=ANDROID_RELAY_ALLOW_PLAINTEXT=1
 # SECURITY: kein root, kein Host-Zugriff
 User=root
 NoNewPrivileges=yes

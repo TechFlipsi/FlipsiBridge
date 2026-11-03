@@ -15,6 +15,14 @@ package com.hermesandroid.bridge.client
  *   mehr (Neustart, KEIN Sicherheitsereignis): keine MitM-Sprache, KEIN
  *   rot-Banner, Verbindungsstatus unberührt — stattdessen SOFORT ein neuer
  *   crypto.hello-Handshake (die Sitzung heilt sich selbst, ohne App-Restart).
+ * - [REASON_CROSS_SESSION_TAKEOVER] (FIX-WELLE-2 B8, HERZ-Befund 8): Eine
+ *   FREMDE Session-ID traf bei aktiver Session ein (zweite Pairing-Code-
+ *   Inhaber-Session hat die Phone-Session verdrängt = Übernahme, ODER
+ *   Cross-Session-Replay-Sonde). Sicherheitsereignis mit eigener Takeover-
+ *   Sprache (KEINE MitM-Behauptung) und bewusst KEIN Auto-Handshake: ein
+ *   sofortiger Neu-Handshake würde von der übernehmenden Session sofort
+ *   wieder verdrängt (Ping-Pong) — der User soll SEHEN, dass jemand mit
+ *   dem Kopplungscode die Session übernommen hat, und neu verbinden.
  * - alles andere (Default: „fingerprint-mismatch“): Sicherheitsereignis wie
  *   bisher — rot-Banner + PAIRING_BROKEN-artige Status-Zeile, KEIN Auto-Heal
  *   (das Ereignis soll gesehen werden, nicht weggeheilt werden).
@@ -34,6 +42,9 @@ data class SessionResetDecision(
 /** SIRS-01: Benigner Reset-Reason des Agenten (Session nach Neustart weg). */
 const val REASON_AGENT_SESSION_LOST = "agent-session-lost"
 
+/** FIX-WELLE-2 B8: Fremde Session-ID bei aktiver Session (Übernahme/Replay-Sonde). */
+const val REASON_CROSS_SESSION_TAKEOVER = "cross-session-takeover"
+
 /**
  * Je session_reset-Reason das App-Verhalten (SIRS-01). Der Relay leitet nur
  * Allowlist-Reasons 1:1 weiter — unbekannt/fehlend = fail-closed als
@@ -45,6 +56,16 @@ fun sessionResetDecision(reason: String?): SessionResetDecision =
             banner = null,
             isSecurityEvent = false,
             startHandshakeNow = true,
+        )
+    } else if (reason == REASON_CROSS_SESSION_TAKEOVER) {
+        // FIX-WELLE-2 B8 (HERZ-Befund 8): Takeover statt MitM — eigene Sprache,
+        // sichtbares Ereignis, bewusst kein Auto-Heal (Ping-Pong-Gefahr).
+        SessionResetDecision(
+            banner = "E2E-Sitzung wurde durch eine fremde Session ersetzt — " +
+                "jemand hat mit dem Kopplungscode die Sitzung übernommen. " +
+                "Sitzung ist ungültig, neu verbinden.",
+            isSecurityEvent = true,
+            startHandshakeNow = false,
         )
     } else {
         SessionResetDecision(

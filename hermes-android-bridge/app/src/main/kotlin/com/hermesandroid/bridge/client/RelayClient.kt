@@ -1,17 +1,24 @@
 package com.hermesandroid.bridge.client
 
 import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
+import androidx.core.app.NotificationCompat
 import com.hermesandroid.bridge.BridgeApplication
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.MainActivity
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.crypto.AndroidKeystoreIdentitySealer
 import com.hermesandroid.bridge.crypto.CryptoEngine
@@ -26,6 +33,10 @@ import com.google.gson.JsonParser
 import com.hermesandroid.bridge.audio.MicrophoneRecordingFiles
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.files.DeviceFiles
+import com.hermesandroid.bridge.media.MediaAssembler
+import com.hermesandroid.bridge.media.MediaChunker
+import com.hermesandroid.bridge.media.MediaException
+import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.CommandDispatcher
@@ -89,6 +100,17 @@ object RelayClient {
     /** Auth-Fehlversuche, bevor die Versuche stoppen (Relay blockt bei 5). */
     private const val MAX_AUTH_FAILURES = 3
 
+    // ── PH-FIX-CHAT-A (F4): Chat-Benachrichtigungen ──────────────────────
+    // Eigener HIGH-Importance-Kanal — die FGS-Dauernotification
+    // (BridgeConnectionService) ist IMPORTANCE_LOW + setOngoing und darf
+    // als einzige laufende Notification bei Chat-Empfang nicht mitmischen.
+    private const val CHAT_NOTIFY_CHANNEL = "fb_chat"
+
+    /** Basis der Notification-IDs (plus ts % 100k — mehrere pro Tag kollidieren nie). */
+    private const val CHAT_NOTIFY_ID_BASE = 9000
+    /** PH-FIX-BACKEND-B: Backoff je hello_ack-Retry (failures × Basis, 1 s / 2 s). */
+    private const val HELLO_ACK_RETRY_BACKOFF_MS = 1_000L
+
     // --- Termux revival watchdog ---
     // When the relay is unreachable past these thresholds, fire the
     // Termux RUN_COMMAND intent to restart the whole stack (start-zee.sh).
@@ -103,7 +125,18 @@ object RelayClient {
     private val gson = Gson()
     private val client = MtlsSupport.decorate(
         OkHttpClient.Builder()
-            .pingInterval(java.time.Duration.ofSeconds(45))   // v0.12.0 (Akku P1-1): war 20 — NAT/NPM hält der 15-s-Relay-Heartbeat; nur Toterkennungslatenz 20-40s → 45-90s
+            // PH-FIX-CHAT-A (F6, 30-s-Keepalive): WS-Ping-Frames (opcode 0x9)
+            // im 30-s-Raster — Spiegel zum 30-s-Keepalive-Raster der Agenten.
+            // Bewusst Protokoll-Ping statt App-Frame: der Relay allowlistet
+            // {"type":"keepalive"} nur auf der AGENTEN-WS; ein Phone-Frame
+            // ohne request_id erzeugt im Journal eine rate-limited Warnung
+            // je 30 s (Log-Rauschen, PIPELINE-Doc „Kosmetik“-Notiz), WS-Pings
+            // beantwortet aiohttp still (autoping). Wirkung: NAT bleibt
+            // offen, halboffene Sockets (Doze/Netzwechsel, die 3 Live-
+            // Disconnects 02.11.) entlarven sich ~2× schneller als bei 45 s.
+            // (v0.12.0 Akku P1-1 hatte 20→45 s erhöht, weil der Relay eh alle
+            // 15 s heartbeatet — die App-EIGENE Toterkennung war der Engpass.)
+            .pingInterval(java.time.Duration.ofSeconds(30))
             .build()
     )
 
@@ -177,6 +210,17 @@ object RelayClient {
     var isConnected: Boolean = false
         private set
 
+    /**
+     * PH-FIX-CHAT-A (F4): agentId der OFFENEN Conversation — ChatScreen
+     * setzt ihn via DisposableEffect beim Betreten der Conversation und
+     * räumt beim Verlassen. Zusammen mit [MainActivity.isForeground]
+     * unterdrückt es Benachrichtigungs-Spam für die Unterhaltung, die Sir
+     * gerade liest (App im Hintergrund + Chat offen = Notification trotzdem
+     * gewollt).
+     */
+    @Volatile
+    var chatVisibleAgentId: String? = null
+
     // ── PH2-MERGE: Chat-Daten-Modelle + StateFlows (UI bindet live daran) ────
 
     /**
@@ -224,6 +268,42 @@ object RelayClient {
         val startedAt: Long,
     )
 
+    // ── MEDIA-T1: Medien-/Datei-Versand im Chat (chunked, E2E-only) ───────
+
+    /**
+     * MEDIA-T1: Vollständig empfangenes Medium vom Agenten (chat.media.enc
+     * Chunks reassembliert, Datei liegt app-privat unter filesDir/chat_media).
+     * Die UI hängt es als Media-Bubble in den Verlauf (kein Text-Ersatz).
+     */
+    data class ChatMediaEvent(
+        val chatId: String,
+        val agentId: String,
+        val mediaId: String,
+        val kind: String,
+        val name: String,
+        val mime: String,
+        val size: Long,
+        val localPath: String,
+        val ts: Long,
+    )
+
+    /**
+     * MEDIA-T1: Upload-Zustand je media_id (eigene Medien-Bubble zeigt den
+     * Fortschritt). sentChunks = vom Relay angenommene Chunks, ackedChunks =
+     * vom Agenten quittierte Chunks (chat.media.chunk_ack), failed != null =
+     * endgültig gescheitert (Chunk-POST abgelehnt).
+     */
+    data class MediaUploadState(
+        val agentId: String,
+        val kind: String,
+        val name: String,
+        val totalChunks: Int,
+        val sentChunks: Int = 0,
+        val ackedChunks: Int = 0,
+        val failed: String? = null,
+        val done: Boolean = false,
+    )
+
     /** Obergrenze des Empfangs-Puffers (Chat-Verlauf ist kein Dauerarchiv). */
     private const val MAX_CHAT_EVENTS = 200
 
@@ -245,6 +325,14 @@ object RelayClient {
     /** PH2-T10: Arbeitsstatus je agent_id (letzter chat.activity-Frame). */
     private val _agentWorking = MutableStateFlow<Map<String, AgentActivity>>(emptyMap())
     val agentWorking: StateFlow<Map<String, AgentActivity>> = _agentWorking.asStateFlow()
+
+    /** MEDIA-T1: Empfangene Agenten-Medien (vollständig reassembliert). */
+    private val _chatMediaEvents = MutableStateFlow<List<ChatMediaEvent>>(emptyList())
+    val chatMediaEvents: StateFlow<List<ChatMediaEvent>> = _chatMediaEvents.asStateFlow()
+
+    /** MEDIA-T1: Upload-Fortschritt je media_id (eigene Medien-Bubbles). */
+    private val _mediaUploads = MutableStateFlow<Map<String, MediaUploadState>>(emptyMap())
+    val mediaUploads: StateFlow<Map<String, MediaUploadState>> = _mediaUploads.asStateFlow()
 
     // ── PH-3 Welle 2: E2E-Verschlüsselung (fb-v1, Double Ratchet) ──────────
 
@@ -281,6 +369,13 @@ object RelayClient {
     /** agentId → Handshake läuft gerade (kein Doppel-Hellos). */
     private val handshakesInFlight = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * PH-FIX-BACKEND-B (Bug-1-Härtung): agentId → hello_ack-Verify-Fehlschläge
+     * (max. HelloAckFailurePolicy.MAX_RETRIES Retries, danach Banner).
+     * Zurückgesetzt je erfolgreichem consumeAck + je frischem connect()-Zyklus.
+     */
+    private val helloAckFailures = ConcurrentHashMap<String, Int>()
+
     /** Phone-Identity (X25519, aus dem Keystore-sealed IdentityStore geladen). */
     @Volatile
     private var phoneIdentity: CryptoEngine.X25519KeyPair? = null
@@ -303,7 +398,14 @@ object RelayClient {
             value?.let { PairingManager.saveUrlToVault(it) }
         }
 
+    /** Kopplung kaputt? (UI-Zugriff) */
     fun isAuthBroken(): Boolean = authBroken
+
+    /**
+     * JÄGER-J10 (P2): true = Sir hat BEWUSST getrennt (disconnect()) — der
+     * ReconnectAlarmReceiver darf dann KEINEN FGS-Zombie hochholen.
+     */
+    fun isUserDisconnected(): Boolean = userDisconnected
 
     /**
      * v0.11.0: Code wird NICHT mehr zweitgespeichert — immer frisch aus dem
@@ -356,6 +458,27 @@ object RelayClient {
         }
     }
 
+    /**
+     * JÄGER-J10 (P2, JAEGE-RFULL-20261102): geplanten Reconnect-Weckruf
+     * (requestCode 1) canceln. disconnect() räumte bisher NUR die AuthProbe
+     * (requestCode 2) — ein vor dem Trennen geplanter 5-min/429-Alarm überlebte
+     * das bewusste Trennen. reconnectNow() ist korrekt No-op, aber der Receiver
+     * hob den FGS („Getrennt“-Notification) zurück = Zombie gegen Sirs
+     * ausdrücklichen Trenn-Wunsch.
+     */
+    private fun cancelReconnectAlarm() {
+        val ctx = appContext ?: return
+        runCatching {
+            (ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(
+                PendingIntent.getBroadcast(
+                    ctx, 1,
+                    Intent(ctx, ReconnectAlarmReceiver::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            )
+        }
+    }
+
     private fun bumpAuthFailureStreak(): Int {
         val v = (prefs?.getInt(KEY_AUTH_FAILURES, 0) ?: 0) + 1
         prefs?.edit()?.putInt(KEY_AUTH_FAILURES, v)?.apply()
@@ -390,6 +513,9 @@ object RelayClient {
         // Verbindung, Spec §2.5 — Session-Keys leben nur im RAM).
         cryptoSessions.clear()
         pendingCryptoPeers.clear()
+        // PH-FIX-BACKEND-B: frisches Retry-Budget je Connect-Zyklus (Banner
+        // oben wird ohnehin genullt — ein Reconnect ist die User-Heilung).
+        helloAckFailures.clear()
         _e2eBanner.value = null
         publishE2eSessions()
 
@@ -415,6 +541,10 @@ object RelayClient {
         reconnectJob = null
         reconnectPending = false
         cancelAuthProbe()
+        // JÄGER-J10: auch den Reconnect-Weckruf (requestCode 1) canceln —
+        // sonst feuerte ein vor dem Trennen geplanter 5-min/429-Alarm nach
+        // dem bewussten Trennen und holte den FGS zurück (Zombie-Notification).
+        cancelReconnectAlarm()
         reconnectPolicy.reset()
         sessionStartedNs = 0L
         generation++
@@ -423,6 +553,13 @@ object RelayClient {
         scope?.cancel()
         scope = null
         isConnected = false
+        // PH-FIX-CHAT-A (F5): bewusstes Trennen räumt die working-States
+        // ebenso — ohne Verbindung kann kein Agent „arbeiten“.
+        _agentWorking.value = emptyMap()
+        // PH-FIX-CHAT-A (F6): bewusstes Trennen markiert die Agenten ebenso
+        // offline (onClosed läuft hier nicht — disconnect() bumpt generation,
+        // die Callbacks kehren früh zurück).
+        markAgentsOffline()
         // PH-3 Welle 2: Session-Keys verwerfen (RAM-only; frischer Handshake je
         // Verbindung — Spec §2.5 Rotation je Session).
         cryptoSessions.clear()
@@ -611,6 +748,14 @@ object RelayClient {
                 if (myGeneration != generation) return
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 isConnected = false
+                // PH-FIX-CHAT-A (F5): working-States sind bei toter Verbindung
+                // verwaist (activity-Reset-Frames laufen ins TCP-Nirvana) —
+                // räumen, sonst countet der Kopf-Spinner ewig weiter.
+                _agentWorking.value = emptyMap()
+                // PH-FIX-CHAT-A (F6): die Agenten-Liste ist der letzte
+                // relay.state-Snapshot — ohne Verbindung ist JEDE „online“-
+                // Anzeige gelogen (Presence-Push ist Ein-Weg ohne Spool).
+                markAgentsOffline()
                 endSession()
                 // v0.12.0 (Akku P0-2): Leakschutz — ein gestorbener Stream darf
                 // den Vollcapture-Zustand nicht dauerhaft stehen lassen.
@@ -629,6 +774,12 @@ object RelayClient {
                 val errorDetail = "Verbindungsfehler: ${t.javaClass.simpleName} (HTTP $httpCode)"
                 Log.e(TAG, "WebSocket failure: $errorDetail")
                 isConnected = false
+                // PH-FIX-CHAT-A (F5): wie onClosed — verwaiste working-States
+                // räumen (kein Spinner-Ewigzähler auf toter Verbindung).
+                _agentWorking.value = emptyMap()
+                // PH-FIX-CHAT-A (F6): wie onClosed — Snapshot „online“ ist
+                // ohne Verbindung gelogen.
+                markAgentsOffline()
                 endSession()
                 // v0.12.0 (Akku P0-2): Leakschutz — wie onClosed.
                 EventStore.highVolumeEvents = false
@@ -782,6 +933,21 @@ object RelayClient {
         doConnect(url, PairingManager.getCode().ifBlank { code })
     }
 
+    /**
+     * PH-FIX-CHAT-A (F6): Agenten offline markieren — die Liste ist der
+     * letzte relay.state-Snapshot, Presence-Push ist Ein-Weg OHNE Spool:
+     * Stirbt die Phone-WS (onClosed/onFailure) oder trennt Sir bewusst,
+     * bleibt der Header sonst auf „online“ eingefroren (Live-Befund
+     * 02.11.: Agenten tagelang „online“ bei toter Verbindung). Der nächste
+     * relay.state-Hallo-Frame (Reconnect) ersetzt die Liste ohnehin
+     * vollständig. update{} = atomar (SEC-W1 W1C-4-Muster).
+     */
+    private fun markAgentsOffline() {
+        _agents.update { current ->
+            if (current.isEmpty()) current else current.map { it.copy(online = false) }
+        }
+    }
+
     /** A session that had opened is over — refill the budget only if it was stable. */
     private fun endSession() {
         val startedNs = sessionStartedNs
@@ -902,6 +1068,9 @@ object RelayClient {
                 "chat.event.enc" -> { handleChatEventEnc(json); return }
                 "chat.read.enc" -> { handleChatReadEnc(json); return }
                 "chat.activity.enc" -> { handleChatActivityEnc(json); return }
+                // MEDIA-T1: chunked Media (E2E-only) + Chunk-Acks (Progress).
+                "chat.media.enc" -> { handleChatMediaEnc(json); return }
+                "chat.media.chunk_ack" -> { handleMediaChunkAck(json); return }
                 "crypto.hello_ack" -> { handleCryptoHelloAck(json); return }
                 "crypto.session_reset" -> { handleCryptoSessionReset(json); return }
             }
@@ -1030,6 +1199,19 @@ object RelayClient {
                 _e2eBanner.value =
                     "E2E-Sitzung wurde serverseitig zurückgesetzt — bitte neu verbinden."
             }
+            // PH-FIX-BACKEND-B (Bug-1-Spiegel-Branch): Relay hält eine aktive
+            // E2E-Session (vom Agent geackt), das Phone hat LOKAL KEINE →
+            // Deadlock-Zustand: enc unmöglich (keine Keys), Klartext = 403-
+            // Downgrade-Verwurf am Relay. Neu-Handshake erzwingen; scheitert
+            // der erneut an der KDF, läuft er in Banner/Retry statt Stillstand.
+            if (E2eSessionTruth.needsHandshake(sessionActive, cryptoSessions[agentId]?.isActive() == true)) {
+                Log.w(
+                    TAG,
+                    "PH-FIX-B: Relay hält aktive E2E-Session für Agent ${agentId.take(24)}, " +
+                        "lokal inaktiv — Neu-Handshake erzwungen (Spiegel-Lücke)",
+                )
+                startHandshake(agentId)
+            }
             AgentEntry(agentId, displayName, online)
         }
         _agents.value = parsed
@@ -1087,6 +1269,8 @@ object RelayClient {
         _chatEvents.update { (it + event).takeLast(MAX_CHAT_EVENTS) }
         // SIRS-02: eingehende Antwort persistieren (genau hier, genau einmal).
         persistChatBubble(agentId, chatId, fromAgent = true, body, ts, status = null)
+        // PH-FIX-CHAT-A (F4): Notification am Empfangs-Punkt (Klartext-Zweig).
+        notifyIncomingChat(agentId, body, ts)
         if (BuildConfig.DEBUG) Log.d(TAG, "chat.event von Agent ${agentId.take(24)}")
     }
 
@@ -1310,11 +1494,38 @@ object RelayClient {
         try {
             peer.consumeAck(json)
             cryptoSessions[agentId] = peer
+            // PH-FIX-BACKEND-B: Hello-Ack-Verifiziert = Retry-Budget zurücksetzen.
+            helloAckFailures.remove(agentId)
             publishE2eSessions()
             Log.i(TAG, "PH-3: E2E-Session ${sessionId.take(8)} aktiv (Agent ${agentId.take(24)})")
         } catch (e: Exception) {
             // Wrong-Key/PSK → Session verwerfen, KEIN Cleartext-Fallback (Spec §6).
             Log.w(TAG, "PH-3: hello_ack-Verify fehlgeschlagen — Session verworfen (fail-closed)")
+            // PH-FIX-BACKEND-B (Bug-1-Härtung): Stillstand kippen in sichtbaren
+            // Fehler — max. HelloAckFailurePolicy.MAX_RETRIES Neu-Handshakes mit
+            // Backoff, danach rot-Banner + Status-Zeile (analog FP-Mismatch).
+            // Keine stillen Verwerfungen mehr: der User sieht, dass E2E klemmt.
+            val failures = (helloAckFailures[agentId] ?: 0) + 1
+            helloAckFailures[agentId] = failures
+            if (HelloAckFailurePolicy.shouldRetry(failures)) {
+                Log.i(
+                    TAG,
+                    "PH-3: hello_ack-Retry $failures/${HelloAckFailurePolicy.MAX_RETRIES} " +
+                        "für Agent ${agentId.take(24)} (Backoff)",
+                )
+                scope?.launch {
+                    delay(HELLO_ACK_RETRY_BACKOFF_MS * failures)
+                    startHandshake(agentId)
+                }
+            } else {
+                Log.w(
+                    TAG,
+                    "PH-3: hello_ack-Verify endgültig fehlgeschlagen " +
+                        "(${HelloAckFailurePolicy.MAX_RETRIES} Retries aufgebraucht) — Banner",
+                )
+                _e2eBanner.value = HelloAckFailurePolicy.BANNER
+                notifyStatus(false, HelloAckFailurePolicy.STATUS, Phase.PAIRING_BROKEN)
+            }
         }
     }
 
@@ -1334,13 +1545,32 @@ object RelayClient {
         val decision = sessionResetDecision(stringOf(json, "reason"))
         pendingCryptoPeers.remove(sessionId)
         cryptoSessions.remove(agentId)
+        // PH-FIX-CHAT-A (F5): Session tot → jede folgende activity.enc dieses
+        // Agenten landet ohnehin im Verwurfs-Pfad (kein Peer) — der Spinner
+        // darf nicht auf dem letzten working=true stehen bleiben.
+        _agentWorking.update { it - agentId }
+        // FIX-WELLE-2 B8 (HERZ-Befund 8): Die tote Session kann für ihre
+        // noch ungelesenen Nachrichten KEIN Read mehr liefern — Chips von
+        // 'Zugestellt'/'Wartet' auf '✕ Fehlgeschlagen' fegen (stiller
+        // Verwurf statt Endlos-Zustellt-Lüge).
+        _chatStatus.update { ChatStatusRank.sweepUnreadToFailed(it) }
         publishE2eSessions()
         if (decision.isSecurityEvent) {
-            Log.w(TAG, "PH-3: Session ${sessionId.take(8)} vom Agenten zurückgesetzt (Fingerprint-Abweichung)")
+            // FIX-WELLE-2 B8: Grund ehrlich benennen — Takeover ist keine
+            // Fingerprint-Abweichung (auch wenn der Banner-Pfad derselbe ist).
+            val reasonText = if (stringOf(json, "reason") == REASON_CROSS_SESSION_TAKEOVER) {
+                "Session-Übernahme"
+            } else {
+                "Fingerprint-Abweichung"
+            }
+            Log.w(
+                TAG,
+                "PH-3: Session ${sessionId.take(8)} vom Agenten zurückgesetzt ($reasonText)",
+            )
             _e2eBanner.value = decision.banner
             notifyStatus(
                 false,
-                "E2E-Sitzung zurückgesetzt (Fingerprint-Abweichung) — neu verbinden",
+                "E2E-Sitzung zurückgesetzt ($reasonText) — neu verbinden",
                 Phase.PAIRING_BROKEN,
             )
         } else {
@@ -1362,10 +1592,33 @@ object RelayClient {
      * (Klartext intern-only, nie geloggt) → wie bisher in [chatEvents] (der
      * KI-Badge der Chat-UI bleibt, da fromAgent = true).
      */
-    private fun handleChatEventEnc(json: JsonObject) {
+    private fun handleChatEventEnc(json: JsonObject, isRetry: Boolean = false) {
         val agentId = stringOf(json, "agent_id") ?: return
         val peer = cryptoSessions[agentId] ?: run {
-            Log.w(TAG, "PH-3: chat.event.enc ohne aktive E2E-Session verworfen")
+            // JÄGER-J5 (P2, JAEGE-RFULL-20261102): hello_ack und die erste
+            // chat.event.enc treffen fast gleichzeitig ein — JE Frame läuft
+            // in einer eigenen IO-Coroutine OHNE Abarbeitungs-Garantie.
+            // Lief dieser Handler vor handleCryptoHelloAck, war die Session
+            // noch nicht registriert → die ERSTE Antwort nach dem Handshake
+            // fiel STILL auf den Boden (kein Retry, kein Banner). Läuft der
+            // Handshake noch (in-flight/pending), den Frame GENAU EINMAL
+            // verzögert nachstellen — bounded: ist der Ack dann da, wird der
+            // Frame normal verarbeitet; scheiterte der Handshake, endet der
+            // Retry im normalen Verwurfs-Pfad mit Warnung.
+            val handshakeRunning = handshakesInFlight.contains(agentId) ||
+                pendingCryptoPeers.values.any { it.agentId == agentId }
+            if (!isRetry && handshakeRunning) {
+                Log.i(
+                    TAG,
+                    "J5: chat.event.enc kam VOR hello_ack (Agent ${agentId.take(24)}) — einmalige Nachstellung",
+                )
+                scope?.launch {
+                    delay(750L)
+                    handleChatEventEnc(json, isRetry = true)
+                }
+            } else {
+                Log.w(TAG, "PH-3: chat.event.enc ohne aktive E2E-Session verworfen")
+            }
             return
         }
         val payload = try {
@@ -1387,6 +1640,10 @@ object RelayClient {
         // SIRS-02: verschlüsselte Antworten DENSELBEN Weg persistieren wie
         // Klartext-Ereignisse — der Verlauf kennt keinen E2E-Unterschied.
         persistChatBubble(agentId, chatId, fromAgent = true, text, ts, status = null)
+        // PH-FIX-CHAT-A (F4): Notification am Empfangs-Punkt (E2E-Zweig) —
+        // derselbe Weg wie Klartext, inkl. Sperrbildschirm-Schutz bei
+        // aktiver Session (VISIBILITY_PRIVATE).
+        notifyIncomingChat(agentId, text, ts)
         if (BuildConfig.DEBUG) Log.d(TAG, "chat.event.enc von Agent ${agentId.take(24)} entschlüsselt")
         // Sirs Revision (iii): Abweichungs-Antwort → rot-Banner in Chat + Settings.
         if (text.startsWith("Fingerprint-Abgleich: FEHLGESCHLAGEN")) {
@@ -1445,6 +1702,12 @@ object RelayClient {
         text: String,
         ts: Long,
         status: String?,
+        mediaKind: String? = null,
+        mediaName: String? = null,
+        mediaMime: String? = null,
+        mediaSize: Long? = null,
+        mediaPath: String? = null,
+        mediaId: String? = null,
     ) {
         val root = appContext?.let { ChatHistoryStore.root(it) } ?: return
         ChatHistoryStore.appendAsync(
@@ -1457,13 +1720,373 @@ object RelayClient {
                 text = text,
                 time = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(ts)),
                 status = status,
+                mediaKind = mediaKind,
+                mediaName = mediaName,
+                mediaMime = mediaMime,
+                mediaSize = mediaSize,
+                mediaPath = mediaPath,
+                mediaId = mediaId,
             ),
         )
+    }
+
+    /**
+     * PH-FIX-CHAT-A (F4): Notification bei eingehender Agenten-Antwort —
+     * aufgerufen GENAU an den beiden Empfangs-Punkten (Klartext + E2E)
+     * direkt neben persistChatBubble. Vorher existierte im gesamten Chat-
+     * Empfangspfad KEIN NotificationManager-Aufruf: Antworten erschienen
+     * nur in der geöffneten App-UI — Sir verpasste Antworten, solange die
+     * App zu war.
+     *
+     * Unterdrückt, wenn die Conversation DIESES Agenten offen und die App im
+     * Vordergrund ist (Spam-Schutz, s. [chatVisibleAgentId]); abwesende
+     * Permission (Android 13+) bleibt still statt zu crashen.
+     */
+    private fun notifyIncomingChat(agentId: String, text: String, ts: Long) {
+        val ctx = appContext ?: return
+        if (MainActivity.isForeground && agentId == chatVisibleAgentId) return
+        // Android 13+: ohne erteilte POST_NOTIFICATIONS bleibt es still —
+        // das Ereignis ist trotzdem in der App-UI sichtbar (Request-Lauf
+        // existiert in BridgeScreen).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        runCatching {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        CHAT_NOTIFY_CHANNEL,
+                        "Chat-Nachrichten",
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ).apply { description = "Eingehende Antworten deiner Agenten" },
+                )
+            }
+            val name = _agents.value.firstOrNull { it.agentId == agentId }?.displayName ?: agentId
+            val tap = PendingIntent.getActivity(
+                ctx, 12,
+                Intent(ctx, MainActivity::class.java).setFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val content = text.take(120)
+            val builder = NotificationCompat.Builder(ctx, CHAT_NOTIFY_CHANNEL)
+                .setContentTitle(name)
+                .setContentText(content)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(content))
+                .setSmallIcon(R.drawable.ic_chat)
+                .setAutoCancel(true)
+                .setWhen(ts)
+                .setContentIntent(tap)
+            if (cryptoSessions[agentId]?.isActive() == true) {
+                // Bewusste Grenze (Bugfund): bei aktiver E2E-Session ist der
+                // Chat-Inhalt Klartext — der Sperrbildschirm zeigt nur die
+                // Absender-Zeile, der volle Text bleibt hinter der Sperre.
+                builder
+                    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                    .setPublicVersion(
+                        NotificationCompat.Builder(ctx, CHAT_NOTIFY_CHANNEL)
+                            .setContentTitle(name)
+                            .setContentText("Neue Nachricht")
+                            .setSmallIcon(R.drawable.ic_chat)
+                            .setAutoCancel(true)
+                            .setWhen(ts)
+                            .setContentIntent(tap)
+                            .build(),
+                    )
+            }
+            nm.notify((CHAT_NOTIFY_ID_BASE + ts % 100_000L).toInt(), builder.build())
+        }.onFailure { Log.w(TAG, "Chat-Notification fehlgeschlagen: ${it.message}") }
     }
 
     /** PH-3: rot-Banner wegdismissing (Chat/Settings rufen nach dem Lesen). */
     fun clearE2eBanner() {
         _e2eBanner.value = null
+    }
+
+    // ── MEDIA-T1: Medien-/Datei-Versand im Chat (chunked, E2E-only) ─────────
+
+    /** Empfangs-Assembler je Agent (ein Upload je Agent auf einmal). */
+    private val mediaInboundAssemblers = ConcurrentHashMap<String, MediaAssembler>()
+
+    /** Empfangene Metadaten je media_id (Chunk 0: kind/name/mime/size). */
+    private val mediaInboundMeta = ConcurrentHashMap<String, ChatMediaEvent>()
+
+    /**
+     * MEDIA-T1: Medium an einen Agenten senden — chunked über POST /media,
+     * JE Chunk durch die E2E-Ratchet-Sitzung (chat.media.enc). Fail-closed:
+     * ohne aktive E2E-Session gibt es KEINEN Versand (Medien sind niemals
+     * Klartext — der Klartext-Fallback ist FORBIDDEN, Parität zu enc-Frames).
+     * Fortschritt via [mediaUploads] (sentChunks + ackedChunks je media_id).
+     */
+    fun sendMedia(
+        agentId: String,
+        kind: String,
+        name: String,
+        mime: String,
+        bytes: ByteArray,
+        onResult: (ok: Boolean, error: String?, mediaId: String?) -> Unit,
+    ) {
+        val activeScope = scope
+        val mediaId = MediaProtocol.newMediaId { CryptoEngine.secureRandomBytes(16) }
+        val validationError = MediaProtocol.validateForSend(kind, name, bytes.size.toLong())
+        when {
+            activeScope == null || !isConnected -> {
+                deliverMediaResult(onResult, false, "Keine Verbindung zum Relay", null)
+            }
+            validationError != null -> {
+                deliverMediaResult(onResult, false, validationError, null)
+            }
+            else -> {
+                val peer = cryptoSessions[agentId]?.takeIf { it.isActive() }
+                if (peer == null) {
+                    deliverMediaResult(
+                        onResult, false,
+                        "Keine aktive E2E-Sitzung — Medienversand nur verschlüsselt möglich",
+                        null,
+                    )
+                    return
+                }
+                val base = serverUrl?.trim()?.trimEnd('/')
+                if (base.isNullOrBlank()) {
+                    deliverMediaResult(onResult, false, "Kein Relay-Server konfiguriert", null)
+                    return
+                }
+                val chatId = peer.chatId
+                if (chatId.isNullOrBlank()) {
+                    deliverMediaResult(onResult, false, "E2E-Sitzung ohne chat_id", null)
+                    return
+                }
+                activeScope.launch(Dispatchers.IO) {
+                    val outcome = runCatching {
+                        uploadMediaChunks(base, agentId, peer, chatId, mediaId, kind, name, mime, bytes)
+                    }
+                    outcome.onSuccess { sent ->
+                        if (sent) {
+                            // Upload angenommen — Bubble-Text für Verlauf/UI.
+                            val label = MediaProtocol.kindLabel(kind)
+                            val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
+                            persistChatBubble(
+                                agentId, chatId, fromAgent = false,
+                                text = "[$label] $name ($sizeText)",
+                                ts = System.currentTimeMillis(), status = null,
+                                mediaKind = kind, mediaName = name, mediaMime = mime,
+                                mediaSize = bytes.size.toLong(), mediaId = mediaId,
+                            )
+                            deliverMediaResult(onResult, true, null, mediaId)
+                        } else {
+                            markMediaUploadFailed(mediaId, "Relay lehnte Chunks ab")
+                            deliverMediaResult(onResult, false, "Relay lehnte Chunks ab", null)
+                        }
+                    }.onFailure { e ->
+                        markMediaUploadFailed(mediaId, e.message?.take(80) ?: "Senden fehlgeschlagen")
+                        deliverMediaResult(onResult, false, e.message?.take(80) ?: "Senden fehlgeschlagen", null)
+                    }
+                }
+            }
+        }
+    }
+
+    /** Chunk-POSTs sequenziell (Reihenfolge = Relay-Spool-Vertrag). */
+    private fun uploadMediaChunks(
+        base: String,
+        agentId: String,
+        peer: com.hermesandroid.bridge.crypto.PhoneCryptoPeer,
+        chatId: String,
+        mediaId: String,
+        kind: String,
+        name: String,
+        mime: String,
+        bytes: ByteArray,
+    ): Boolean {
+        val chunks = MediaChunker.chunk(bytes)
+        val sha = MediaProtocol.sha256Hex(bytes)
+        _mediaUploads.update { it + (mediaId to MediaUploadState(agentId, kind, name, chunks.size)) }
+        for ((index, chunk) in chunks.withIndex()) {
+            val payload = buildMap {
+                put("media_id", mediaId)
+                put("seq", chunk.seq)
+                put("total", chunk.total)
+                put("data", chunk.b64)
+                if (index == 0) put("sha256", sha)
+            }
+            val frame = peer.encryptFrame("chat.media.enc", chatId, payload)
+            val body = JsonObject().apply {
+                addProperty("agent_id", agentId)
+                addProperty("chat_id", chatId)
+                addProperty("session_id", frame.get("session_id").asString)
+                addProperty("ts", frame.get("ts").asLong)
+                add("hdr", frame.get("hdr"))
+                addProperty("nonce", frame.get("nonce").asString)
+                addProperty("ct", frame.get("ct").asString)
+                addProperty("media_id", mediaId)
+                addProperty("seq", chunk.seq)
+                addProperty("total", chunk.total)
+                if (index == 0) {
+                    addProperty("kind", kind)
+                    addProperty("name", name)
+                    addProperty("mime", mime)
+                    addProperty("size", bytes.size.toLong())
+                }
+            }
+            val request = Request.Builder()
+                .url(buildHttpUrl(base, "/media"))
+                .header("Authorization", "Bearer ${PairingManager.getCode()}")
+                .post(body.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            client.newCall(request).execute().use { response ->
+                if (response.code !in 200..299) {
+                    Log.w(TAG, "MEDIA-T1: /media Chunk ${chunk.seq} abgelehnt (HTTP ${response.code})")
+                    return false
+                }
+                _mediaUploads.update {
+                    it + ((it[mediaId] ?: return@update it).let { state ->
+                        mediaId to state.copy(sentChunks = chunk.seq + 1)
+                    })
+                }
+            }
+        }
+        return true
+    }
+
+    /** Media-Upload endgültig gescheitert → State + Verlauf-Chip 'failed'. */
+    private fun markMediaUploadFailed(mediaId: String, error: String) {
+        _mediaUploads.update { map ->
+            map[mediaId]?.let { mediaId to it.copy(failed = error) }?.let { map + it }
+                ?: map
+        }
+    }
+
+    /** MEDIA-T1: chat.media.chunk_ack → Upload-Fortschritt (ackedChunks). */
+    private fun handleMediaChunkAck(json: JsonObject) {
+        val mediaId = stringOf(json, "media_id") ?: return
+        val seq = longOf(json, "seq")?.toInt() ?: return
+        val ok = runCatching {
+            json.get("ok")?.takeIf { it.isJsonPrimitive }?.asBoolean
+        }.getOrNull() ?: true
+        _mediaUploads.update { map ->
+            val state = map[mediaId] ?: return@update map
+            if (!ok) {
+                map + (mediaId to state.copy(failed = "Agent lehnte Chunk $seq ab"))
+            } else {
+                val acked = maxOf(state.ackedChunks, seq + 1)
+                val done = acked >= state.totalChunks
+                map + (mediaId to state.copy(ackedChunks = acked, done = done))
+            }
+        }
+    }
+
+    /**
+     * MEDIA-T1: chat.media.enc vom Agenten — Chunk entschlüsseln, reassemb-
+     *lieren, bei Vollständigkeit: Datei app-privat speichern (filesDir/
+     * chat_media), sha prüfen (fail-closed) und als [ChatMediaEvent] für die
+     * Media-Bubble liefern (+ Verlauf + Notification).
+     */
+    private fun handleChatMediaEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() } ?: run {
+            Log.w(TAG, "MEDIA-T1: chat.media.enc ohne aktive E2E-Session verworfen")
+            return
+        }
+        val mediaId = stringOf(json, "media_id") ?: return
+        val chatId = stringOf(json, "chat_id") ?: return
+        val seq = longOf(json, "seq")?.toInt() ?: return
+        val total = longOf(json, "total")?.toInt() ?: return
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "MEDIA-T1: chat.media.enc-Entschlüsselung fehlgeschlagen — verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val data = runCatching {
+            payload.get("data")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull() ?: return
+        val sha = runCatching {
+            payload.get("sha256")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        // Metadaten des Chunk-0 (klar) für die fertige Bubble merken.
+        if (seq == 0) {
+            mediaInboundMeta[mediaId] = ChatMediaEvent(
+                chatId = chatId,
+                agentId = agentId,
+                mediaId = mediaId,
+                kind = stringOf(json, "kind") ?: "file",
+                name = stringOf(json, "name") ?: mediaId,
+                mime = stringOf(json, "mime") ?: "",
+                size = longOf(json, "size") ?: 0L,
+                localPath = "",
+                ts = longOf(json, "ts") ?: System.currentTimeMillis(),
+            )
+        }
+        val assembler = mediaInboundAssemblers.getOrPut(agentId) { MediaAssembler() }
+        val blob = try {
+            assembler.add(mediaId, seq, total, data, sha)
+        } catch (e: MediaException) {
+            Log.w(TAG, "MEDIA-T1: Assembly fehlgeschlagen — Upload verworfen (${e.message})")
+            mediaInboundMeta.remove(mediaId)
+            return
+        } ?: return  // noch unvollständig
+        mediaInboundMeta.remove(mediaId)?.let { meta ->
+            val saved = runCatching { saveInboundMedia(mediaId, meta.name, blob) }
+                .getOrNull()
+            if (saved == null) {
+                Log.w(TAG, "MEDIA-T1: empfangenes Medium konnte nicht gespeichert werden")
+                return
+            }
+            val event = meta.copy(size = blob.size.toLong(), localPath = saved.absolutePath)
+            _chatMediaEvents.update { (it + event).takeLast(MAX_CHAT_EVENTS) }
+            val label = MediaProtocol.kindLabel(meta.kind)
+            persistChatBubble(
+                agentId, chatId, fromAgent = true,
+                text = "[$label] ${meta.name} (${MediaProtocol.formatBytes(blob.size.toLong())})",
+                ts = event.ts, status = null,
+                mediaKind = meta.kind, mediaName = meta.name, mediaMime = meta.mime,
+                mediaSize = blob.size.toLong(), mediaPath = saved.absolutePath,
+                mediaId = mediaId,
+            )
+            notifyIncomingChat(agentId, "[$label] ${meta.name}", event.ts)
+            if (BuildConfig.DEBUG) Log.d(TAG, "MEDIA-T1: ${meta.kind} von ${agentId.take(24)} empfangen")
+        }
+    }
+
+    /**
+     * MEDIA-T1: fertiges Medium app-privat speichern (filesDir/chat_media —
+     * kein Backup-Restore, hinter dem AppLock-Gate). Dateiname: media_id +
+     * gesäuberter Originalname.
+     */
+    private fun saveInboundMedia(mediaId: String, name: String, blob: ByteArray): java.io.File? {
+        val ctx = appContext ?: return null
+        val dir = java.io.File(ctx.filesDir, "chat_media")
+        if (!dir.exists() && !dir.mkdirs()) return null
+        val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64).ifEmpty { "datei" }
+        val target = java.io.File(dir, "${mediaId.take(32)}-$safe")
+        val tmp = java.io.File(dir, ".${target.name}.part")
+        tmp.writeBytes(blob)
+        return if (tmp.renameTo(target)) target else {
+            // rename kann plattformbedingt über Bestand scheitern — copy+delete.
+            runCatching {
+                target.writeBytes(blob)
+                tmp.delete()
+                target
+            }.getOrNull()
+        }
+    }
+
+    /** Media-Sende-Ergebnis immer auf den Main-Thread posten (UI-Bindung). */
+    private fun deliverMediaResult(
+        onResult: (ok: Boolean, error: String?, mediaId: String?) -> Unit,
+        ok: Boolean,
+        error: String?,
+        mediaId: String?,
+    ) {
+        try {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { onResult(ok, error, mediaId) }
+            }
+        } catch (_: Exception) {}
     }
 
     /**
@@ -1874,6 +2497,15 @@ class ReconnectAlarmReceiver : BroadcastReceiver() {
         }
         // Service anheben, falls er inzwischen verstorben ist (FGS-Anzeige).
         if (BridgeConnectionService.instance == null) {
+            // JÄGER-J10 (P2): bewusst getrennt (userDisconnected) = KEIN
+            // FGS-Zombie — ein staler Doze-Alarm startet den Service nach
+            // Sirs ausdrücklichem Trennen sonst zurück („Getrennt“-
+            // Notification als Geist). reconnectNow() war ohnehin No-op,
+            // nur der Service-Start fehlte im Gate.
+            if (RelayClient.isUserDisconnected()) {
+                Log.i("ReconnectAlarm", "FGS-Anhebung übersprungen — bewusst getrennt")
+                return
+            }
             // v0.12.0 (Akku P2-1): nur je Start, wenn verstorben — sonst
             // startForegroundService-Call + FGS-Neu-Anmeldung alle 5 min ohnehin.
             BridgeConnectionService.start(context)
