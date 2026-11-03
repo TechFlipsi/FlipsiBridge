@@ -57,12 +57,12 @@ class TestSirsSessionResetReasonForwarding:
     def _write_config(self, tmp_path):
         cfg = tmp_path / "relay-config.json"
         data = {
-            "ANDROID_AGENT_TOKEN_JARVIS": self.TOKEN,
-            "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
             "CHAT_RATE_PER_SECOND": 50,
-            "ANDROID_AGENT_IDENTITY_JARVIS": self.IK_A_PUB,
-            "ANDROID_AGENT_PREKEY_JARVIS": self.SPK_A_PUB,
-            "ANDROID_AGENT_FINGERPRINT_JARVIS":
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+            "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA":
                 _ph3_adapter.fingerprint_of_pub(bytes.fromhex(self.IK_A_PUB)),
         }
         cfg.write_text(json.dumps(data), encoding="utf-8")
@@ -92,7 +92,7 @@ class TestSirsSessionResetReasonForwarding:
 
                 # E2E-Handshake: hello → Agent → ack → Phone.
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -106,14 +106,14 @@ class TestSirsSessionResetReasonForwarding:
                 await agent.send_json({
                     "type": "crypto.session_reset", "v": 1,
                     "session_id": self.SESSION_ID,
-                    "agent_id": "jarvis",
+                    "agent_id": "alpha",
                     "reason": agent_reason})
                 reset = await _recv_until(phone, "crypto.session_reset", timeout=6)
                 assert reset["reason"] == expected_phone_reason, (
                     f"Phone-Reason {reset['reason']!r} statt "
                     f"{expected_phone_reason!r}")
                 assert reset["session_id"] == self.SESSION_ID
-                assert reset["agent_id"] == "jarvis"
+                assert reset["agent_id"] == "alpha"
 
                 await agent.close()
                 await phone.close()

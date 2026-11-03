@@ -16,8 +16,8 @@ package com.hermesandroid.bridge.ui.chat
  * öffnete NUR in der Demo-Conversation, im Live-Chat blieb es stumm.
  * Root-Cause: KEIN State-Reset-Race, sondern ein ID-VORZEICHEN-Bug.
  * Live-Agenten bekommen id = agentId.hashCode() (ChatScreen), und Java-
- * String-Hashes sind vorzeichenbehaftet — der gepaarte Agent „jarvis“
- * hasht auf -1167182811. Die Bedingung `selectedAgentId >= 0` war damit
+ * String-Hashes sind vorzeichenbehaftet — Live-Agent-Namen
+ * können NEGATIV hashen (B7-Live-Fall: -1167182811). Die Bedingung `selectedAgentId >= 0` war damit
  * in JEDEM Live-Chat false (Demo-IDs 1..3 bleiben positiv → nur Demo
  * öffnete); derselbe Sign-Bug hielt den System-BackHandler in jedem
  * Live-Chat deaktiviert (Back sprang zur Route statt zur Agenten-Liste).

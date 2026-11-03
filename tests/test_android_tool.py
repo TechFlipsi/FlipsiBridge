@@ -1,3 +1,4 @@
+import inspect
 import json
 import os
 import responses
@@ -422,7 +423,41 @@ class TestEnvFileFallback:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
 
         assert android_tool._bridge_token() is None
-        assert android_tool._bridge_url() == "http://localhost:8766"
+
+    def test_bridge_url_fail_closed_without_config(self, monkeypatch, tmp_path):
+        """W3-01 LEAK-FIX: ohne ANDROID_BRIDGE_URL (env + env-file) gibt es
+        KEINE Bridge-URL — ValueError statt verstecktem Default-IP-Literal."""
+        from tools import android_tool
+
+        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
+        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
+
+        with pytest.raises(ValueError, match="ANDROID_BRIDGE_URL"):
+            android_tool._bridge_url()
+
+    def test_check_requirements_false_when_url_missing(self, monkeypatch, tmp_path):
+        """W3-01: _check_requirements fängt den Fail-closed-Fehler kontrolliert
+        (False = nicht konfiguriert), statt zu crashen."""
+        from tools import android_tool
+
+        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
+        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
+
+        assert android_tool._check_requirements() is False
+
+    def test_source_contains_no_hardcoded_lan_ip(self):
+        """W3-01 Leak-Regression: die Quell-SPEICHERNDE Datei darf KEIN
+        privates IP-Literal mehr enthalten (Sir-Fund: LAN-IP als Fallback
+        committed = Leak im öffentlichen Repo)."""
+        import tools.android_tool as at
+
+        source = inspect.getsource(at)
+        # Muster zusammengebaut (nicht als Literal im Test selbst)
+        leaked = "192.168" + ".178" + ".24"
+        assert leaked not in source, \
+            "hartes LAN-IP-Literal im Quellcode = Leak (W3-01)"
 
 
 class TestClipboardRead:

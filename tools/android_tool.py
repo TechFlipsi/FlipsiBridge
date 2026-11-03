@@ -116,11 +116,20 @@ def _env(key: str) -> Optional[str]:
 def _bridge_url() -> str:
     """URL of the relay (default) or direct phone connection.
 
-    02.11.26 Security-Audit-Fix (RF-01): localhost-8766-Fallback war tot
-    (Relay bindet nur PRIVAT-LAN-HOST:8766). Echter Fallback = Relay-LAN-IP;
-    ANDROID_BRIDGE_URL in .env überschreibt weiterhin bewusst.
+    W3-01 LEAK-FIX (Sir-Fund 03.11.): KEIN hartes IP-Literal mehr im
+    Quellcode (der bisherige Fallback enthielt eine private LAN-IP — im
+    öffentlichen Repo ein Leak). Fail-closed: ohne ANDROID_BRIDGE_URL
+    (os.environ oder ~/.hermes/.env) gibt es KEINE Bridge-URL — ValueError
+    statt verstecktem Default. Der Agent muss explizit konfiguriert sein;
+    _check_requirements fängt den Fehler und meldet 'nicht konfiguriert'.
     """
-    return _env("ANDROID_BRIDGE_URL") or "http://PRIVAT-LAN-HOST:8766"
+    url = _env("ANDROID_BRIDGE_URL")
+    if not url:
+        raise ValueError(
+            "ANDROID_BRIDGE_URL ist nicht gesetzt — Bridge-URL muss explizit "
+            "konfiguriert werden (env oder ~/.hermes/.env); kein Default, "
+            "fail-closed (W3-01)")
+    return url
 
 
 def _bridge_token() -> Optional[str]:
@@ -821,7 +830,7 @@ def android_files_search(query: str, limit: int = 200) -> str:
 def android_photo(filename: str = "") -> str:
     """
     Take a photo with the phone's back camera (no preview UI), saved to
-    Pictures/Jarvis/<filename or jarvis_foto_<ts>.jpg>. Requires CAMERA
+    Pictures/Agent/<filename or agent_foto_<ts>.jpg>. Requires CAMERA
     permission granted in the app's capabilities screen.
     """
     try:
@@ -1875,11 +1884,11 @@ _SCHEMAS = {
     },
     "android_photo": {
         "name": "android_photo",
-        "description": "Take a photo with the phone's back camera (no preview), saved to Pictures/Jarvis/. Returns the file path. Optionally fetch it afterwards with android_file_get.",
+        "description": "Take a photo with the phone's back camera (no preview), saved to Pictures/Agent/. Returns the file path. Optionally fetch it afterwards with android_file_get.",
         "parameters": {
             "type": "object",
             "properties": {
-                "filename": {"type": "string", "description": "Optional file name (default: jarvis_foto_<timestamp>.jpg)"},
+                "filename": {"type": "string", "description": "Optional file name (default: agent_foto_<timestamp>.jpg)"},
             },
             "required": [],
         },
@@ -1975,7 +1984,7 @@ _SCHEMAS = {
         "parameters": {
             "type": "object",
             "properties": {
-                "remote_path": {"type": "string", "description": "Relative destination path like 'Download/jarvis_test.txt'"},
+                "remote_path": {"type": "string", "description": "Relative destination path like 'Download/bridge_test.txt'"},
                 "local_b64_or_text": {"type": "string", "description": "File content: plain text OR base64 data"},
                 "overwrite": {"type": "boolean", "description": "Replace existing file (default false)", "default": False},
             },
@@ -2263,7 +2272,7 @@ try:
             check_fn=(lambda: True)
             if tool_name == "android_setup"
             else _check_requirements,
-            requires_env=[],  # ANDROID_BRIDGE_URL has a default
+            requires_env=[],  # ANDROID_BRIDGE_URL ist Pflicht-ENV, fail-closed (W3-01)
         )
 except ImportError:
     # Running outside hermes-agent context (e.g. tests)

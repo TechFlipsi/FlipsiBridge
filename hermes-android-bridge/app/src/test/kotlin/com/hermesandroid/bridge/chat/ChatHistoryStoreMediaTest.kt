@@ -26,7 +26,7 @@ class ChatHistoryStoreMediaTest {
         val root = tmpRoot()
         val entry = ChatHistoryStore.Entry(
             seq = 1000L,
-            agentId = "jarvis",
+            agentId = "alpha",
             chatId = "chat-media-0001",
             fromAgent = false,
             text = "[Foto] urlaub.jpg (1,2 MB)",
@@ -40,7 +40,7 @@ class ChatHistoryStoreMediaTest {
             mediaId = "med-d41d8cd98f00b204",
         )
         ChatHistoryStore.append(root, entry)
-        val loaded = ChatHistoryStore.load(root, "jarvis")
+        val loaded = ChatHistoryStore.load(root, "alpha")
         assertEquals(1, loaded.size)
         val restored = loaded[0]
         assertEquals("image", restored.mediaKind)
@@ -55,14 +55,14 @@ class ChatHistoryStoreMediaTest {
     @Test
     fun `Alte Text-Zeilen ohne Media-Felder parsen weiter (keine Null-Sorgen)`() {
         val root = tmpRoot()
-        val file = ChatHistoryStore.fileFor(root, "jarvis")
+        val file = ChatHistoryStore.fileFor(root, "alpha")
         // Historisches Zeilenformat (vorm MEDIA-T1): KEINE Media-Felder.
         file.writeText(
             """
-            {"seq":5,"agentId":"jarvis","chatId":"chat-0001","fromAgent":true,"text":"Hallo Sir","time":"09:41","status":"read"}
+            {"seq":5,"agentId":"alpha","chatId":"chat-0001","fromAgent":true,"text":"Hallo Sir","time":"09:41","status":"read"}
             """.trimIndent() + "\n",
         )
-        val loaded = ChatHistoryStore.load(root, "jarvis")
+        val loaded = ChatHistoryStore.load(root, "alpha")
         assertEquals(1, loaded.size)
         assertEquals("Hallo Sir", loaded[0].text)
         assertNull(loaded[0].mediaKind)
@@ -76,12 +76,12 @@ class ChatHistoryStoreMediaTest {
         val root = tmpRoot()
         ChatHistoryStore.append(
             root,
-            ChatHistoryStore.Entry(100L, "jarvis", "chat-0001", false, "Frage", "10:00"),
+            ChatHistoryStore.Entry(100L, "alpha", "chat-0001", false, "Frage", "10:00"),
         )
         ChatHistoryStore.append(
             root,
             ChatHistoryStore.Entry(
-                200L, "jarvis", "chat-0001", false, "[Foto] foto.jpg (45 KB)",
+                200L, "alpha", "chat-0001", false, "[Foto] foto.jpg (45 KB)",
                 "10:01", null,
                 mediaKind = "image", mediaName = "foto.jpg", mediaMime = "image/jpeg",
                 mediaSize = 46_080L, mediaPath = "/x/f.jpg", mediaId = "med-abc-000000001",
@@ -89,7 +89,7 @@ class ChatHistoryStoreMediaTest {
         )
         ChatHistoryStore.append(
             root,
-            ChatHistoryStore.Entry(300L, "jarvis", "chat-0001", true, "Antwort", "10:02"),
+            ChatHistoryStore.Entry(300L, "alpha", "chat-0001", true, "Antwort", "10:02"),
         )
         val all = ChatHistoryStore.loadAll(root)
         assertEquals(listOf(100L, 200L, 300L), all.map { it.seq })

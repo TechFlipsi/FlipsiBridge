@@ -3441,7 +3441,7 @@ def _screen_record_response_timeout() -> float:
     """B5 (Herz-Test Befund 5): Antwortfenster für /screen_record.
 
     Der J4-Drill bewies eine legitime Laufzeit von 31,6 s — das Standard-
-    Fenster von 30 s war zu knapp, JARVIS hot-patchte deshalb das LIVE-Relay
+    Fenster von 30 s war zu knapp, ein Live-Hot-Patch zog deshalb das RELAY
     auf 55 s (_RESPONSE_RECORD, Undeployed-Drift c6d9e0e≠3d14e31). Der
     Hot-Patch wird hier als konfigurierbares Repo-Feature übernommen, damit
     der nächste Deploy-Sync ihn nicht still verwirft.

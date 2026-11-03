@@ -795,8 +795,8 @@ class TestAgentRegistry:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": token,
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+                    "ANDROID_AGENT_TOKEN_ALPHA": token,
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
                 }
             ),
             encoding="utf-8",
@@ -808,9 +808,9 @@ class TestAgentRegistry:
         start_relay(pairing_code=self.CODE, port=self.PORT)
 
         registry = get_agent_registry()
-        assert "jarvis" in registry
-        entry = registry["jarvis"]
-        assert entry["display_name"] == "J.A.R.V.I.S."
+        assert "alpha" in registry
+        entry = registry["alpha"]
+        assert entry["display_name"] == "Alpha"
         assert entry["online"] is False
         assert entry["last_seen"] == 0.0
         assert entry["fingerprint"] == ""
@@ -831,12 +831,12 @@ class TestAgentRegistry:
                 # Race: der Handshake ist client-seitig fertig, bevor der Server
                 # die Registry-Einträge setzt → auf online pollen statt asserten.
                 deadline = time.monotonic() + 2
-                while get_agent_registry()["jarvis"]["online"] is not True:
+                while get_agent_registry()["alpha"]["online"] is not True:
                     assert time.monotonic() < deadline, (
                         "Agent-WS verbunden, aber Registry bleibt offline"
                     )
                     time.sleep(0.01)
-                entry = get_agent_registry()["jarvis"]
+                entry = get_agent_registry()["alpha"]
                 assert entry["fingerprint"] == ""
                 seen_at = entry["last_seen"]
                 assert seen_at > 0
@@ -845,7 +845,7 @@ class TestAgentRegistry:
                 time.sleep(0.05)
                 await ws.send_json({"type": "keepalive"})
                 deadline = time.monotonic() + 2
-                while get_agent_registry()["jarvis"]["last_seen"] <= seen_at:
+                while get_agent_registry()["alpha"]["last_seen"] <= seen_at:
                     assert time.monotonic() < deadline, (
                         "keepalive hat last_seen nicht gepflegt"
                     )
@@ -853,7 +853,7 @@ class TestAgentRegistry:
 
                 await ws.close()
                 deadline = time.monotonic() + 5
-                while get_agent_registry()["jarvis"]["online"] is not False:
+                while get_agent_registry()["alpha"]["online"] is not False:
                     assert time.monotonic() < deadline, (
                         "Agent bleibt online nach Disconnect"
                     )
@@ -921,8 +921,8 @@ class TestChatBroker:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "agent-broker-token",
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "agent-broker-token",
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
                 }
             ),
             encoding="utf-8",
@@ -951,7 +951,7 @@ class TestChatBroker:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers=phone_headers,
-                    json={"agent_id": "jarvis", "text": "Hallo Agent"},
+                    json={"agent_id": "alpha", "text": "Hallo Agent"},
                 )
                 assert r.status == 200
                 data = await r.json()
@@ -960,7 +960,7 @@ class TestChatBroker:
 
                 frame = await agent.receive_json(timeout=2)
                 assert frame["type"] == "chat.send"
-                assert frame["agent_id"] == "jarvis"
+                assert frame["agent_id"] == "alpha"
                 assert frame["text"] == "Hallo Agent"
                 assert frame["chat_id"] == data["chat_id"]
 
@@ -986,7 +986,7 @@ class TestChatBroker:
                 pframe = await phone.receive_json(timeout=2)
                 assert pframe["type"] == "chat.event"
                 assert pframe["chat_id"] == data["chat_id"]
-                assert pframe["agent_id"] == "jarvis"
+                assert pframe["agent_id"] == "alpha"
                 assert pframe["text"] == "Hallo Sir"
 
                 await agent.close()
@@ -1009,7 +1009,7 @@ class TestChatBroker:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers=phone_headers,
-                    json={"agent_id": "jarvis", "text": "Nachricht im Spool"},
+                    json={"agent_id": "alpha", "text": "Nachricht im Spool"},
                 )
                 assert r.status == 200
                 data = await r.json()
@@ -1056,7 +1056,7 @@ class TestChatBroker:
                     f"ws://127.0.0.1:{self.PORT}/ws", headers=phone_headers
                 )
                 state_frame = await _drain_phone_state_frame(phone)
-                assert state_frame["agents"][0]["agent_id"] == "jarvis"
+                assert state_frame["agents"][0]["agent_id"] == "alpha"
                 frame = await phone.receive_json(timeout=2)
                 assert frame["type"] == "chat.event"
                 assert frame["chat_id"] == "chat-1"
@@ -1080,7 +1080,7 @@ class TestChatBroker:
                     r = await session.post(
                         f"http://127.0.0.1:{self.PORT}/chat",
                         headers=phone_headers,
-                        json={"agent_id": "jarvis", "text": "x"},
+                        json={"agent_id": "alpha", "text": "x"},
                     )
                     statuses.append(r.status)
                 assert statuses == [200, 200, 429]
@@ -1121,7 +1121,7 @@ class TestChatBroker:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": "Bearer WRONG"},
-                    json={"agent_id": "jarvis", "text": "x"},
+                    json={"agent_id": "alpha", "text": "x"},
                 )
                 assert r.status == 401
 
@@ -1177,7 +1177,7 @@ class TestChatBroker:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers=phone_headers,
-                    json={"agent_id": "jarvis"},  # text fehlt
+                    json={"agent_id": "alpha"},  # text fehlt
                 )
                 assert r.status == 400
 
@@ -1203,8 +1203,8 @@ class TestAgentWsChatBridge:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "agent-bridge-token",
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "agent-bridge-token",
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
                 }
             ),
             encoding="utf-8",
@@ -1238,7 +1238,7 @@ class TestAgentWsChatBridge:
                 frame = await phone.receive_json(timeout=2)
                 assert frame["type"] == "chat.event"
                 assert frame["chat_id"] == "ws-reply-1"
-                assert frame["agent_id"] == "jarvis"
+                assert frame["agent_id"] == "alpha"
                 assert frame["text"] == "Hallo vom Agent"
                 assert frame["ts"] > 0
 
@@ -1275,9 +1275,9 @@ class TestAgentWsChatBridge:
                 )
                 state_frame = await _drain_phone_state_frame(phone)
                 agents = state_frame["agents"]
-                jarvis = next(a for a in agents if a["agent_id"] == "jarvis")
-                assert jarvis["display_name"] == "J.A.R.V.I.S."
-                assert jarvis["online"] is True
+                alpha = next(a for a in agents if a["agent_id"] == "alpha")
+                assert alpha["display_name"] == "Alpha"
+                assert alpha["online"] is True
 
                 frame = await phone.receive_json(timeout=2)
                 assert frame["type"] == "chat.event"
@@ -1370,19 +1370,19 @@ class TestAgentWsChatBridge:
                 )
                 # Hallo-Frame + Connect-Presence-Push des Agenten wegkonsumieren.
                 await _drain_phone_state_frame(phone, expected=2)
-                assert get_agent_registry()["jarvis"]["display_name"] == "J.A.R.V.I.S."
+                assert get_agent_registry()["alpha"]["display_name"] == "Alpha"
 
                 # Register-Frame: display_name übernehmen; frame-agent_id
                 # (hier fremd) muss ignoriert werden — NIE ein Rename-Fenster.
                 await agent.send_json({
                     "type": "agent.register", "agent_id": "evil-other",
-                    "display_name": "Jarvis Live-Name"})
+                    "display_name": "Alpha Live-Name"})
                 frame = await phone.receive_json(timeout=2)
                 assert frame["type"] == "relay.state", (
                     f"Änderung muss als Presence-Push kommen, kam aber: {frame}")
-                entry = next(a for a in frame["agents"] if a["agent_id"] == "jarvis")
-                assert entry["display_name"] == "Jarvis Live-Name"
-                assert get_agent_registry()["jarvis"]["display_name"] == "Jarvis Live-Name"
+                entry = next(a for a in frame["agents"] if a["agent_id"] == "alpha")
+                assert entry["display_name"] == "Alpha Live-Name"
+                assert get_agent_registry()["alpha"]["display_name"] == "Alpha Live-Name"
                 # KEIN Allowlist-Verwurf: das Connect-Log-Rauschen ist weg.
                 for record in caplog.records:
                     message = record.getMessage()
@@ -1391,14 +1391,14 @@ class TestAgentWsChatBridge:
 
                 # Identischer Name (nach Strip) = No-Op, KEIN zweiter Push.
                 await agent.send_json({
-                    "type": "agent.register", "display_name": "  Jarvis Live-Name  "})
+                    "type": "agent.register", "display_name": "  Alpha Live-Name  "})
                 await asyncio.sleep(0.2)
                 with pytest.raises(asyncio.TimeoutError):
                     await phone.receive_json(timeout=0.3)
 
                 # Ungültiger Register-Frame (display_name fehlt) = No-Op;
                 # der Socket lebt und ein gültiger chat.reply kommt weiter an.
-                await agent.send_json({"type": "agent.register", "agent_id": "jarvis"})
+                await agent.send_json({"type": "agent.register", "agent_id": "alpha"})
                 await agent.send_json(
                     {"type": "chat.reply", "chat_id": "ws-reg-1", "text": "Noch da"})
                 frame = await phone.receive_json(timeout=2)
@@ -1451,8 +1451,8 @@ class TestChatStatusFrames:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "agent-status-token",
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "agent-status-token",
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
                 }
             ),
             encoding="utf-8",
@@ -1484,7 +1484,7 @@ class TestChatStatusFrames:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": f"Bearer {self.CODE}"},
-                    json={"agent_id": "jarvis", "text": "Status-Test"},
+                    json={"agent_id": "alpha", "text": "Status-Test"},
                 )
                 assert r.status == 200
                 data = await r.json()
@@ -1531,7 +1531,7 @@ class TestChatStatusFrames:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": f"Bearer {self.CODE}"},
-                    json={"agent_id": "jarvis", "text": "Offline-Nachricht"},
+                    json={"agent_id": "alpha", "text": "Offline-Nachricht"},
                 )
                 data = await r.json()
                 assert data["queued"] is True
@@ -1590,7 +1590,7 @@ class TestChatStatusFrames:
                     r = await session.post(
                         f"http://127.0.0.1:{self.PORT}/chat",
                         headers={"Authorization": f"Bearer {self.CODE}"},
-                        json={"agent_id": "jarvis", "text": f"Msg {i}"},
+                        json={"agent_id": "alpha", "text": f"Msg {i}"},
                     )
                     data = await r.json()
                     msg_ids.append(data["msg_id"])
@@ -1669,7 +1669,7 @@ class TestChatStatusFrames:
                 frames = [await phone.receive_json(timeout=2) for _ in range(4)]
                 assert all(f["type"] == "chat.activity" for f in frames)
                 assert [f["working"] for f in frames] == [True, False, True, False]
-                assert all(f["agent_id"] == "jarvis" for f in frames)
+                assert all(f["agent_id"] == "alpha" for f in frames)
                 assert all(f["started_at"] == 1730515200000 for f in frames)
                 assert all(f["ts"] > 0 for f in frames)
 
@@ -1707,7 +1707,7 @@ class TestChatStatusFrames:
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": f"Bearer {self.CODE}"},
-                    json={"agent_id": "jarvis", "text": "Rate-Test"},
+                    json={"agent_id": "alpha", "text": "Rate-Test"},
                 )
                 data = await r.json()
                 for _ in range(2):  # queued + delivered
@@ -1780,8 +1780,8 @@ class TestChatIsolationAndRate:
 
     PORT = 19889
     CODE = "ISOCDE"
-    TOKEN_JARVIS = "jarvis-token"
-    TOKEN_EDWIN = "edwin-token"
+    TOKEN_ALPHA = "alpha-token"
+    TOKEN_BETA = "beta-token"
 
     @staticmethod
     def _write_config(tmp_path):
@@ -1791,8 +1791,8 @@ class TestChatIsolationAndRate:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "jarvis-token",
-                    "ANDROID_AGENT_TOKEN_EDWIN": "edwin-token",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "alpha-token",
+                    "ANDROID_AGENT_TOKEN_BETA": "beta-token",
                 }
             ),
             encoding="utf-8",
@@ -1800,9 +1800,9 @@ class TestChatIsolationAndRate:
         return str(cfg)
 
     def test_foreign_chat_id_reply_discarded(self, tmp_path, monkeypatch, caplog):
-        """T5: Eine chat_id, die über /chat dem Agent jarvis zugeordnet wurde,
-        ist für edwin fremd — chat.reply UND POST /chat_event werden verworfen
-        (WS: log + still; HTTP: 403). jarvis' Antwort auf dieselbe chat_id
+        """T5: Eine chat_id, die über /chat dem Agent alpha zugeordnet wurde,
+        ist für beta fremd — chat.reply UND POST /chat_event werden verworfen
+        (WS: log + still; HTTP: 403). alpha' Antwort auf dieselbe chat_id
         kommt durch."""
         import asyncio
         import aiohttp
@@ -1817,55 +1817,55 @@ class TestChatIsolationAndRate:
                     f"ws://127.0.0.1:{self.PORT}/ws",
                     headers={"Authorization": f"Bearer {self.CODE}"},
                 )
-                jarvis = await session.ws_connect(
+                alpha = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT}/agent_ws",
-                    headers={"Authorization": f"Bearer {self.TOKEN_JARVIS}"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_ALPHA}"},
                 )
-                edwin = await session.ws_connect(
+                beta = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT}/agent_ws",
-                    headers={"Authorization": f"Bearer {self.TOKEN_EDWIN}"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_BETA}"},
                 )
-                # Hallo-Frame + 2 Agent-Connect-Presence-Pushes (jarvis, edwin).
+                # Hallo-Frame + 2 Agent-Connect-Presence-Pushes (alpha, beta).
                 await _drain_phone_state_frame(phone, expected=3)
 
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": f"Bearer {self.CODE}"},
-                    json={"agent_id": "jarvis", "text": "An jarvis"},
+                    json={"agent_id": "alpha", "text": "An alpha"},
                 )
                 data = await r.json()
                 # queued/delivered-Status-Frames wegkonsumieren
                 for _ in range(2):
                     await phone.receive_json(timeout=2)
 
-                # Edwin versucht, in jarvis' Konversation zu antworten:
-                await edwin.send_json({
+                # Beta versucht, in alpha' Konversation zu antworten:
+                await beta.send_json({
                     "type": "chat.reply", "chat_id": data["chat_id"],
                     "text": "Fremd-Antwort",
                 })
                 r2 = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat_event",
-                    headers={"Authorization": f"Bearer {self.TOKEN_EDWIN}"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_BETA}"},
                     json={"chat_id": data["chat_id"], "text": "Fremd-HTTP"},
                 )
                 assert r2.status == 403
 
-                # Kein chat.event von edwin an der Phone-WS:
+                # Kein chat.event von beta an der Phone-WS:
                 with pytest.raises(asyncio.TimeoutError):
                     await phone.receive_json(timeout=0.4)
 
-                # Jarvis' Antwort auf DIESELBE chat_id kommt durch:
-                await jarvis.send_json({
+                # Alpha' Antwort auf DIESELBE chat_id kommt durch:
+                await alpha.send_json({
                     "type": "chat.reply", "chat_id": data["chat_id"],
                     "text": "Eigene Antwort",
                 })
                 fr = await phone.receive_json(timeout=2)
                 assert fr["type"] == "chat.event"
-                assert fr["agent_id"] == "jarvis"
+                assert fr["agent_id"] == "alpha"
                 assert fr["text"] == "Eigene Antwort"
 
-                await edwin.close()
-                await jarvis.close()
+                await beta.close()
+                await alpha.close()
                 await phone.close()
 
         with caplog.at_level(logging.WARNING, logger="tools.android_relay"):
@@ -1875,7 +1875,7 @@ class TestChatIsolationAndRate:
 
     def test_chat_event_rate_limit_separate_bucket_per_agent(self, tmp_path, monkeypatch):
         """T6-Beweis: Das Chat-Limit 2/s gilt je agent_id als EIGENER Bucket —
-        jarvis' Limit verbraucht edwins Budget NICHT (2+2 = 4×200 in 1s)."""
+        alpha' Limit verbraucht betas Budget NICHT (2+2 = 4×200 in 1s)."""
         import asyncio
         import aiohttp
 
@@ -1885,11 +1885,11 @@ class TestChatIsolationAndRate:
         async def scenario():
             async with aiohttp.ClientSession() as session:
                 statuses = []
-                for token in (self.TOKEN_JARVIS, self.TOKEN_EDWIN):
+                for token in (self.TOKEN_ALPHA, self.TOKEN_BETA):
                     # SEC-W1 W1C-3: je Agent EIGENE chat_id — der erste Reply
                     # claimt eine unbekannte chat_id jetzt; ein gemeinsamer
                     # Test-Schlüssel wäre 403-Isolation statt Rate-Beweis.
-                    chat_key = "iso-rate-j" if token == self.TOKEN_JARVIS else "iso-rate-e"
+                    chat_key = "iso-rate-a" if token == self.TOKEN_ALPHA else "iso-rate-b"
                     for _ in range(2):
                         r = await session.post(
                             f"http://127.0.0.1:{self.PORT}/chat_event",
@@ -1903,8 +1903,8 @@ class TestChatIsolationAndRate:
                 # Der 3. Request desselben Agentens in derselben Sekunde: 429.
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat_event",
-                    headers={"Authorization": f"Bearer {self.TOKEN_JARVIS}"},
-                    json={"chat_id": "iso-rate-j", "text": "x"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_ALPHA}"},
+                    json={"chat_id": "iso-rate-a", "text": "x"},
                 )
                 assert r.status == 429
 
@@ -1930,8 +1930,8 @@ class TestPresencePush:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "agent-presence-token",
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "agent-presence-token",
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
                 }
             ),
             encoding="utf-8",
@@ -1939,8 +1939,8 @@ class TestPresencePush:
         return str(cfg)
 
     @staticmethod
-    def _jarvis(frame):
-        return next(a for a in frame["agents"] if a["agent_id"] == "jarvis")
+    def _alpha(frame):
+        return next(a for a in frame["agents"] if a["agent_id"] == "alpha")
 
     def test_agent_connect_pushes_relay_state_online(self, tmp_path, monkeypatch):
         """Connect-Push: Die offene Phone-WS sieht online=True, ohne dass sie
@@ -1958,7 +1958,7 @@ class TestPresencePush:
                     headers={"Authorization": f"Bearer {self.CODE}"},
                 )
                 hello = await _drain_phone_state_frame(phone)
-                assert self._jarvis(hello)["online"] is False
+                assert self._alpha(hello)["online"] is False
 
                 agent = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT}/agent_ws",
@@ -1967,9 +1967,9 @@ class TestPresencePush:
                 push = await phone.receive_json(timeout=2)
                 assert push["type"] == "relay.state"
                 assert push["v"] == 1
-                jarvis = self._jarvis(push)
-                assert jarvis["online"] is True
-                assert jarvis["display_name"] == "J.A.R.V.I.S."
+                alpha = self._alpha(push)
+                assert alpha["online"] is True
+                assert alpha["display_name"] == "Alpha"
 
                 # Kein Presence-Wechsel mehr → keine weiteren Frames (keine Flood).
                 with pytest.raises(asyncio.TimeoutError):
@@ -2005,7 +2005,7 @@ class TestPresencePush:
                 await agent.close()
                 push = await phone.receive_json(timeout=2)
                 assert push["type"] == "relay.state"
-                assert self._jarvis(push)["online"] is False
+                assert self._alpha(push)["online"] is False
 
                 await phone.close()
 
@@ -2035,8 +2035,8 @@ class TestPresencePush:
                 # PH-3 F7: session_active kam als viertes Feld dazu (Wahrheits-
                 # Abgleich der App beim Re-Connect gegen den Session-Broker).
                 assert set(agents[0]) == {"agent_id", "display_name", "online", "session_active"}
-                assert agents[0]["agent_id"] == "jarvis"
-                assert agents[0]["display_name"] == "J.A.R.V.I.S."
+                assert agents[0]["agent_id"] == "alpha"
+                assert agents[0]["display_name"] == "Alpha"
                 assert agents[0]["online"] is False
 
                 # Kein Agent-Connect/Disconnect → kein zweiter Frame.
@@ -2073,8 +2073,8 @@ class TestPresencePush:
 
             state.phone_ws_lock = asyncio.Lock()
             state.agent_ws_lock = asyncio.Lock()
-            state.agents["jarvis"] = {
-                "display_name": "J.A.R.V.I.S.",
+            state.agents["alpha"] = {
+                "display_name": "Alpha",
                 "online": True,
                 "last_seen": 0.0,
                 "fingerprint": "",
@@ -2102,8 +2102,8 @@ class TestJaegerFixrunde:
 
     PORT = 19891
     CODE = "JGRB91"
-    TOKEN_A = "jaeger-token-jarvis"
-    TOKEN_B = "jaeger-token-edwin"
+    TOKEN_A = "jaeger-token-alpha"
+    TOKEN_B = "jaeger-token-beta"
 
     @staticmethod
     def _write_config(tmp_path):
@@ -2113,10 +2113,10 @@ class TestJaegerFixrunde:
         cfg.write_text(
             json.dumps(
                 {
-                    "ANDROID_AGENT_TOKEN_JARVIS": "jaeger-token-jarvis",
-                    "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
-                    "ANDROID_AGENT_TOKEN_EDWIN": "jaeger-token-edwin",
-                    "ANDROID_AGENT_DISPLAY_EDWIN": "Edwin",
+                    "ANDROID_AGENT_TOKEN_ALPHA": "jaeger-token-alpha",
+                    "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
+                    "ANDROID_AGENT_TOKEN_BETA": "jaeger-token-beta",
+                    "ANDROID_AGENT_DISPLAY_BETA": "Beta",
                 }
             ),
             encoding="utf-8",
@@ -2157,12 +2157,12 @@ class TestJaegerFixrunde:
                 # Connect-Push des Replaces (weiterhin online=True).
                 push = await phone.receive_json(timeout=2)
                 assert push["type"] == "relay.state"
-                assert next(a for a in push["agents"] if a["agent_id"] == "jarvis")["online"] is True
+                assert next(a for a in push["agents"] if a["agent_id"] == "alpha")["online"] is True
 
                 # Der finally-Block des ALTEN Sockets läuft jetzt — mit dem
                 # Presence-Guard (Jäger B1) bleibt der Agent online.
                 await asyncio.sleep(0.5)
-                assert get_agent_registry()["jarvis"]["online"] is True, (
+                assert get_agent_registry()["alpha"]["online"] is True, (
                     "WS-Replace: alter Socket hat den Agent fälschlich offline gesetzt"
                 )
                 # Kein offline-Push (Presence unverändert → Stille am Phone).
@@ -2173,9 +2173,9 @@ class TestJaegerFixrunde:
                 await ws_new.close()
                 push = await phone.receive_json(timeout=2)
                 assert push["type"] == "relay.state"
-                assert next(a for a in push["agents"] if a["agent_id"] == "jarvis")["online"] is False
+                assert next(a for a in push["agents"] if a["agent_id"] == "alpha")["online"] is False
                 deadline = time.monotonic() + 5
-                while get_agent_registry()["jarvis"]["online"] is not False:
+                while get_agent_registry()["alpha"]["online"] is not False:
                     assert time.monotonic() < deadline
                     time.sleep(0.01)
 
@@ -2217,10 +2217,10 @@ class TestJaegerFixrunde:
             for i in range(600):
                 message = {
                     "type": "chat.send", "v": 1, "chat_id": "cap",
-                    "msg_id": f"m{i}", "agent_id": "jarvis", "text": "x", "ts": i,
+                    "msg_id": f"m{i}", "agent_id": "alpha", "text": "x", "ts": i,
                 }
-                assert await _deliver_to_agent(state, "jarvis", message) is False  # Agent offline
-            queue = state.chat_inbound["jarvis"]
+                assert await _deliver_to_agent(state, "alpha", message) is False  # Agent offline
+            queue = state.chat_inbound["alpha"]
             assert len(queue) == 500, (
                 f"Agent-Inbound muss bei 500 gekappt sein, ist {len(queue)}"
             )
@@ -2232,8 +2232,8 @@ class TestJaegerFixrunde:
     # ── B3: Owner-Check für chat.read/chat.activity ───────────────────────
 
     def test_foreign_chat_id_read_activity_discarded(self, tmp_path, monkeypatch, caplog):
-        """B3 Spoofing: chat.read/chat.activity des Agenten EDWIN auf eine
-        chat_id, die JARVIS gehört (per /chat angelegt), werden verworfen +
+        """B3 Spoofing: chat.read/chat.activity des Agenten BETA auf eine
+        chat_id, die ALPHA gehört (per /chat angelegt), werden verworfen +
         geloggt — am Phone kommt KEIN chat.status/chat.activity-Frame an.
         Der Owner selbst liest danach normal (positive control)."""
         import asyncio
@@ -2248,22 +2248,22 @@ class TestJaegerFixrunde:
                     f"ws://127.0.0.1:{self.PORT}/ws",
                     headers={"Authorization": f"Bearer {self.CODE}"},
                 )
-                jarvis = await session.ws_connect(
+                alpha = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT}/agent_ws",
                     headers={"Authorization": f"Bearer {self.TOKEN_A}"},
                 )
-                edwin = await session.ws_connect(
+                beta = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT}/agent_ws",
                     headers={"Authorization": f"Bearer {self.TOKEN_B}"},
                 )
                 # Hallo + 2 Connect-Pushes wegkonsumieren.
                 await _drain_phone_state_frame(phone, expected=3)
 
-                # App legt eine Conversation MIT JARVIS an → chat_owner.
+                # App legt eine Conversation MIT ALPHA an → chat_owner.
                 r = await session.post(
                     f"http://127.0.0.1:{self.PORT}/chat",
                     headers={"Authorization": f"Bearer {self.CODE}"},
-                    json={"agent_id": "jarvis", "text": "Spoof-Basis"},
+                    json={"agent_id": "alpha", "text": "Spoof-Basis"},
                 )
                 data = await r.json()
                 chat_id, msg_id = data["chat_id"], data["msg_id"]
@@ -2272,12 +2272,12 @@ class TestJaegerFixrunde:
                     fr = await phone.receive_json(timeout=2)
                     assert fr["type"] == "chat.status"
 
-                # Spoofing-Versuch: EDWIN tut auf jarvis' chat_id busy.
-                await edwin.send_json(
+                # Spoofing-Versuch: BETA tut auf alpha' chat_id busy.
+                await beta.send_json(
                     {"type": "chat.activity", "chat_id": chat_id, "working": True}
                 )
-                # Spoofing-Versuch: EDWIN stempelt jarvis' Nachricht 'gelesen'.
-                await edwin.send_json(
+                # Spoofing-Versuch: BETA stempelt alpha' Nachricht 'gelesen'.
+                await beta.send_json(
                     {"type": "chat.read", "chat_id": chat_id, "msg_id": msg_id}
                 )
                 # Beide verworfen: Log-Warnung + Stille am Phone.
@@ -2286,21 +2286,21 @@ class TestJaegerFixrunde:
                     await phone.receive_json(timeout=0.3)
 
                 # Positive control: der OWNER liest — chat.status=read kommt.
-                await jarvis.send_json(
+                await alpha.send_json(
                     {"type": "chat.read", "chat_id": chat_id, "msg_id": msg_id}
                 )
                 fr = await phone.receive_json(timeout=2)
                 assert fr["type"] == "chat.status" and fr["status"] == "read"
 
                 # Positive control: der OWNER signalisiert busy — Frame kommt.
-                await jarvis.send_json(
+                await alpha.send_json(
                     {"type": "chat.activity", "chat_id": chat_id, "working": True}
                 )
                 fr = await phone.receive_json(timeout=2)
                 assert fr["type"] == "chat.activity" and fr["working"] is True
 
-                await jarvis.close()
-                await edwin.close()
+                await alpha.close()
+                await beta.close()
                 await phone.close()
 
         asyncio.run(scenario())
@@ -2348,7 +2348,7 @@ class TestJaegerFixrunde:
                 )
                 assert reset["working"] is False
                 assert reset["chat_id"] == "act-1"
-                assert reset["agent_id"] == "jarvis"
+                assert reset["agent_id"] == "alpha"
 
                 # Kein weiterer Frame (kein Flood).
                 with pytest.raises(asyncio.TimeoutError):
@@ -2395,7 +2395,7 @@ class TestJaegerFixrunde:
                 )
                 push = await phone.receive_json(timeout=2)  # Connect-Push (online)
                 assert push["type"] == "relay.state"
-                assert next(a for a in push["agents"] if a["agent_id"] == "jarvis")["online"] is True
+                assert next(a for a in push["agents"] if a["agent_id"] == "alpha")["online"] is True
                 await asyncio.sleep(0.5)
                 with pytest.raises(asyncio.TimeoutError):
                     await phone.receive_json(timeout=0.3)  # kein activity-false, kein offline
@@ -2507,15 +2507,15 @@ class TestPh3CryptoE2E:
     def _write_config(self, tmp_path, with_keys=True):
         cfg = tmp_path / "relay-config.json"
         data = {
-            "ANDROID_AGENT_TOKEN_JARVIS": self.TOKEN,
-            "ANDROID_AGENT_DISPLAY_JARVIS": "J.A.R.V.I.S.",
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
             "CHAT_RATE_PER_SECOND": 50,  # PH-3-Tests: Rate-Limit ist eigens getestet
         }
         if with_keys:
             data.update({
-                "ANDROID_AGENT_IDENTITY_JARVIS": self.IK_A_PUB,
-                "ANDROID_AGENT_PREKEY_JARVIS": self.SPK_A_PUB,
-                "ANDROID_AGENT_FINGERPRINT_JARVIS":
+                "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+                "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+                "ANDROID_AGENT_FINGERPRINT_ALPHA":
                     _ph3_adapter.fingerprint_of_pub(bytes.fromhex(self.IK_A_PUB)),
             })
         cfg.write_text(json.dumps(data), encoding="utf-8")
@@ -2530,7 +2530,7 @@ class TestPh3CryptoE2E:
         start_relay(pairing_code=self.CODE, port=self.PORT)
 
         # Registry-Fingerprint (public Info) landet in der Agent-Registry.
-        registry = get_agent_registry()["jarvis"]
+        registry = get_agent_registry()["alpha"]
         assert registry["fingerprint"] == _ph3_adapter.fingerprint_of_pub(
             bytes.fromhex(self.IK_A_PUB))
 
@@ -2538,16 +2538,16 @@ class TestPh3CryptoE2E:
             async with aiohttp.ClientSession() as session:
                 got = await session.get(
                     f"http://127.0.0.1:{self.PORT}/key_get",
-                    params={"agent_id": "jarvis"},
+                    params={"agent_id": "alpha"},
                     headers={"Authorization": f"Bearer {self.CODE}"})
                 assert got.status == 200
                 body = await got.json()
                 assert body["ik_pub"] == self.IK_A_PUB
                 assert body["spk_pub"] == self.SPK_A_PUB
-                assert body["agent_id"] == "jarvis"
+                assert body["agent_id"] == "alpha"
                 # Fail-closed ohne Bearer …
                 bad = await session.get(f"http://127.0.0.1:{self.PORT}/key_get",
-                                        params={"agent_id": "jarvis"})
+                                        params={"agent_id": "alpha"})
                 assert bad.status == 401
 
         asyncio.run(scenario())
@@ -2561,7 +2561,7 @@ class TestPh3CryptoE2E:
             async with aiohttp.ClientSession() as session:
                 got = await session.get(
                     f"http://127.0.0.1:{self.PORT + 1}/key_get",
-                    params={"agent_id": "jarvis"},
+                    params={"agent_id": "alpha"},
                     headers={"Authorization": f"Bearer {self.CODE}"})
                 assert got.status == 404
 
@@ -2614,7 +2614,7 @@ class TestPh3CryptoE2E:
             async with aiohttp.ClientSession() as session:
                 resp = await session.post(
                     f"http://127.0.0.1:{self.PORT + 3}/crypto_hello",
-                    json={"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                    json={"agent_id": "alpha", "session_id": self.SESSION_ID,
                           "ik_pub": "aa" * 32, "ek_pub": "bb" * 32, "spk_pub": "cc" * 32},
                     headers={"Authorization": f"Bearer {self.CODE}"})
                 assert resp.status == 403
@@ -2648,13 +2648,13 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)  # Presence-Push
 
                 # 2. Phone liest die Agent-Keys aus der Registry.
-                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                         headers={"Authorization": f"Bearer {self.CODE}"})
                 assert got.status == 200
                 keys = await got.json()
 
                 # 3. X3DH-Handshake über den Relay (Phone initiiert).
-                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
                 hello = peer.make_hello(self.SESSION_ID)
                 resp = await session.post(f"{base}/crypto_hello", json=hello,
                                           headers={"Authorization": f"Bearer {self.CODE}"})
@@ -2681,7 +2681,7 @@ class TestPh3CryptoE2E:
                     "chat.send.enc", "chat-00042", {"text": secret, "msg_id": "q1"})
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                    json={"agent_id": "alpha", "session_id": self.SESSION_ID,
                           "chat_id": "chat-00042", "ts": enc_frame["ts"],
                           "hdr": enc_frame["hdr"], "nonce": enc_frame["nonce"],
                           "ct": enc_frame["ct"]},
@@ -2747,10 +2747,10 @@ class TestPh3CryptoE2E:
                     headers={"Authorization": f"Bearer {self.TOKEN}"})
                 await _recv_until(phone, "relay.state", timeout=6)
 
-                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                         headers={"Authorization": f"Bearer {self.CODE}"})
                 keys = await got.json()
-                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
                 hello = peer.make_hello(session_id)
                 resp = await session.post(f"{base}/crypto_hello", json=hello,
                                           headers={"Authorization": f"Bearer {self.CODE}"})
@@ -2764,7 +2764,7 @@ class TestPh3CryptoE2E:
                 # Agent OFFLINE → Phone-Nachricht landet im Spool.
                 await agent.close()
                 deadline = time.monotonic() + 5
-                while get_agent_registry()["jarvis"]["online"] is not False:
+                while get_agent_registry()["alpha"]["online"] is not False:
                     assert time.monotonic() < deadline, "Agent bleibt online"
                     time.sleep(0.01)
 
@@ -2772,7 +2772,7 @@ class TestPh3CryptoE2E:
                     "chat.send.enc", "chat-j3-a", {"text": "Spool-Geheimnis", "msg_id": "j3a"})
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "session_id": session_id,
+                    json={"agent_id": "alpha", "session_id": session_id,
                           "chat_id": "chat-j3-a", "ts": enc_frame["ts"],
                           "hdr": enc_frame["hdr"], "nonce": enc_frame["nonce"],
                           "ct": enc_frame["ct"]},
@@ -2784,7 +2784,7 @@ class TestPh3CryptoE2E:
                 # Gespoolte Frame-ts ALT machen (simuliert >10 min Offline-Phase).
                 state = R._relay_instance
                 assert state is not None, "Relay-Instanz für Spool-Introspektion fehlt"
-                queue = state.chat_inbound.get("jarvis")
+                queue = state.chat_inbound.get("alpha")
                 assert queue, "chat.send.enc wurde nicht gespoolt"
                 queued_frame = queue[0][1]
                 assert queued_frame["type"] == "chat.send.enc"
@@ -2832,10 +2832,10 @@ class TestPh3CryptoE2E:
                     headers={"Authorization": f"Bearer {self.TOKEN}"})
                 await _recv_until(phone, "relay.state", timeout=6)
 
-                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                         headers={"Authorization": f"Bearer {self.CODE}"})
                 keys = await got.json()
-                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
                 hello = peer.make_hello(session_id)
                 resp = await session.post(f"{base}/crypto_hello", json=hello,
                                           headers={"Authorization": f"Bearer {self.CODE}"})
@@ -2910,10 +2910,10 @@ class TestPh3CryptoE2E:
                     f"ws://127.0.0.1:{self.PORT + 13}/agent_ws",
                     headers={"Authorization": f"Bearer {self.TOKEN}"})
                 await _recv_until(phone, "relay.state", timeout=6)
-                got = await session.get(f"{base}/key_get", params={"agent_id": "jarvis"},
+                got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
                                         headers={"Authorization": f"Bearer {self.CODE}"})
                 keys = await got.json()
-                peer = _ph3_adapter.PhoneCryptoPeer("jarvis", keys["ik_pub"], keys["spk_pub"])
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
                 hello = peer.make_hello(self.SESSION_ID)
                 resp = await session.post(f"{base}/crypto_hello", json=hello,
                                           headers={"Authorization": f"Bearer {self.CODE}"})
@@ -2928,7 +2928,7 @@ class TestPh3CryptoE2E:
                 async def post_chat(frame):
                     return await session.post(
                         f"{base}/chat",
-                        json={"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                        json={"agent_id": "alpha", "session_id": self.SESSION_ID,
                               "chat_id": "chat-rot", "ts": frame["ts"],
                               "hdr": frame["hdr"], "nonce": frame["nonce"],
                               "ct": frame["ct"]},
@@ -3000,7 +3000,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)
 
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -3012,7 +3012,7 @@ class TestPh3CryptoE2E:
                 # Downgrade: Klartext an den Agenten → 403.
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "text": "klartext-downgrade"},
+                    json={"agent_id": "alpha", "text": "klartext-downgrade"},
                     headers=headers)
                 assert resp.status == 403
                 assert "cleartext" in (await resp.json())["error"]
@@ -3025,7 +3025,7 @@ class TestPh3CryptoE2E:
                 # enc ohne bestätigte Session (fremde session_id) → 403 fail-closed.
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "session_id": "unbekannt-session-99",
+                    json={"agent_id": "alpha", "session_id": "unbekannt-session-99",
                           "chat_id": "chat-fremd-0001",
                           "hdr": {"rk": "aa" * 32, "n": 0, "pn": 0},
                           "nonce": _ph3_adapter._b64e(b"\x00" * 12),
@@ -3060,7 +3060,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)
 
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -3072,7 +3072,7 @@ class TestPh3CryptoE2E:
 
                 frame = peer.encrypt_frame("chat.send.enc", "chat-1",
                                            {"text": "nur einmal", "msg_id": "x"})
-                body = {"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                body = {"agent_id": "alpha", "session_id": self.SESSION_ID,
                         "chat_id": "chat-replay-1", "ts": frame["ts"],
                         "hdr": frame["hdr"], "nonce": frame["nonce"], "ct": frame["ct"]}
                 first = await session.post(f"{base}/chat", json=body, headers=headers)
@@ -3115,7 +3115,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)
 
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -3140,7 +3140,7 @@ class TestPh3CryptoE2E:
                 # Agent invalidiert (FP-Abweichung) → Klartext wieder erlaubt.
                 await agent.send_json({"type": "crypto.session_reset", "v": 1,
                                        "session_id": self.SESSION_ID,
-                                       "agent_id": "jarvis",
+                                       "agent_id": "alpha",
                                        "reason": "fingerprint-mismatch"})
                 await _recv_until(phone, "crypto.session_reset", timeout=6)
                 resp = await session.post(
@@ -3176,12 +3176,12 @@ class TestPh3CryptoE2E:
                 agent = await session.ws_connect(
                     f"ws://127.0.0.1:{self.PORT + 12}/agent_ws", headers=agent_headers)
                 state1 = await _recv_until(phone, "relay.state", timeout=6)
-                assert state1["agents"][0]["agent_id"] == "jarvis"
+                assert state1["agents"][0]["agent_id"] == "alpha"
                 assert state1["agents"][0]["session_active"] is False
 
                 # Handshake → bestätigte Session.
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -3200,7 +3200,7 @@ class TestPh3CryptoE2E:
                 # Reset (FP-Abweichung) → Relay-Wahrheit wieder False.
                 await agent2.send_json({"type": "crypto.session_reset", "v": 1,
                                         "session_id": self.SESSION_ID,
-                                        "agent_id": "jarvis",
+                                        "agent_id": "alpha",
                                         "reason": "fingerprint-mismatch"})
                 await _recv_until(phone, "crypto.session_reset", timeout=6)
                 agent3 = await session.ws_connect(
@@ -3236,7 +3236,7 @@ class TestPh3CryptoE2E:
 
                 # E2E-Session aufbauen.
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await agent.receive_json(timeout=6)
@@ -3253,7 +3253,7 @@ class TestPh3CryptoE2E:
                                            {"text": "frage", "msg_id": "m7"})
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                    json={"agent_id": "alpha", "session_id": self.SESSION_ID,
                           "chat_id": "chat-00007", "ts": frame["ts"],
                           "hdr": frame["hdr"], "nonce": frame["nonce"], "ct": frame["ct"]},
                     headers=headers)
@@ -3315,7 +3315,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)
 
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await _recv_until(agent, "crypto.hello", timeout=6)
@@ -3327,13 +3327,13 @@ class TestPh3CryptoE2E:
                 # Session ist aktiv → Cleartext blockiert.
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "text": "x"}, headers=headers)
+                    json={"agent_id": "alpha", "text": "x"}, headers=headers)
                 assert resp.status == 403
 
                 # Agent invalidiert (Sirs Revision (iii): FP-Abweichung).
                 await agent.send_json({"type": "crypto.session_reset", "v": 1,
                                        "session_id": self.SESSION_ID,
-                                       "agent_id": "jarvis",
+                                       "agent_id": "alpha",
                                        "reason": "fingerprint-mismatch"})
                 reset = await _recv_until(phone, "crypto.session_reset", timeout=6)
                 assert reset["reason"] == "fingerprint-mismatch"
@@ -3343,7 +3343,7 @@ class TestPh3CryptoE2E:
                 # Cleartext danach wieder erlaubt (Legacy bis neue hello).
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "text": "nach reset"}, headers=headers)
+                    json={"agent_id": "alpha", "text": "nach reset"}, headers=headers)
                 assert resp.status == 200
 
                 # Zweite Session: 24-h-Ablauf simulieren → enc verworfen.
@@ -3361,7 +3361,7 @@ class TestPh3CryptoE2E:
                                            {"text": "zu spät", "msg_id": "x"})
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "session_id": sid2,
+                    json={"agent_id": "alpha", "session_id": sid2,
                           "chat_id": "chat-exp-1",
                           "hdr": frame["hdr"], "nonce": frame["nonce"], "ct": frame["ct"]},
                     headers=headers)
@@ -3369,7 +3369,7 @@ class TestPh3CryptoE2E:
                 # Klartext wieder OK — die abgelaufene Session ist weg.
                 resp = await session.post(
                     f"{base}/chat",
-                    json={"agent_id": "jarvis", "text": "legacy ok"}, headers=headers)
+                    json={"agent_id": "alpha", "text": "legacy ok"}, headers=headers)
                 assert resp.status == 200
 
                 await agent.close()
@@ -3402,7 +3402,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)
 
                 peer = _ph3_adapter.PhoneCryptoPeer(
-                    "jarvis", self.IK_A_PUB, self.SPK_A_PUB)
+                    "alpha", self.IK_A_PUB, self.SPK_A_PUB)
                 hello = peer.make_hello(self.SESSION_ID)
                 await session.post(f"{base}/crypto_hello", json=hello, headers=headers)
                 hello_frame = await _recv_until(agent, "crypto.hello", timeout=6)
@@ -3414,7 +3414,7 @@ class TestPh3CryptoE2E:
                 # Adapter-Seite: fremde Session-ID erkannt → Takeover-Reset.
                 await agent.send_json({"type": "crypto.session_reset", "v": 1,
                                        "session_id": self.SESSION_ID,
-                                       "agent_id": "jarvis",
+                                       "agent_id": "alpha",
                                        "reason": "cross-session-takeover"})
                 reset = await _recv_until(phone, "crypto.session_reset", timeout=6)
                 assert reset["reason"] == "cross-session-takeover", \
@@ -3444,7 +3444,7 @@ class TestPh3CryptoE2E:
             async with aiohttp.ClientSession() as session:
                 resp = await session.post(
                     f"{base}/crypto_hello",
-                    json={"agent_id": "jarvis", "session_id": self.SESSION_ID,
+                    json={"agent_id": "alpha", "session_id": self.SESSION_ID,
                           "ik_pub": "aa" * 32, "ek_pub": "bb" * 32,
                           "spk_pub": "cc" * 32},
                     headers=headers)
@@ -3482,7 +3482,7 @@ class TestPh3CryptoE2E:
                 await _recv_until(phone, "relay.state", timeout=6)  # Presence-Push
                 await agent.send_json({"type": "crypto.hello_ack", "v": 1,
                                        "session_id": "gibt-es-nicht-0001",
-                                       "agent_id": "jarvis", "kex_pub": "aa" * 32,
+                                       "agent_id": "alpha", "kex_pub": "aa" * 32,
                                        "nonce": "AAAAAAAAAAAAAAAA",
                                        "ct": _ph3_adapter._b64e(b"\x01" * 16)})
                 with pytest.raises(asyncio.TimeoutError):
@@ -3522,7 +3522,7 @@ class TestSecW1RelayReplayParseHaertung:
         from tools.android_relay import _on_agent_message
         state = self._state()
         with caplog.at_level("WARNING"):
-            asyncio.run(_on_agent_message(state, "jarvis", "[" * 200000))
+            asyncio.run(_on_agent_message(state, "alpha", "[" * 200000))
         assert any("non-JSON message" in r.message for r in caplog.records)
 
     def test_giant_n_rejected_and_window_not_poisoned(self):
@@ -3580,14 +3580,14 @@ class TestSecW1RelayIdentityConfigHaertung:
         import logging
         from tools.android_relay import _agent_crypto_registry, _fingerprint_of_pub
         config = {
-            "ANDROID_AGENT_TOKEN_JARVIS": "tok",
-            "ANDROID_AGENT_IDENTITY_JARVIS": self.IK,
-            "ANDROID_AGENT_FINGERPRINT_JARVIS": "deadbeef" * 8,
+            "ANDROID_AGENT_TOKEN_ALPHA": "tok",
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA": "deadbeef" * 8,
         }
         with caplog.at_level(logging.WARNING):
             registry = _agent_crypto_registry(config)
-        assert registry["jarvis"]["fingerprint"] == _fingerprint_of_pub(self.IK)
-        assert registry["jarvis"]["fingerprint"] != "deadbeef" * 8
+        assert registry["alpha"]["fingerprint"] == _fingerprint_of_pub(self.IK)
+        assert registry["alpha"]["fingerprint"] != "deadbeef" * 8
         assert any("weicht von der ik_pub-Ableitung ab" in r.message for r in caplog.records)
 
     def test_registry_no_warning_when_config_fp_matches(self, caplog):
@@ -3595,13 +3595,13 @@ class TestSecW1RelayIdentityConfigHaertung:
         import logging
         from tools.android_relay import _agent_crypto_registry, _fingerprint_of_pub
         config = {
-            "ANDROID_AGENT_TOKEN_JARVIS": "tok",
-            "ANDROID_AGENT_IDENTITY_JARVIS": self.IK,
-            "ANDROID_AGENT_FINGERPRINT_JARVIS": _fingerprint_of_pub(self.IK),
+            "ANDROID_AGENT_TOKEN_ALPHA": "tok",
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA": _fingerprint_of_pub(self.IK),
         }
         with caplog.at_level(logging.WARNING):
             registry = _agent_crypto_registry(config)
-        assert registry["jarvis"]["fingerprint"] == _fingerprint_of_pub(self.IK)
+        assert registry["alpha"]["fingerprint"] == _fingerprint_of_pub(self.IK)
         assert not any("weicht" in r.message for r in caplog.records)
 
     def test_external_host_without_tls_requires_optin(self, monkeypatch):
@@ -3885,7 +3885,7 @@ class TestSecW2RelayRessourcen:
             state.agent_ws_lock = asyncio.Lock()
             for _ in range(15):
                 await _on_agent_message(
-                    state, "jarvis", '{"type": "' + big + '"}')
+                    state, "alpha", '{"type": "' + big + '"}')
 
         with caplog.at_level("WARNING"):
             asyncio.run(flood())
@@ -3904,8 +3904,8 @@ class TestSecW2RelayRessourcen:
         import json as _json
         cfg = tmp_path / "relay-config.json"
         cfg.write_text(_json.dumps({
-            "ANDROID_AGENT_TOKEN_JARVIS": "tok-j1",
-            "ANDROID_AGENT_IDENTITY_JARVIS": "aa" * 32,
+            "ANDROID_AGENT_TOKEN_ALPHA": "tok-j1",
+            "ANDROID_AGENT_IDENTITY_ALPHA": "aa" * 32,
         }), encoding="utf-8")
         monkeypatch.setenv("ANDROID_RELAY_CONFIG", str(cfg))
         start_relay(pairing_code=self.CODE, port=self.PORT)
@@ -3915,7 +3915,7 @@ class TestSecW2RelayRessourcen:
             statuses = []
             async with aiohttp.ClientSession() as session:
                 for i in range(12):
-                    body = {"agent_id": "jarvis", "session_id": f"w2-rl-{i:03d}-abcdefgh",
+                    body = {"agent_id": "alpha", "session_id": f"w2-rl-{i:03d}-abcdefgh",
                             "ik_pub": hex64, "ek_pub": hex64, "spk_pub": hex64}
                     async with session.post(
                         f"http://127.0.0.1:{self.PORT}/crypto_hello", json=body,

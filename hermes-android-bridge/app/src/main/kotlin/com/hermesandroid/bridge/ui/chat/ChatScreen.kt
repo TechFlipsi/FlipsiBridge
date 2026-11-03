@@ -562,7 +562,7 @@ fun ChatScreen(padding: PaddingValues) {
     // neuere BackHandler Vorrang hat, solange er enabled ist.
     // B7-LIVE (03.11.): Offen-Prüfung vorzeichenfest über die Agenten-Liste —
     // `selectedAgentId >= 0` hielt den System-Back in JEDEM Live-Chat deakti-
-    // viert (Live-IDs = agentId.hashCode(), z. B. „jarvis“ → -1167182811),
+    // viert (Live-IDs = agentId.hashCode(), z. B. ein Live-Name → -1167182811),
     // Back sprang zur Route statt zur Agenten-Liste.
     BackHandler(enabled = AttachSheetRules.isConversationOpen(selectedAgentId, agents.map { it.id })) {
         closeConversation()
@@ -676,7 +676,7 @@ fun ChatScreen(padding: PaddingValues) {
     // testbar); Rendert-Pfad am Release-Build im Clean-Drill bewiesen.
     // B7-LIVE-RE-DRILL (03.11.): im gepaarten Live-Chat öffnete das Sheet
     // NICHT — Root-Cause war das ID-VORZEICHEN (Live-ID = agentId.hashCode(),
-    // „jarvis“ → -1167182811), KEIN State-Reset-Race; „offen“ kommt jetzt
+    // B7-Live-Fall → -1167182811), KEIN State-Reset-Race; „offen“ kommt jetzt
     // vorzeichenfest aus der Agenten-Liste, nicht aus `id >= 0`.
     if (AttachSheetRules.shouldRenderSheet(
             attachSheetOpen,

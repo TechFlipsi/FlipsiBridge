@@ -332,7 +332,7 @@ class TestFinRed03PlaintextMetaDowngrade:
 
     def _setup(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANDROID_RELAY_CONFIG",
-                           _fin_write_config(tmp_path, {"jarvis": self.TOKEN}))
+                           _fin_write_config(tmp_path, {"alpha": self.TOKEN}))
         start_relay(pairing_code=self.CODE, port=self.PORT)
         return f"http://127.0.0.1:{self.PORT}"
 
@@ -348,7 +348,7 @@ class TestFinRed03PlaintextMetaDowngrade:
 
                 # VOR der Session: Klartext-/chat legt msg_id + Status an.
                 pre = await http.post(f"{base}/chat", json={
-                    "agent_id": "jarvis", "text": "RED-03 Setup-Nachricht"},
+                    "agent_id": "alpha", "text": "RED-03 Setup-Nachricht"},
                     headers={"Authorization": f"Bearer {self.CODE}"})
                 assert pre.status == 200, await pre.text()
                 pre_body = await pre.json()
@@ -356,7 +356,7 @@ class TestFinRed03PlaintextMetaDowngrade:
                 await agent.receive_json(timeout=6)  # chat.send am Agenten
 
                 peer, agent_session = await _fin_establish(
-                    http, phone, agent, base, self.CODE, "jarvis", "red03-sess-read-01")
+                    http, phone, agent, base, self.CODE, "alpha", "red03-sess-read-01")
 
                 # ── ANGRIFF: KLARTEXT chat.read während aktiver enc-Session ──
                 await agent.send_json({"type": "chat.read", "v": 1,
@@ -403,7 +403,7 @@ class TestFinRed03PlaintextMetaDowngrade:
             async with aiohttp.ClientSession() as http:
                 phone, agent = await _fin_connect(http, self.PORT, self.CODE, self.TOKEN)
                 peer, agent_session = await _fin_establish(
-                    http, phone, agent, base, self.CODE, "jarvis", "red03-sess-act-01")
+                    http, phone, agent, base, self.CODE, "alpha", "red03-sess-act-01")
 
                 # ── ANGRIFF: KLARTEXT chat.activity während aktiver Session ─
                 await agent.send_json({"type": "chat.activity", "v": 1,
@@ -444,8 +444,8 @@ class TestFinRed03PlaintextMetaDowngrade:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class TestFinRed04HelloRebind:
-    """PoC red04: Re-Hello mit agent_id=edwin auf jarvis-Session = 200 und der
-    Broker stand danach auf edwin — jarvis' legitimer hello_ack starb als
+    """PoC red04: Re-Hello mit agent_id=beta auf alpha-Session = 200 und der
+    Broker stand danach auf beta — alpha' legitimer hello_ack starb als
     'fremd' (Handshake dauerhaft tot, nur Pairing-Code nötig). Vertrag:
     Session-Slot je (session_id, agent_id) — fremdes agent_id = 403 + Warning,
     Original-Agent bleibt Eigentümer und kann bestätigen; gleiche-agent_id-
@@ -453,15 +453,15 @@ class TestFinRed04HelloRebind:
 
     PORT = 19964
     CODE = "RED04AA"
-    TOKEN_J = "red04-jarvis-token"
-    TOKEN_E = "red04-edwin-token"
+    TOKEN_A = "red04-alpha-token"
+    TOKEN_B = "red04-beta-token"
 
     def test_rebind_to_foreign_agent_rejected_original_ack_survives(self, tmp_path, monkeypatch, caplog):
         import asyncio
         import aiohttp
 
         monkeypatch.setenv("ANDROID_RELAY_CONFIG", _fin_write_config(
-            tmp_path, {"jarvis": self.TOKEN_J, "edwin": self.TOKEN_E}))
+            tmp_path, {"alpha": self.TOKEN_A, "beta": self.TOKEN_B}))
         start_relay(pairing_code=self.CODE, port=self.PORT)
         base = f"http://127.0.0.1:{self.PORT}"
         headers = {"Authorization": f"Bearer {self.CODE}"}
@@ -471,32 +471,32 @@ class TestFinRed04HelloRebind:
             outcomes = {}
             async with aiohttp.ClientSession() as http:
                 phone, agent_j = await _fin_connect(
-                    http, self.PORT, self.CODE, self.TOKEN_J)
+                    http, self.PORT, self.CODE, self.TOKEN_A)
 
-                # 1) Legitimes Phone-Hello für Agent JARVIS (unacked).
+                # 1) Legitimes Phone-Hello für Agent ALPHA (unacked).
                 hello1 = await http.post(f"{base}/crypto_hello", json={
-                    "agent_id": "jarvis", "session_id": sid,
+                    "agent_id": "alpha", "session_id": sid,
                     "ik_pub": "aa" * 32, "ek_pub": "bb" * 32, "spk_pub": "cc" * 32},
                     headers=headers)
                 assert hello1.status == 200, await hello1.text()
                 got = await agent_j.receive_json(timeout=6)
                 assert got["type"] == "crypto.hello"
 
-                # 2) ANGRIFF: Re-Hello auf dieselbe Session mit agent_id=EDWIN.
+                # 2) ANGRIFF: Re-Hello auf dieselbe Session mit agent_id=BETA.
                 attack = await http.post(f"{base}/crypto_hello", json={
-                    "agent_id": "edwin", "session_id": sid,
+                    "agent_id": "beta", "session_id": sid,
                     "ik_pub": "dd" * 32, "ek_pub": "ee" * 32, "spk_pub": "ff" * 32},
                     headers=headers)
                 outcomes["rebind_status"] = attack.status
                 assert attack.status == 403, (
                     f"Fremdes agent_id muss 403 liefern, kam {attack.status}")
 
-                # 3) Broker-Bindung unverändert: jarvis bleibt Eigentümer.
+                # 3) Broker-Bindung unverändert: alpha bleibt Eigentümer.
                 import tools.android_relay as relay_mod
                 with relay_mod._relay_lock:
                     entry = relay_mod._relay_instance.crypto_sessions.get(sid, {})
                 outcomes["bound_to"] = entry.get("agent_id")
-                assert entry.get("agent_id") == "jarvis", (
+                assert entry.get("agent_id") == "alpha", (
                     f"Session muss am Original-Agenten bleiben, kam {entry}")
 
                 # 4) Original-Agent bestätigt — Ack muss AKZEPTIERT werden
@@ -515,7 +515,7 @@ class TestFinRed04HelloRebind:
                 # 5) Kontrast: gleicher Agent darf sein unbestätigtes Hello
                 #    wiederholen (Retry bleibt erlaubt, hier: neue Session).
                 retry = await http.post(f"{base}/crypto_hello", json={
-                    "agent_id": "jarvis", "session_id": "red04-session-0002",
+                    "agent_id": "alpha", "session_id": "red04-session-0002",
                     "ik_pub": "aa" * 32, "ek_pub": "bb" * 32, "spk_pub": "cc" * 32},
                     headers=headers)
                 outcomes["same_agent_new_session"] = retry.status
@@ -558,7 +558,7 @@ class TestFinRed05EncExtrasTypeConfusion:
         import aiohttp
 
         monkeypatch.setenv("ANDROID_RELAY_CONFIG",
-                           _fin_write_config(tmp_path, {"jarvis": self.TOKEN}))
+                           _fin_write_config(tmp_path, {"alpha": self.TOKEN}))
         start_relay(pairing_code=self.CODE, port=self.PORT)
         base = f"http://127.0.0.1:{self.PORT}"
 
@@ -567,7 +567,7 @@ class TestFinRed05EncExtrasTypeConfusion:
             async with aiohttp.ClientSession() as http:
                 phone, agent = await _fin_connect(http, self.PORT, self.CODE, self.TOKEN)
                 peer, agent_session = await _fin_establish(
-                    http, phone, agent, base, self.CODE, "jarvis", "red05-session-01")
+                    http, phone, agent, base, self.CODE, "alpha", "red05-session-01")
 
                 def send_mangled(frame, needle, replacement):
                     return json.dumps(frame).replace(needle, replacement)
@@ -637,7 +637,7 @@ class TestFinRed05EncExtrasTypeConfusion:
 
 class TestFinRed06OwnerRetentionExpiry:
     """PoC red06: chat_owner-Einträge wurden von _prune_chat_status mit der
-    Spool-Retention (24 h) gelöscht — danach claimte EDWIN jarvis' chat_id
+    Spool-Retention (24 h) gelöscht — danach claimte BETA alpha' chat_id
     mit 200 + Zustellung (Cross-Agent-Injektion in die fremde Konversation).
     Vertrag (PH2-T5/W1A-2/W1C-3): Isolation DAUERHAFT — auch nach
     Retention-Ablauf (hier per Env auf <1 s komprimiert) bleibt fremde
@@ -645,8 +645,8 @@ class TestFinRed06OwnerRetentionExpiry:
 
     PORT = 19966
     CODE = "RED06AA"
-    TOKEN_J = "red06-jarvis-token"
-    TOKEN_E = "red06-edwin-token"
+    TOKEN_A = "red06-alpha-token"
+    TOKEN_B = "red06-beta-token"
     CHAT_ID = "red06-victim-chat-001"
 
     def test_owner_isolation_survives_retention_prune(self, tmp_path, monkeypatch):
@@ -654,7 +654,7 @@ class TestFinRed06OwnerRetentionExpiry:
         import aiohttp
 
         monkeypatch.setenv("ANDROID_RELAY_CONFIG", _fin_write_config(
-            tmp_path, {"jarvis": self.TOKEN_J, "edwin": self.TOKEN_E}))
+            tmp_path, {"alpha": self.TOKEN_A, "beta": self.TOKEN_B}))
         # Retention auf ~0.36 s drücken (0.0001 h) — simuliert den 24-h-Ablauf.
         monkeypatch.setenv("ANDROID_RELAY_CHAT_RETENTION_HOURS", "0.0001")
         start_relay(pairing_code=self.CODE, port=self.PORT)
@@ -667,52 +667,52 @@ class TestFinRed06OwnerRetentionExpiry:
                     headers={"Authorization": f"Bearer {self.CODE}"})
                 assert (await phone.receive_json(timeout=2)).get("type") == "relay.state"
 
-                # 1) JARVIS claimt die Konversation (legitimer Reply).
+                # 1) ALPHA claimt die Konversation (legitimer Reply).
                 r1 = await http.post(f"{base}/chat_event", json={
-                    "chat_id": self.CHAT_ID, "text": "JARVIS' Nachricht"},
-                    headers={"Authorization": f"Bearer {self.TOKEN_J}"})
+                    "chat_id": self.CHAT_ID, "text": "ALPHA' Nachricht"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_A}"})
                 assert r1.status == 200, await r1.text()
 
-                # 2) EDWIN vorher = 403 (Isolation greift).
+                # 2) BETA vorher = 403 (Isolation greift).
                 r2 = await http.post(f"{base}/chat_event", json={
-                    "chat_id": self.CHAT_ID, "text": "EDWIN Spoof 1"},
-                    headers={"Authorization": f"Bearer {self.TOKEN_E}"})
+                    "chat_id": self.CHAT_ID, "text": "BETA Spoof 1"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_B}"})
                 assert r2.status == 403, (
                     f"Isolation muss vor Ablauf greifen, kam {r2.status}")
 
                 # 3) Retention-Ablauf ABWARTEN + Prune erzwingen: ein weiterer
-                #    legitimer JARVIS-Reply auf eine ANDERE chat_id lässt
+                #    legitimer ALPHA-Reply auf eine ANDERE chat_id lässt
                 #    _prune_chat_status laufen (der alte chat_status-Eintrag
                 #    muss weg sein, der OWNER muss bleiben).
                 await asyncio.sleep(0.6)
                 r3 = await http.post(f"{base}/chat_event", json={
                     "chat_id": "red06-other-chat-002", "text": "Prune-Trigger"},
-                    headers={"Authorization": f"Bearer {self.TOKEN_J}"})
+                    headers={"Authorization": f"Bearer {self.TOKEN_A}"})
                 assert r3.status == 200
 
                 import tools.android_relay as relay_mod
                 with relay_mod._relay_lock:
                     state = relay_mod._relay_instance
-                    assert state.chat_owner.get(self.CHAT_ID, ("", 0))[0] == "jarvis", (
+                    assert state.chat_owner.get(self.CHAT_ID, ("", 0))[0] == "alpha", (
                         "Owner-Eintrag darf nach Retention-Ablauf NICHT gelöscht sein")
                     assert not any(
                         entry["chat_id"] == self.CHAT_ID
                         for entry in state.chat_status.values()), (
                         "chat_status-Prune muss weiter laufen (nur Owner ist dauerhaft)")
 
-                # 4) ANGRIFF: EDWIN nach Ablauf = weiterhin 403.
+                # 4) ANGRIFF: BETA nach Ablauf = weiterhin 403.
                 r4 = await http.post(f"{base}/chat_event", json={
-                    "chat_id": self.CHAT_ID, "text": "EDWIN Cross-Agent-Injektion NACH Ablauf"},
-                    headers={"Authorization": f"Bearer {self.TOKEN_E}"})
+                    "chat_id": self.CHAT_ID, "text": "BETA Cross-Agent-Injektion NACH Ablauf"},
+                    headers={"Authorization": f"Bearer {self.TOKEN_B}"})
                 assert r4.status == 403, (
                     f"Isolation muss den Retention-Ablauf ÜBERLEBEN, kam {r4.status}")
 
-                # 5) Zustellungs-Beweis: EDWINs chat.event kam NIE an.
+                # 5) Zustellungs-Beweis: BETAs chat.event kam NIE an.
                 frames = await _fin_collect_frames(phone, seconds=1.0)
                 assert not any(f.get("type") == "chat.event"
-                              and f.get("agent_id") == "edwin"
+                              and f.get("agent_id") == "beta"
                               and f.get("chat_id") == self.CHAT_ID for f in frames), (
-                    f"EDWIN darf in JARVIS' chat_id nie zustellen: {frames}")
+                    f"BETA darf in ALPHA' chat_id nie zustellen: {frames}")
                 await phone.close()
 
         asyncio.run(scenario())
@@ -741,7 +741,7 @@ class TestFinRed07KeyPublishSilentSwap:
         keys_path = tmp_path / "relay-keys.json"
         monkeypatch.setenv("ANDROID_RELAY_KEYS", str(keys_path))
         monkeypatch.setenv("ANDROID_RELAY_CONFIG",
-                           _fin_write_config(tmp_path, {"jarvis": self.TOKEN}))
+                           _fin_write_config(tmp_path, {"alpha": self.TOKEN}))
         start_relay(pairing_code=self.CODE, port=self.PORT)
         base = f"http://127.0.0.1:{self.PORT}"
         headers = {"Authorization": f"Bearer {self.CODE}"}

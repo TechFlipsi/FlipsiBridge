@@ -108,10 +108,10 @@ class CryptoEngineFixtureTest {
                 gcmKey, gcmNonce, CryptoEngine.utf8("FlipsiBridge PH-3 Cross-Vektor 2"), ByteArray(0))),
         )
         val pt = h("000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f")
-        val aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|chat-123|jarvis")
+        val aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|chat-123|agent1")
         val ct = CryptoEngine.aesGcmEncrypt(gcmKey, gcmNonce, pt, aad)
         assertEquals(
-            "8aa2a225ae7f491c4e0257d6771087301d31d242cb0c7c6356c61e6aa2947be08d71e365e5f16f450e7202431eae0e4a69659b6297bfbee71bab4b0782d9897dbab0dcde2a4e88c56bc9dbf2355f8ad4",
+            "8aa2a225ae7f491c4e0257d6771087301d31d242cb0c7c6356c61e6aa2947be08d71e365e5f16f450e7202431eae0e4a69659b6297bfbee71bab4b0782d9897d328c04f0224b457f63ec5982a4c750dd",
             hex(ct),
         )
         assertTrue(CryptoEngine.aesGcmDecrypt(gcmKey, gcmNonce, ct, aad).contentEquals(pt))
@@ -147,15 +147,15 @@ class CryptoEngineFixtureTest {
         assertEquals("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742", hex(dh2))
         val dh3 = CryptoEngine.x25519Dh(ekP, spkAPub)
         assertEquals("b67caf683bb48069685a0d9f0572a0d26c4037d1bacc49553054ded8b04ab44e", hex(dh3))
-        val kdf = fbV1Kdf(dh1, dh2, dh3, ByteArray(0), "fb3demo-0001", "jarvis",
+        val kdf = fbV1Kdf(dh1, dh2, dh3, ByteArray(0), "fb3demo-0001", "agent1",
             ikPPub, ekPPub, spkPPub, ikAPub, spkAPub)
-        assertEquals("90e5e2470948ac61604050364d47d435b5bdaa6b005e176123c71e1f63bd7eef", hex(kdf.transcript))
-        assertEquals("4c48bbcb6f2330d240d2e166af25459ff4ecf6dddf6defb60cd8b3a01578b0c0",
+        assertEquals("fcf3ffdd1ba183e7743b3cc0775441ec1ec9e6cef753a15477f34adfa37f2147", hex(kdf.transcript))
+        assertEquals("07e64bf2f09f9520f3d0a4ee3d9007e0da93a389f40db451f16d9f9d38e79fa4",
             hex(CryptoEngine.hmacSha256(kdf.transcript, ByteArray(0))))
-        assertEquals("dd7570e5edec970e9c9cfd66dd605886af55639a795bea4d41522e0e6e04d40b", hex(kdf.prk))
-        assertEquals("ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724", hex(kdf.root0))
-        assertEquals("86d1d3197651d9201fde04f92d470404167b35b5490bdcdd4325912e69bb6cc7", hex(kdf.kInit))
-        assertEquals("b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4", kdf.sessionFpHex)
+        assertEquals("5231d76000fd2f37da7bc9fbe62e2b896fae8ce68e3edbb65cb96193aa9655e9", hex(kdf.prk))
+        assertEquals("c92a15332695cc9878aeecd1060916fd7729746286a7852e5317b99cfaeb68aa", hex(kdf.root0))
+        assertEquals("1a531068f5603c0056763523e67e12827572c84dbb786b4ea8e8efff9803cb82", hex(kdf.kInit))
+        assertEquals("2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f", kdf.sessionFpHex)
     }
 
     @Test
@@ -163,23 +163,23 @@ class CryptoEngineFixtureTest {
         val dh1 = CryptoEngine.x25519Dh(ekP, ikAPub)
         val dh2 = CryptoEngine.x25519Dh(ikP, ikAPub)
         val dh3 = CryptoEngine.x25519Dh(ekP, spkAPub)
-        val kdf = fbV1Kdf(dh1, dh2, dh3, CryptoEngine.utf8("PAIRCODE12"), "fb3demo-0001", "jarvis",
+        val kdf = fbV1Kdf(dh1, dh2, dh3, CryptoEngine.utf8("PAIRCODE12"), "fb3demo-0001", "agent1",
             ikPPub, ekPPub, spkPPub, ikAPub, spkAPub)
-        assertEquals("c08342f069b4258b7e164462105f27db96972cf72d5f659f463e77e639764b78", hex(kdf.root0))
-        assertEquals("7b07cb6fdeaf15b4ad46872e2a504524b254b6a8fa1b2b512f67b2cd694d6961", hex(kdf.kInit))
+        assertEquals("c456c51cc80699f2b9f577a0c6b8cf0495baa3a09d419b5639946fc1fd6fdfd4", hex(kdf.root0))
+        assertEquals("475ae8d2dd6b24f873854bdaa4eaabf5fbb1e90cd3eac864fb2136ecbf64d49f", hex(kdf.kInit))
     }
 
     // ── §5.6 hello_ack-Verify ──────────────────────────────────────────────
 
     @Test
     fun helloAckVerifyVector() {
-        val kInit = h("86d1d3197651d9201fde04f92d470404167b35b5490bdcdd4325912e69bb6cc7")
+        val kInit = h("1a531068f5603c0056763523e67e12827572c84dbb786b4ea8e8efff9803cb82")
         val nonce = h("00112233445566778899aabb")
-        val aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|jarvis")
+        val aad = CryptoEngine.utf8("fb-v1|fb3demo-0001|agent1")
         val pt = CryptoEngine.utf8("flipsi-verify-v1|fb3demo-0001")
         val ct = CryptoEngine.aesGcmEncrypt(kInit, nonce, pt, aad)
         assertEquals(
-            "8594ae09b2c2ff5687b9571e973fc61e81c6c803c169c3866d3852362000c0c490124785819a12feaecd82cd2d",
+            "2dacd90dd0fa8c92b42c199dc64f7f5af1f67add37e69ccb4a6c7a2897eef0350aac6292cd9fa18bf298169c19",
             hex(ct),
         )
         assertTrue(CryptoEngine.aesGcmDecrypt(kInit, nonce, ct, aad).contentEquals(pt))
@@ -198,11 +198,11 @@ class CryptoEngineFixtureTest {
             CryptoEngine.fingerprintOfPub(ikPPub),
         )
         assertEquals(
-            "b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4",
+            "2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f",
             CryptoEngine.hex(CryptoEngine.hkdfExpand(
-                CryptoEngine.fromHex("dd7570e5edec970e9c9cfd66dd605886af55639a795bea4d41522e0e6e04d40b"),
+                CryptoEngine.fromHex("5231d76000fd2f37da7bc9fbe62e2b896fae8ce68e3edbb65cb96193aa9655e9"),
                 CryptoEngine.utf8("fb-fp") + ikPPub + ekPPub + spkPPub + ikAPub + spkAPub +
-                    CryptoEngine.utf8("jarvis") + CryptoEngine.utf8("fb3demo-0001"),
+                    CryptoEngine.utf8("agent1") + CryptoEngine.utf8("fb3demo-0001"),
                 32)),
         )
     }
@@ -210,8 +210,8 @@ class CryptoEngineFixtureTest {
     @Test
     fun fingerprintDisplayGroups8x4() {
         assertEquals(
-            "B9D3C701 CCE4CBC6 466FBE98 419AB0F3 F1BC67B6 1FE3DABA C6A5D640 31F0B8F4",
-            CryptoEngine.fingerprintDisplay("b9d3c701cce4cbc6466fbe98419ab0f3f1bc67b61fe3dabac6a5d64031f0b8f4"),
+            "2B3327CC 77090E33 FC235FDC 49659C26 507CFAE7 C1B843E6 AF7D150D E3E8D52F",
+            CryptoEngine.fingerprintDisplay("2b3327cc77090e33fc235fdc49659c26507cfae7c1b843e6af7d150de3e8d52f"),
         )
     }
 
