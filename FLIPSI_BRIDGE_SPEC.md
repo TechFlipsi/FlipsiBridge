@@ -41,7 +41,7 @@ Original-UI: Terminal/Cyberpunk-Stil (Pixel-Font, Neon-Grün/Orange, Circuit-Hin
 
 ## Phasen
 
-- [x] **Phase 0 — Vorarbeiten:** Fork, Clone, SDK-Check, Baseline-Build, Plugin serverseitig installiert
+- [x] **Phase 0 — Vorarbeiten:** Clone, SDK-Check, Baseline-Build, Plugin serverseitig installiert
 - [ ] **Phase 1 — Baseline:** Rebranding (FlipsiBridge), neue UI, mTLS-Support im Client (OkHttp + Client-Zertifikat), signierter Build, Relay auf Server (systemd), Capability-Gating Grundgerüst
 - [ ] **Phase 2 — Assistent:** VoiceInteractionService, Assistenz-Rolle (Ecken-Swipe öffnet uns), AssistStructure-Screen-Kontext
 - [ ] **Phase 3 — Overlay:** Gemini-artiges Overlay-Panel über jeder App, Chat mit dem Agent
@@ -53,7 +53,7 @@ Original-UI: Terminal/Cyberpunk-Stil (Pixel-Font, Neon-Grün/Orange, Circuit-Hin
 
 Xiaomi 15 Ultra, HyperOS 3. Berechtigungen werden von Sir manuell erteilt; Installation per ADB vom Server.
 
-## Repo-Regeln (Fork)
+## Repo-Regeln
 
-- Eigenes Rebranding + Sicherheits-Features bleiben in diesem Fork; keine Aufspaltung der Historie.
+- Eigenes Rebranding + Sicherheits-Features bleiben in diesem Repo; keine Aufspaltung der Historie.
 - Build: `./gradlew assembleGithubRelease` mit eigenem Keystore (`keystore/flipsibridge.jks`, Passwort in Server-Env, nie im Repo).

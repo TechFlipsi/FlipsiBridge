@@ -30,7 +30,7 @@ hermes-android gives a remote AI agent full control of an Android device via Acc
 
 ## Known Limitations (Prototype)
 
-### Encryption (FlipsiBridge fork)
+### Encryption
 The upstream app connects over plaintext `ws://` by default. **FlipsiBridge hardened this**
 (GitHub issue #108):
 
