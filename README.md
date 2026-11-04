@@ -1,6 +1,22 @@
 # FlipsiBridge
 
-Give your AI agent hands. Remote Android device control for [hermes-agent](https://github.com/NousResearch/hermes-agent).
+**Remote Android device control for AI agents.** Self-hosted, MIT-licensed: give your AI agent hands on your phone - voice, camera, screen, files, notifications, health and 40+ device actions, end-to-end encrypted. Built for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) ecosystem.
+
+![License](https://img.shields.io/badge/license-MIT-green)
+![Platform](https://img.shields.io/badge/platform-Android-blue)
+![Built with](https://img.shields.io/badge/Kotlin%20%7C%20Jetpack%20Compose-blue)
+![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiBridge)
+![Tests](https://img.shields.io/badge/tests-360%2B%20passing-brightgreen)
+
+## Features
+- **End-to-end encrypted chat** - Double Ratchet (X25519 + X3DH + AES-256-GCM) phone <-> agent; the relay sees only ciphertext
+- **Multi-agent chat** - multiple agents in one app: status chips (sent/delivered/read), presence, offline spool (24 h)
+- **40+ device tools** - camera, screen, screen recording, files, notifications, microphone streaming, media, clipboard, SMS, calls, apps
+- **Health Connect integration** - read-only aggregates (steps, heart rate, sleep), default OFF per capability
+- **OEM compatibility profiles** - Xiaomi/HyperOS, Samsung/One UI, OPPO/realme/OnePlus, VIVO/iQOO, Huawei/Honor, Motorola, Nothing + generic AOSP fallback
+- **Two editions, one codebase** - GitHub edition (full features) and Play edition (Google-compliant, per flavor)
+- **Capability gating** - every device permission is an explicit opt-in switch, default denied
+- **Connects out, works behind NAT** - no port forwarding, no VPN; the phone opens the WebSocket to your own server
 
 ## How it works
 
