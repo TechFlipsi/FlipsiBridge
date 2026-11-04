@@ -1,6 +1,6 @@
 # FlipsiBridge — Projekt-Spec
 
-> Android-Geräte-Node für deinen Agenten (Hermes Agent) — Fork von [raulvidis/hermes-android](https://github.com/raulvidis/hermes-android) (MIT).
+> Android-Geräte-Node für deinen Agenten (Hermes Agent) — MIT.
 > Ziel: Eine App, die dem Agent **Hände** gibt — Screen, Tippen, Kamera, Sprache, Notifications — so sicher wie möglich, so selbstbestimmt wie möglich. Richtung: „wie die Gemini-App, nur mehr".
 
 ## Architektur
@@ -55,6 +55,5 @@ Xiaomi 15 Ultra, HyperOS 3. Berechtigungen werden von Sir manuell erteilt; Insta
 
 ## Repo-Regeln (Fork)
 
-- Upstream: raulvidis/hermes-android — Bugfixes upstream-würdig werden als PR/Issue zurückgemeldet (Issues #107–#109 sind gestellt).
 - Eigenes Rebranding + Sicherheits-Features bleiben in diesem Fork; keine Aufspaltung der Historie.
 - Build: `./gradlew assembleGithubRelease` mit eigenem Keystore (`keystore/flipsibridge.jks`, Passwort in Server-Env, nie im Repo).
