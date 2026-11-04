@@ -295,8 +295,8 @@ All notable changes to this project are documented here. Format based on [Keep a
 - recycle AccessibilityWindowInfo in findNodeById and readWidgets (#31)
 - recycle AccessibilityWindowInfo in ScreenReader (#32)
 
-[Unreleased]: https://github.com/raulvidis/hermes-android/compare/v0.5.0...HEAD
-[0.5.0]: https://github.com/raulvidis/hermes-android/releases/tag/v0.5.0
-[0.4.1]: https://github.com/raulvidis/hermes-android/releases/tag/v0.4.1
-[0.4.0]: https://github.com/raulvidis/hermes-android/releases/tag/v0.4.0
-[0.3.0]: https://github.com/raulvidis/hermes-android/releases/tag/v0.3.0
+[Unreleased]: https://github.com/TechFlipsi/FlipsiBridge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.5.0
+[0.4.1]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.4.1
+[0.4.0]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.4.0
+[0.3.0]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.3.0

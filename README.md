@@ -1,4 +1,4 @@
-# hermes-android
+# FlipsiBridge
 
 Give your AI agent hands. Remote Android device control for [hermes-agent](https://github.com/NousResearch/hermes-agent).
 
@@ -26,13 +26,13 @@ This repo contains **two components**:
 | Component | Path | Language | Purpose |
 |-----------|------|----------|---------|
 | **Android bridge app** | `hermes-android-bridge/` | Kotlin | Runs on the phone. Connects to server via WebSocket, executes commands via AccessibilityService |
-| **Python toolset** | `tools/`, `tests/` | Python | Runs on the server. 42 `android_*` tools + WebSocket relay. Also lives in [hermes-agent](https://github.com/NousResearch/hermes-agent) as the production copy |
+| **Python toolset** | `tools/`, `tests/` | Python | Runs on the server. 42 `android_*` tools + WebSocket relay. |
 
-> **Note:** The Python code exists here for standalone development and testing (`pip install -e .`, `pytest`). The production copy is in the hermes-agent repo. The Android app does not use or depend on the Python files.
+> **Note:** The Python code exists here for standalone development and testing (`pip install -e .`, `pytest`). The Android app does not use or depend on the Python files.
 
 ## Install as hermes-agent plugin (hermes-agent v0.3.0+)
 
-> **FlipsiBridge-Fork:** Sicherheitsmodell (nur `wss://` + mTLS, Capability-Gating) siehe
+> **Sicherheitsmodell** (nur `wss://` + mTLS, Capability-Gating) siehe
 > [SECURITY.md](SECURITY.md). Komplettes Setup durch einen Hermes-Agenten inklusive
 > Copy-Paste-Auftrag: [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md).
 
