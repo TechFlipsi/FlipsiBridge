@@ -8,6 +8,13 @@
 ![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiBridge)
 ![Tests](https://img.shields.io/badge/tests-360%2B%20passing-brightgreen)
 
+## Screenshots
+<p align="center">
+  <img src="docs/img/fb-home.png" width="320" alt="FlipsiBridge Verbindungs- und Kopplungsansicht (Demo-Daten)" vspace="6">
+&nbsp;&nbsp;
+  <img src="docs/img/fb-chat.png" width="320" alt="FlipsiBridge Agenten-Chat mit Beispieldaten" vspace="6">
+</p>
+
 ## Features
 - **End-to-end encrypted chat** - Double Ratchet (X25519 + X3DH + AES-256-GCM) phone <-> agent; the relay sees only ciphertext
 - **Multi-agent chat** - multiple agents in one app: status chips (sent/delivered/read), presence, offline spool (24 h)
