@@ -287,3 +287,9 @@ and a persistent systemd relay are all in. What's still ahead:
 ## Links
 
 - **hermes-agent**: [github.com/NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+
+## Star History
+[![Star History Chart](https://api.star-history.com/svg?repos=TechFlipsi/FlipsiBridge&type=Date)](https://star-history.com/#TechFlipsi/FlipsiBridge&Date)
+
+## Contributing
+Bugs, Ideen und PRs willkommen — siehe [CONTRIBUTING.md](CONTRIBUTING.md). Feature-Wünsche laufen über die [Discussions](https://github.com/TechFlipsi/FlipsiBridge/discussions/2).
