@@ -443,3 +443,43 @@ class TestPh3JaegerFixrunde:
         frame["ts"] = int(time.time() * 1000) - A._FRAME_MAX_AGE_MS - 1000
         with pytest.raises(A.CryptoFrameError, match="zu alt"):
             peer.decrypt_frame(frame)
+
+
+# ── 7. Cross-Impl-Anker: Agent-Nachricht 0 (Kotlin-Spiegel in DoubleRatchetTest.kt) ──
+# Beide Implementierungen pinnen EXAKT dieselben Bytes: der Kotlin-Test
+# agentMessage0CiphertextMatchesPythonReference muss identisch scheitern, wenn
+# hier oder dort je ein Byte wandert. Deterministisch (feste Keys + fester
+# Nonce-Präfix + _json_payload kompakt/sortiert).
+
+class TestAgentMessage0CrossAnchor:
+    ROOT0 = bytes.fromhex("ed4af0ee97db707575e330a20eac4544b608b09c43da7703facd3200b6aa3724")
+    EK_P_PUB = bytes.fromhex("7ee1114db727263624da899815825ce5a8b5ce3d2c0a60272feac2205f836634")
+    RA_PRIV = bytes.fromhex("11" * 32)
+    RA_PUB = bytes.fromhex("7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13")
+    AAD = b"fb-v1|fb3demo-0001|chat-123|agent1"
+    EXPECTED_CT = (
+        "e8037ede3d217516e20699b67a6b49521af116bc117968f93318ac741b78cb42"
+        "7b86d8564b8ec243e618b666e685643f59e50e932fd00ccc"
+    )
+
+    def test_agent_message0_ct_matches_kotlin_reference(self, monkeypatch):
+        monkeypatch.setattr(A, "_x25519_gen", lambda: (self.RA_PRIV, self.RA_PUB))
+        ratchet = A.DoubleRatchet(self.ROOT0)
+        ratchet.nonce_prefix = bytes.fromhex("aabbccdd")
+        ratchet.init_responder(self.EK_P_PUB)
+        payload = {"msg_id": "m0", "text": "Hallo vom Agent"}
+        header, nonce, ct = ratchet.encrypt(A._json_payload(payload), self.AAD)
+        assert ct.hex() == self.EXPECTED_CT
+        assert header["rk"] == self.RA_PUB.hex()
+        assert nonce == bytes.fromhex("aabbccdd") + (0).to_bytes(8, "big")
+        assert header["n"] == 0 and header["pn"] == 0
+
+    def test_agent_message0_ct_length_gcm(self, monkeypatch):
+        monkeypatch.setattr(A, "_x25519_gen", lambda: (self.RA_PRIV, self.RA_PUB))
+        agent = A.DoubleRatchet(self.ROOT0)
+        agent.nonce_prefix = bytes.fromhex("aabbccdd")
+        agent.init_responder(self.EK_P_PUB)
+        pt = A._json_payload({"msg_id": "m0", "text": "Hallo vom Agent"})
+        header, nonce, ct = agent.encrypt(pt, self.AAD)
+        assert len(ct) == len(pt) + 16  # GCM: ct + 16-Byte-Tag
+        assert header["rk"] == self.RA_PUB.hex()

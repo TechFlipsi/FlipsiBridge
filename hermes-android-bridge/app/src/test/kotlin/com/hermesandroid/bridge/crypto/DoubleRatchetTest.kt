@@ -54,8 +54,11 @@ class DoubleRatchetTest {
             msg0Aad,
         )
         // §5.7: Nachricht 0 des Agenten — byte-exakter Cross-Beweis zur Python-Seite.
+        // Referenz von der Python-SSOT erzeugt (adapter.py DoubleRatchet + _json_payload,
+        // sort_keys/separators kompakt); gleicher Vektor ist in tests/test_crypto_fixtures.py
+        // als TestAgentMessage0CrossAnchor verankert — beide Seiten pinnen dieselben Bytes.
         assertEquals(
-            "e8037ede3d217516e20699b67a6b49521af116bc117968f93318ac741b78cb427b86d8564b8ec243066ae56f050c5b0c9abc623ca04f9003",
+            "e8037ede3d217516e20699b67a6b49521af116bc117968f93318ac741b78cb427b86d8564b8ec243e618b666e685643f59e50e932fd00ccc",
             hex(enc0.ct),
         )
         assertEquals(raPub, enc0.rkHex)
