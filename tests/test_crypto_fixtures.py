@@ -306,6 +306,16 @@ class TestFingerprints:
 
 # ── 6. Dok-Konsistenz: das Fixtures-Doc enthält die verifizierten Werte ──────
 
+def _fixtures_doc_vorhanden() -> bool:
+    # secrets-docs/ ist bewusst NIE Teil des öffentlichen Checkouts (Sirs Push-Verbot);
+    # der Konsistenz-Anker lebt nur dort, wo das Doc lokal liegt. Sonst sauber SKIPpen.
+    return FIXTURES_DOC.exists()
+
+
+@pytest.mark.skipif(
+    not _fixtures_doc_vorhanden(),
+    reason="secrets-docs/PH3-KDF-FIXTURES-v1.md nicht im Checkout (privat, bewusst ungepushed) — lokale SSOT-Laufe prüfen ihn",
+)
 class TestFixturesDocConsistency:
     def test_doc_exists_and_contains_anchor_vectors(self):
         text = FIXTURES_DOC.read_text(encoding="utf-8")
