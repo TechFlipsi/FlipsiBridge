@@ -2,4 +2,66 @@ name: hermes-android
 version: 0.5.0
 description: "Remote Android device control — read screen, tap, type, open apps, take screenshots via the Hermes Bridge companion app"
 author: TechFlipsi (Fabian Kirchweger)
+requires_hermes: ">=0.3.0"
 requires_env: []
+provides_tools:
+  - android_alarm
+  - android_apk_install
+  - android_broadcast
+  - android_call
+  - android_clipboard_read
+  - android_clipboard_write
+  - android_current_app
+  - android_describe_node
+  - android_diff_screen
+  - android_drag
+  - android_event_stream
+  - android_events
+  - android_file_delete
+  - android_file_get
+  - android_file_put
+  - android_files_count
+  - android_files_list
+  - android_files_permission
+  - android_files_search
+  - android_find_nodes
+  - android_get_apps
+  - android_health
+  - android_location
+  - android_long_press
+  - android_macro
+  - android_media
+  - android_mic_fetch
+  - android_mic_record
+  - android_mic_status
+  - android_mic_stop
+  - android_network_status
+  - android_notifications
+  - android_notify_reply
+  - android_open_app
+  - android_photo
+  - android_pinch
+  - android_ping
+  - android_press_key
+  - android_read_screen
+  - android_read_widgets
+  - android_screen_hash
+  - android_screen_record
+  - android_screenshot
+  - android_scroll
+  - android_search_contacts
+  - android_send_intent
+  - android_send_sms
+  - android_setup
+  - android_speak
+  - android_speak_stop
+  - android_swipe
+  - android_tap
+  - android_tap_text
+  - android_timer
+  - android_torch
+  - android_type
+  - android_volume
+  - android_wait
+provides_hooks: []
+provides_middleware: []

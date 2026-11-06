@@ -1288,7 +1288,10 @@ def android_setup(pairing_code: str) -> str:
 
         # Start the relay server
         try:
-            from tools.android_relay import (
+            # Catalog rule 9 (private core imports): das Plugin bleibt auf der
+            # mitgelieferten Kopie — identische Datei zur tools/-Fassung,
+            # je Commit md5-pinned, statt eines privaten Hermes-Core-Imports.
+            from android_relay import (
                 start_relay,
                 is_phone_connected,
                 set_pairing_code,
