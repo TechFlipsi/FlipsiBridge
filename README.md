@@ -3,10 +3,11 @@
 **Remote Android device control for AI agents.** Self-hosted, MIT-licensed: give your AI agent hands on your phone - voice, camera, screen, files, notifications, health and 40+ device actions, end-to-end encrypted. Built for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) ecosystem.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
+![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiBridge)
+[![Build Bridge APK](https://github.com/TechFlipsi/FlipsiBridge/actions/workflows/build.yml/badge.svg)](https://github.com/TechFlipsi/FlipsiBridge/actions/workflows/build.yml)
+[![Python toolset](https://github.com/TechFlipsi/FlipsiBridge/actions/workflows/python.yml/badge.svg)](https://github.com/TechFlipsi/FlipsiBridge/actions/workflows/python.yml)
 ![Platform](https://img.shields.io/badge/platform-Android-blue)
 ![Built with](https://img.shields.io/badge/Kotlin%20%7C%20Jetpack%20Compose-blue)
-![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiBridge)
-![Tests](https://img.shields.io/badge/tests-360%2B%20passing-brightgreen)
 
 ## Screenshots
 <p align="center">
