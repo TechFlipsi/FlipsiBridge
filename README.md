@@ -283,7 +283,14 @@ and a persistent systemd relay are all in. What's still ahead:
 - iOS support via Shortcuts/accessibility bridge
 - Web dashboard for monitoring phone activity
 - Cross-app workflows — "find a restaurant on Maps, share on WhatsApp, book an Uber there"
+- Agent-framework adapters — OpenClaw & co. (community adapters onto the framework-agnostic wire protocol)
 - Dedicated "Hermes Phone" — a phone that boots straight into agent mode
+
+## Other agent frameworks (OpenClaw & co.)
+
+FlipsiBridge's agent-facing side is deliberately thin: the **wire protocol between your phone and the relay is agent-framework-agnostic** — the E2E-encrypted channel (Double Ratchet) terminates at *your* relay, and only a small adapter layer connects that relay to your agent runtime's tool system. Today a first-class adapter ships for **Hermes Agent** (Python toolset + plugin, above). The same pattern is architecturally portable to other runtimes — e.g. **OpenClaw**'s plugin/skill system (Node/TypeScript) could speak the relay protocol (WebSocket + JSON, Web Crypto for the ratchet) and expose the 40+ device tools as native OpenClaw tools.
+
+No OpenClaw adapter ships yet — so FlipsiBridge currently runs on Hermes only. If you're building one, we want to hear from you: open an issue in this repo and we'll help with protocol details and cross-language crypto vectors (reference implementations exist in Kotlin and Python and are pinned by tests on both sides).
 
 ## Links
 
