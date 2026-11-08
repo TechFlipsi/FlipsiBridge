@@ -374,77 +374,133 @@ class TestCurrentApp:
 
 
 class TestSetup:
-    @responses.activate
-    def test_setup_saves_config(self, monkeypatch):
-        """android_setup saves pairing code and sets env vars."""
-        from tools.android_tool import _get_public_ip
+    def test_setup_requires_configured_secret(self, monkeypatch):
+        """Ohne konfigurierte Secrets (Katalog-Review #2) fail-closed: kein
+        Relay-Start, keine Env-Writes, saubere Fehlermeldung."""
+        from tools import android_tool
 
-        monkeypatch.setattr("tools.android_tool._get_public_ip", lambda: "1.2.3.4")
-        result = json.loads(android_setup("ABC123"))
-        assert os.environ.get("ANDROID_BRIDGE_TOKEN") == "ABC123"
-        assert "localhost" in os.environ.get("ANDROID_BRIDGE_URL", "")
+        monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
+        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
+        result = json.loads(android_setup())
+        assert result["status"] == "error"
+        assert "ANDROID_BRIDGE_TOKEN" in result["message"]
+
+    def test_setup_starts_relay_and_writes_nothing(self, monkeypatch, tmp_path):
+        """android_setup liest URL/Token über die Secret-Route, startet das
+        Relay mit DEM Token und schreibt niemals .env / os.environ."""
+        from tools import android_tool
+        import tools.android_relay as relay
+
+        monkeypatch.setenv("ANDROID_BRIDGE_TOKEN", "CODE123")
+        monkeypatch.setenv("ANDROID_BRIDGE_URL", "http://127.0.0.1:8766")
+        monkeypatch.setattr(android_tool.time, "sleep", lambda _s: None)
+        calls: dict = {}
+
+        monkeypatch.setattr(
+            relay, "start_relay",
+            lambda pairing_code, port: calls.update(code=pairing_code, port=port))
+        monkeypatch.setattr(relay, "is_phone_connected", lambda: True)
+        monkeypatch.setattr(
+            relay, "set_pairing_code", lambda code: calls.update(code=code))
+
+        result = json.loads(android_setup())
+
+        assert result["status"] == "ok"
+        assert result["phone_connected"] is True
+        assert calls["code"] == "CODE123"
+        # Kein Env-Write aus dem Plugin (Katalog-Review #2)
+        assert os.environ.get("ANDROID_BRIDGE_TOKEN") == "CODE123"  # unverändert
+        assert not (tmp_path / ".env").exists()
+
+    def test_setup_schema_has_no_pairing_code_arg(self):
+        from tools.android_tool import _SCHEMAS
+
+        schema = _SCHEMAS["android_setup"]["parameters"]
+
+        assert schema["properties"] == {}
+        assert schema["required"] == []
+
+
+class TestApprovalGuard:
+    """Katalog-Review #6: SMS, Anrufe, Datei-Delete, Intents/Broadcasts,
+    APK-Install und android_setup laufen NUR mit menschlicher Freigabe
+    (pre_tool_call-Hook → Hermes-Approval-Gate); android_macro verweigert
+    sie als Schritte (es würde den Hook umgehen)."""
+
+    def test_macro_refuses_gated_steps(self, monkeypatch):
+        from tools import android_tool
+
+        monkeypatch.setattr(
+            android_tool, "_post",
+            lambda *_a, **_k: pytest.fail("_post must not be called for gated steps"))
+        result = json.loads(
+            android_macro([{"tool": "android_send_sms", "args": {"to": "+1234", "body": "x"}}])
+        )
+        assert "approval-gated" in result["error"]
+        assert result["completed"] == 0
+
+    def test_macro_allows_safe_steps(self, monkeypatch):
+        from tools import android_tool
+        import responses as _responses
+
+        with _responses.RequestsMock() as rsps:
+            rsps.add(
+                _responses.GET,
+                "http://localhost:8766/screen",
+                json={"tree": [], "count": 0},
+            )
+            result = json.loads(
+                android_macro([{"tool": "android_read_screen", "args": {}}])
+            )
+        assert result["success"] is True
+        assert result["completed"] == 1
+
+    def test_hook_returns_approval_request_for_gated_tools(self):
+        from tools.android_tool import android_pre_tool_call
+
+        directive = android_pre_tool_call("android_send_sms", {})
+        assert directive["action"] == "approve"
+        assert directive["rule_key"].startswith("hermes-android:")
+        assert android_pre_tool_call("android_apk_install", {})["action"] == "approve"
+
+    def test_hook_ignores_safe_tools(self):
+        from tools.android_tool import android_pre_tool_call
+
+        assert android_pre_tool_call("android_ping") is None
+        assert android_pre_tool_call("android_read_screen") is None
 
 
 class TestEnvFileFallback:
-    """The gateway process may lack ANDROID_* vars in os.environ even though
-    they exist in ~/.hermes/.env.  _bridge_token/_bridge_url must fall back to
-    reading the .env file so the relay still authenticates."""
+    """Katalog-Review #2: Config läuft über die Secret-Route (profilbezogen
+    innerhalb Hermes); im Standalone-Fall (Tests ohne Hermes-Core) liest
+    _get_secret die Prozess-Env. Kein .env-Parsing mehr."""
 
-    def test_token_from_env_file_when_os_environ_empty(self, monkeypatch, tmp_path):
-        from tools import android_tool
-
-        monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
-        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
-        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
-
-        env_file = tmp_path / ".env"
-        env_file.write_text("ANDROID_BRIDGE_TOKEN=SECRET123\nANDROID_BRIDGE_URL=http://1.2.3.4:8766\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        assert android_tool._bridge_token() == "SECRET123"
-        assert android_tool._bridge_url() == "http://1.2.3.4:8766"
-
-    def test_os_environ_wins_over_env_file(self, monkeypatch, tmp_path):
+    def test_token_from_env(self, monkeypatch):
         from tools import android_tool
 
         monkeypatch.setenv("ANDROID_BRIDGE_TOKEN", "FROM_ENV")
-        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
-        env_file = tmp_path / ".env"
-        env_file.write_text("ANDROID_BRIDGE_TOKEN=FROM_FILE\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
         assert android_tool._bridge_token() == "FROM_ENV"
 
-    def test_missing_env_file_returns_none(self, monkeypatch, tmp_path):
+    def test_token_unset_returns_none(self, monkeypatch):
         from tools import android_tool
 
         monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
-        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
-
         assert android_tool._bridge_token() is None
 
-    def test_bridge_url_fail_closed_without_config(self, monkeypatch, tmp_path):
-        """W3-01 LEAK-FIX: ohne ANDROID_BRIDGE_URL (env + env-file) gibt es
-        KEINE Bridge-URL — ValueError statt verstecktem Default-IP-Literal."""
+    def test_bridge_url_fail_closed_without_config(self, monkeypatch):
+        """Fail-closed bleibt: ohne ANDROID_BRIDGE_URL (Secret-Route/Env) gibt
+        es KEINE Bridge-URL — ValueError statt verstecktem Default-IP-Literal."""
         from tools import android_tool
 
         monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
-        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
-
         with pytest.raises(ValueError, match="ANDROID_BRIDGE_URL"):
             android_tool._bridge_url()
 
-    def test_check_requirements_false_when_url_missing(self, monkeypatch, tmp_path):
-        """W3-01: _check_requirements fängt den Fail-closed-Fehler kontrolliert
-        (False = nicht konfiguriert), statt zu crashen."""
+    def test_check_requirements_false_when_url_missing(self, monkeypatch):
+        """Fail-closed-Fehler kontrolliert abgefangen (False = nicht konfiguriert)."""
         from tools import android_tool
 
         monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
-        monkeypatch.setattr(android_tool, "_ENV_FILE_CACHE", None)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "nonexistent"))
-
         assert android_tool._check_requirements() is False
 
     def test_source_contains_no_hardcoded_lan_ip(self):

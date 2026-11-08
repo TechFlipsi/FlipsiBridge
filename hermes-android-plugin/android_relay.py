@@ -41,6 +41,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from pathlib import Path
 from typing import Optional, TypeGuard
 
 import aiohttp
@@ -151,7 +152,7 @@ def start_relay(pairing_code: str, port: int = 0) -> None:
     # leerem Code akzeptierte Phone-WS + alle Pairing-Code-Routen OHNE Header).
     if not _valid_pairing_code(pairing_code):
         logger.error(
-            "start_relay: leerer/ungültiger Pairing-Code — abgelehnt (fail-closed)")
+            "start_relay: empty/invalid pairing code — rejected (fail-closed)")
         raise ValueError("pairing code must be a non-empty string")
     if port == 0:
         port = int(os.getenv("ANDROID_RELAY_PORT", "8766"))
@@ -312,11 +313,25 @@ def _apk_version_key(name: str) -> tuple[int, int, int]:
 _AGENT_TOKEN_PREFIX = "ANDROID_AGENT_TOKEN_"
 
 
+def _default_state_dir() -> str:
+    """Laufzeit-State-Verzeichnis: innerhalb von Hermes das kanonische
+    Plugin-Datenverzeichnis (<hermes home>/plugin-data/hermes-android —
+    Teknium-Katalog-Review #2), außerhalb (Relay-Daemon/Tests ohne Hermes-Core)
+    der /opt-Fallback für Standalone-Deploys."""
+    try:
+        from plugins.plugin_storage import plugin_data_dir
+
+        return str(plugin_data_dir("hermes-android"))
+    except Exception:
+        return "/opt/flipsibridge"
+
+
 def _agent_config_path() -> str:
-    """Pfad zur Server-Config (env-überschreibbar, Default = Live-Ablage)."""
-    return os.getenv("ANDROID_RELAY_CONFIG", "/opt/flipsibridge/relay-config.json")
-
-
+    """Pfad zur Agent-Config (env-überschreibbar; Default = Plugin-Datenverzeichnis
+    unter Hermes, /opt/flipsibridge standalone)."""
+    return os.getenv(
+        "ANDROID_RELAY_CONFIG",
+        os.path.join(_default_state_dir(), "relay-config.json"))
 def _load_relay_config() -> dict:
     """relay-config.json lesen (Agent-Tokens, Display-Namen, Chat-Limit).
 
@@ -330,7 +345,7 @@ def _load_relay_config() -> dict:
     except OSError:
         return {}
     except json.JSONDecodeError:
-        logger.warning("relay-config.json ist kein gültiges JSON — Agent-Zugang deaktiviert")
+        logger.warning("relay-config.json is not valid JSON — agent access deactivated")
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -464,26 +479,26 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
     oder None (gültig). require_header=False für chunk_ack (nur media_id/seq)."""
     media_id = data.get("media_id")
     if not isinstance(media_id, str) or not _MEDIA_ID_RE.fullmatch(media_id):
-        return "media_id fehlt/ungültig (8-64 Z., [A-Za-z0-9_-])"
+        return "media_id missing/invalid (8-64 chars, [A-Za-z0-9_-])"
     if not _utf8_encodable(media_id):
-        return "media_id nicht UTF-8-codierbar"
+        return "media_id not UTF-8 encodable"
     seq = data.get("seq")
     total = data.get("total")
     if not require_header:
         if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-            return "seq ungültig"
+            return "seq invalid"
         return None
     if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
-        return "seq ungültig"
+        return "seq invalid"
     if not isinstance(total, int) or isinstance(total, bool) or total < 1 \
             or total > _MEDIA_MAX_CHUNKS:
-        return "total ungültig"
+        return "total invalid"
     if seq >= total:
         return "seq ≥ total"
     if seq == 0:
         kind = data.get("kind")
         if not isinstance(kind, str) or kind not in _MEDIA_KINDS:
-            return "kind fehlt/ungültig (image/video/file/voice)"
+            return "kind missing/invalid (image/video/file/voice)"
         name = data.get("name")
         if not isinstance(name, str) or not name.strip() \
                 or len(name) > _MEDIA_NAME_MAX_LEN:
@@ -491,11 +506,11 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
         mime = data.get("mime")
         if mime is not None and (not isinstance(mime, str)
                                   or len(mime) > _MEDIA_NAME_MAX_LEN):
-            return "mime ungültig (≤128)"
+            return "mime invalid (≤128)"
         size = data.get("size")
         if not isinstance(size, int) or isinstance(size, bool) or size < 1 \
                 or size > _media_max_bytes():
-            return f"size ungültig (max {_media_max_bytes()} Bytes)"
+            return f"size invalid (max {_media_max_bytes()} bytes)"
     return None
 
 # ── SEC-W1 B F-01: harte Größen-Grenzen (Relay-RAM-Schutz, Shared-Infra) ────
@@ -681,8 +696,10 @@ def _fingerprint_of_pub(pub_hex: str) -> str:
 
 
 def _device_keys_path() -> str:
-    """Pfad der Phone-Key-Registry (env-überschreibbar, Default = Live-Ablage)."""
-    return os.getenv("ANDROID_RELAY_KEYS", "/opt/flipsibridge/relay-keys.json")
+    """Pfad der Phone-Key-Registry (env-überschreibbar; Default wie _agent_config_path)."""
+    return os.getenv(
+        "ANDROID_RELAY_KEYS",
+        os.path.join(_default_state_dir(), "relay-keys.json"))
 
 
 def _load_device_keys() -> dict:
@@ -900,8 +917,8 @@ def set_pairing_code(code: str) -> None:
     """
     if not _valid_pairing_code(code):
         logger.error(
-            "set_pairing_code: leerer/ungültiger Pairing-Code verworfen "
-            "(fail-closed) — der bisherige Code bleibt gültig")
+            "set_pairing_code: empty/invalid pairing code rejected "
+            "(fail-closed) — the previous code stays valid")
         return
     with _relay_lock:
         state = _relay_instance
@@ -977,9 +994,9 @@ def _ssl_context() -> Optional["ssl.SSLContext"]:
         return None
     if tls_flag == "1" and not (cert_path and key_path):
         raise RuntimeError(
-            "ANDROID_RELAY_TLS=1 ohne ANDROID_RELAY_CERT/ANDROID_RELAY_KEY — "
-            "TLS-Pflicht-Konfig unvollständig (W3-01). Zertifikat + Key "
-            "hinterlegen oder ANDROID_RELAY_TLS entfernen.")
+            "ANDROID_RELAY_TLS=1 without ANDROID_RELAY_CERT/ANDROID_RELAY_KEY — "
+            "mandatory TLS configuration incomplete (W3-01). Provide a "
+            "certificate and key or remove ANDROID_RELAY_TLS.")
     if not cert_path or not key_path:
         return None
 
@@ -1141,7 +1158,7 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
 
     # Authenticated APK distribution for /apk_install self-update (FlipsiBridge).
     # Serves the newest APK in the relay's apk_dir; refuses without valid token.
-    apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR", "/opt/flipsibridge")
+    apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR") or _default_state_dir()
 
     async def apk_latest(request: web.Request) -> web.StreamResponse:
         # v0.10.8 (Review-Fix): Auth gegen denselben Pairing-Code wie alle anderen
@@ -1171,7 +1188,7 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
         except FileNotFoundError:
             candidates = []
         if not candidates:
-            logger.warning("APK latest: kein APK vorhanden in %s", apk_dir)
+            logger.warning("APK latest: no APK available in %s", apk_dir)
             return web.json_response({"error": "No APK available"}, status=404)
         path = os.path.join(apk_dir, candidates[0])
         # v0.10.8: SHA-256 des APK als Header mitschicken — die App verifiziert
@@ -1228,10 +1245,10 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     if not ssl_ctx and host not in ("localhost", "127.0.0.1", "::1") \
             and os.getenv("ANDROID_RELAY_ALLOW_PLAINTEXT") != "1":
         raise RuntimeError(
-            "ANDROID_RELAY_HOST != localhost ohne TLS verweigert — Pairing-Code "
-            "und Chat-Inhalte liefen sonst im Klartext. TLS via "
-            "ANDROID_RELAY_CERT/ANDROID_RELAY_KEY konfigurieren ODER für ein "
-            "privates LAN explizit ANDROID_RELAY_ALLOW_PLAINTEXT=1 setzen.")
+            "ANDROID_RELAY_HOST != localhost without TLS is refused — the pairing "
+            "code and chat contents would otherwise travel in cleartext. Configure "
+            "TLS via ANDROID_RELAY_CERT/ANDROID_RELAY_KEY, or for a private LAN "
+            "explicitly set ANDROID_RELAY_ALLOW_PLAINTEXT=1.")
     site = web.TCPSite(runner, host, state.port, ssl_context=ssl_ctx)
     state.site = site
     await site.start()
@@ -1427,8 +1444,8 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
         if (state.pairing_epoch != pairing_epoch
                 or not _constant_time_eq(token, state.pairing_code)):
             logger.warning(
-                "Phone WS verworfen — Pairing-Code rotierte während des "
-                "Handshakes (TOCTOU-Fenster geschlossen)")
+                "Phone WS rejected — pairing code rotated during the "
+                "handshake (TOCTOU window closed)")
             await ws.close(code=aiohttp.WSCloseCode.POLICY_VIOLATION,
                            message=b"pairing code rotated")
             return ws

@@ -1,6 +1,6 @@
 # FlipsiBridge
 
-**Remote Android device control for AI agents.** Self-hosted, MIT-licensed: give your AI agent hands on your phone - voice, camera, screen, files, notifications, health and 40+ device actions, end-to-end encrypted. Built for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) ecosystem.
+**Remote Android device control for AI agents.** Self-hosted, MIT-licensed: give your AI agent hands on your phone — voice, camera, screen, files, notifications, health and 40+ device actions. Chat and media are end-to-end encrypted with a Double Ratchet (the relay sees only ciphertext); device commands travel over your own TLS-authenticated relay. Built for the [Hermes Agent](https://github.com/NousResearch/hermes-agent) ecosystem.
 
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Release](https://img.shields.io/github/v/release/TechFlipsi/FlipsiBridge)
@@ -50,11 +50,11 @@ This repo contains **two components**:
 | Component | Path | Language | Purpose |
 |-----------|------|----------|---------|
 | **Android bridge app** | `hermes-android-bridge/` | Kotlin | Runs on the phone. Connects to server via WebSocket, executes commands via AccessibilityService |
-| **Python toolset** | `tools/`, `tests/` | Python | Runs on the server. 42 `android_*` tools + WebSocket relay. |
+| **Python toolset** | `tools/`, `tests/` | Python | Runs on the server. 58 `android_*` tools + WebSocket relay. |
 
 > **Note:** The Python code exists here for standalone development and testing (`pip install -e .`, `pytest`). The Android app does not use or depend on the Python files.
 
-## Install as hermes-agent plugin (hermes-agent v0.3.0+)
+## Install as hermes-agent plugin (hermes-agent v0.23.0+)
 
 > **Sicherheitsmodell** (nur `wss://` + mTLS, Capability-Gating) siehe
 > [SECURITY.md](SECURITY.md). Komplettes Setup durch einen Hermes-Agenten inklusive

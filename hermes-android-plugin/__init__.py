@@ -1,13 +1,21 @@
 """
-hermes-android plugin — registers 42 android_* tools through the hermes-agent
+hermes-android plugin — registers 58 android_* tools through the hermes-agent
 plugin system.
 
-Drop this folder into ~/.hermes/plugins/hermes-android and restart hermes.
+Install via the plugin catalog, or drop this folder into
+~/.hermes/plugins/hermes-android and restart hermes. Configuration lives in
+the user's profile (install prompt / `hermes config`): ANDROID_BRIDGE_URL and
+ANDROID_BRIDGE_TOKEN — this plugin never reads or writes .env files itself.
 """
 
 from pathlib import Path
 
-from .android_tool import _SCHEMAS, _HANDLERS, _check_requirements
+from .android_tool import (
+    _SCHEMAS,
+    _HANDLERS,
+    _check_requirements,
+    android_pre_tool_call,
+)
 
 
 def register(ctx):
@@ -20,6 +28,13 @@ def register(ctx):
             handler=_HANDLERS[tool_name],
             check_fn=(lambda: True) if tool_name == "android_setup" else _check_requirements,
         )
+
+    # Risk-gated actions (SMS, calls, file deletion, intents/broadcasts, APK
+    # install, relay setup) route through Hermes' human-approval gate
+    # (Teknium catalog review #6): interactive contexts prompt the person,
+    # cron honours approvals.cron_mode, other unattended contexts refuse
+    # (fail closed). The plugin never auto-approves.
+    ctx.register_hook("pre_tool_call", android_pre_tool_call)
 
     # Register the usage skill so the agent learns to prefer the accessibility
     # tree (android_read_screen / android_find_nodes / android_tap_text) over

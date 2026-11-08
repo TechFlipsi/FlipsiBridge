@@ -83,7 +83,7 @@ class TestFinRed01EmptyPairingCode:
         set_pairing_code(None)
         # Verwerf-Route sichtbar im Log …
         dumped = "\n".join(r.getMessage() for r in caplog.records)
-        assert "set_pairing_code: leerer/ungültiger Pairing-Code verworfen" in dumped
+        assert "set_pairing_code: empty/invalid pairing code rejected" in dumped
         # … und der ALT-Code bleibt gültig (503 = Auth OK, kein Phone dran).
         r = requests.get(f"http://localhost:{self.PORT}/ping",
                          headers={"Authorization": f"Bearer {self.CODE}"}, timeout=5)
@@ -92,26 +92,27 @@ class TestFinRed01EmptyPairingCode:
 
     def test_android_setup_rejects_empty_code_writes_nothing(self, monkeypatch):
         from tools import android_tool as tool_mod
+        import sys
 
-        env_writes = []
-        monkeypatch.setattr(tool_mod, "_update_env_file",
-                            lambda env_path, key, value: env_writes.append(key))
         monkeypatch.setitem(sys.modules, "hermes_cli", None)
-        saved = os.environ.get("ANDROID_BRIDGE_TOKEN")
-        try:
-            for bad in ("", "   ", None):
-                result = json.loads(tool_mod.android_setup(bad))
-                assert result.get("status") == "error", (
-                    f"Leerer Code muss abgewiesen werden, kam: {result}")
-        finally:
-            if saved is None:
-                os.environ.pop("ANDROID_BRIDGE_TOKEN", None)
-            else:
-                os.environ["ANDROID_BRIDGE_TOKEN"] = saved
-        assert env_writes == [], "Bei leerem Code darf NICHTS in die .env geschrieben werden"
-        if saved is None:
-            assert os.environ.get("ANDROID_BRIDGE_TOKEN") in (None, saved), (
-                "Leerer Code darf das Prozess-Env nicht anfassen")
+        monkeypatch.setitem(sys.modules, "agent", None)
+        monkeypatch.delenv("ANDROID_BRIDGE_TOKEN", raising=False)
+        monkeypatch.delenv("ANDROID_BRIDGE_URL", raising=False)
+
+        # Token nicht gesetzt → fail-closed Config-Fehler, NICHTS wird
+        # in .env oder os.environ geschrieben (Katalog-Review #2).
+        result = json.loads(tool_mod.android_setup())
+        assert result.get("status") == "error", (
+            f"Token ohne Konfiguration muss abgewiesen werden, kam: {result}")
+        assert "ANDROID_BRIDGE_TOKEN" in result["message"]
+
+        # Whitespace-Token erreicht das Relay und wird dort fail-closed verworfen.
+        monkeypatch.setenv("ANDROID_BRIDGE_URL", "http://localhost:1")
+        monkeypatch.setenv("ANDROID_BRIDGE_TOKEN", "   ")
+        result = json.loads(tool_mod.android_setup())
+        assert result.get("status") == "error", (
+            f"Whitespace-Code muss abgewiesen werden, kam: {result}")
+        assert "pairing code" in result["message"]
 
     def test_constant_time_eq_treats_empty_as_mismatch(self):
         from tools.android_relay import _constant_time_eq
@@ -215,7 +216,7 @@ class TestFinRed02RotationToctou:
                 time.sleep(0.4)
 
             dumped = "\n".join(r.getMessage() for r in caplog.records)
-            assert dumped.count("TOCTOU-Fenster geschlossen") == 2, (
+            assert dumped.count("TOCTOU window closed") == 2, (
                 "Beide Rennfenster-Runden müssen die Verwurf-Warnung loggen")
         finally:
             aiohttp_web.WebSocketResponse.prepare = orig_prepare

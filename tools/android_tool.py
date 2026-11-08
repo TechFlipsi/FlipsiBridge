@@ -19,7 +19,14 @@ Tools registered:
   - android_wait            wait for element to appear
   - android_get_apps        list installed apps
   - android_current_app     get foreground app package name
-  - android_setup           configure bridge URL and pairing code
+  - android_setup           start the relay with configured settings
+
+Catalog-review fixes (Teknium, 08.11.2026): package-safe relay import (#1),
+credentials only via Hermes' profile-scoped secret route — no .env parsing, no
+os.environ writes, the pairing code is never a model-tool argument (#2), no
+public-IP lookup (#5), approval-gated risky actions via a pre_tool_call hook
+that Hermes resolves with request_tool_approval + android_macro refuses gated
+steps (#6), English user-facing strings (#7).
   - android_clipboard_read  read phone clipboard
   - android_clipboard_write write text to phone clipboard
   - android_notifications   read recent phone notifications
@@ -74,66 +81,62 @@ from urllib.parse import quote
 # by setting ANDROID_BRIDGE_URL to the phone's IP.
 
 
-_ENV_FILE_CACHE: Optional[dict] = None
+_APPROVAL_GATED_TOOLS = frozenset(
+    {
+        "android_send_sms",
+        "android_call",
+        "android_file_delete",
+        "android_apk_install",
+        "android_send_intent",
+        "android_broadcast",
+        "android_setup",
+    }
+)
 
 
-def _env_file_vars() -> dict:
-    """Parse ~/.hermes/.env once, cached.
+def _get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Resolve a config value through Hermes' profile-scoped secret route
+    (catalog review #2). This plugin never parses .env files and never writes
+    os.environ; profile multiplexing cannot leak another profile's value here.
 
-    The gateway process does not always export every .env var into os.environ
-    (it loads .env for its own config but the plugin runs in a context where
-    ANDROID_BRIDGE_TOKEN may be missing).  Fall back to reading the file
-    directly so auth works regardless of how the process was started.
+    Standalone editions (relay daemon, test runs) without the Hermes core on
+    sys.path fall back to the process environment — the only credential source
+    in that context (there is no profile concept that could leak).
     """
-    global _ENV_FILE_CACHE
-    if _ENV_FILE_CACHE is not None:
-        return _ENV_FILE_CACHE
-    _ENV_FILE_CACHE = {}
-    env_path = os.path.join(
-        os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), ".env"
-    )
     try:
-        with open(env_path, "r", encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                _ENV_FILE_CACHE[key.strip()] = value.strip().strip('"').strip("'")
-    except Exception:
-        pass
-    return _ENV_FILE_CACHE
-
-
-def _env(key: str) -> Optional[str]:
-    """os.environ first, then ~/.hermes/.env as a fallback."""
-    val = os.getenv(key)
-    if val:
-        return val
-    return _env_file_vars().get(key)
+        from agent.secret_scope import get_secret as _core_get_secret
+        from agent.secret_scope import UnscopedSecretError
+    except ImportError:
+        return os.getenv(name, default)
+    try:
+        return _core_get_secret(name, default)
+    except UnscopedSecretError:
+        # Multiplexing active but no profile scope bound to this thread:
+        # treat as unset — callers fail closed on missing configuration.
+        return default
 
 
 def _bridge_url() -> str:
-    """URL of the relay (default) or direct phone connection.
+    """URL of the relay (default) or a direct phone connection.
 
-    W3-01 LEAK-FIX (Sir-Fund 03.11.): KEIN hartes IP-Literal mehr im
-    Quellcode (der bisherige Fallback enthielt eine private LAN-IP — im
-    öffentlichen Repo ein Leak). Fail-closed: ohne ANDROID_BRIDGE_URL
-    (os.environ oder ~/.hermes/.env) gibt es KEINE Bridge-URL — ValueError
-    statt verstecktem Default. Der Agent muss explizit konfiguriert sein;
-    _check_requirements fängt den Fehler und meldet 'nicht konfiguriert'.
+    Fail-closed (W3-01): without ANDROID_BRIDGE_URL there is NO bridge URL —
+    no hidden IP fallback, no default (the old /opt literal is gone). The user
+    sets it via the plugin install prompt or 'hermes config'; it points at the
+    relay (e.g. http://127.0.0.1:8766) or at a TLS reverse proxy in front of it.
     """
-    url = _env("ANDROID_BRIDGE_URL")
+    url = _get_secret("ANDROID_BRIDGE_URL")
     if not url:
         raise ValueError(
-            "ANDROID_BRIDGE_URL ist nicht gesetzt — Bridge-URL muss explizit "
-            "konfiguriert werden (env oder ~/.hermes/.env); kein Default, "
-            "fail-closed (W3-01)")
+            "ANDROID_BRIDGE_URL is not configured — set it in the profile .env "
+            "via the install prompt or 'hermes config'; no default, fail-closed "
+            "(W3-01).")
     return url
 
 
 def _bridge_token() -> Optional[str]:
-    return _env("ANDROID_BRIDGE_TOKEN")
+    """Relay auth token = the pairing code the user configured — never a model
+    argument, never written by this plugin (catalog review #2)."""
+    return _get_secret("ANDROID_BRIDGE_TOKEN")
 
 
 def _relay_port() -> int:
@@ -535,6 +538,22 @@ def android_macro(steps: list, name: str = "unnamed") -> str:
     for i, step in enumerate(steps):
         tool_name = step.get("tool", "")
         args = step.get("args", {})
+
+        if tool_name in _APPROVAL_GATED_TOOLS:
+            # Teknium-Katalog-Review #6: android_macro ruft die Handler direkt
+            # auf und würde den per-tool pre_tool_call-Approval-Hook umgehen —
+            # stattdessen verweigern.
+            return json.dumps(
+                {
+                    "error": (
+                        f"Step {i}: '{tool_name}' is approval-gated and cannot run "
+                        "inside android_macro (it bypasses the approval hook). "
+                        "Call it as its own tool call."
+                    ),
+                    "completed": i,
+                    "results": results,
+                }
+            )
 
         handler = _HANDLERS.get(tool_name)
         if handler is None:
@@ -1217,153 +1236,124 @@ def android_broadcast(action: str, extras: dict = None) -> str:
         return json.dumps({"error": str(e)})
 
 
-def _get_public_ip() -> str:
-    """Detect this server's public IP address."""
-    for service in [
-        "https://api.ipify.org",
-        "https://ifconfig.me/ip",
-        "https://icanhazip.com",
-    ]:
-        try:
-            r = requests.get(service, timeout=3)
-            if r.status_code == 200:
-                return r.text.strip()
-        except Exception:
-            continue
-    # Fallback: hostname
-    import socket
+def android_setup() -> str:
+    """Start the Android bridge relay with the settings the user configured.
 
-    try:
-        return socket.gethostbyname(socket.gethostname())
-    except Exception:
-        return "<your-server-ip>"
-
-
-def android_setup(pairing_code: str) -> str:
+    ANDROID_BRIDGE_URL and ANDROID_BRIDGE_TOKEN (the pairing code) are read
+    through Hermes' secret route (catalog review #2) — the install prompt or
+    'hermes config' saves them; the pairing code is NEVER a model-tool argument
+    and this plugin never writes .env or os.environ. The phone dials OUT to
+    this relay, reached as ANDROID_RELAY_HOST with TLS
+    (ANDROID_RELAY_CERT/ANDROID_RELAY_KEY) or behind the user's own TLS reverse
+    proxy (catalog review #5) — no public-IP lookup is performed.
     """
-    Start the Android bridge relay and configure the pairing code.
-    The relay runs on this server and waits for the phone to connect via WebSocket.
-
-    The user needs to:
-    1. Open the Hermes Bridge app on their phone
-    2. Enter this server's public IP and the pairing code
-    3. The phone connects to the relay automatically
-
-    Call this when the user provides their pairing code from the Hermes Bridge app.
-    Example: android_setup("K7V3NP")
-    """
-    # FIN-T1 RED-01: leerer/null-Code = fail-closed abgewiesen (einheitliche
-    # Verwerf-Route wie start_relay/set_pairing_code) — NIEMALS einen leeren
-    # Code in .env schreiben (PoC: leere ANDROID_BRIDGE_TOKEN = Relay-Auth-
-    # Bypass, jede Anfrage ohne Header war akzeptiert).
-    if not isinstance(pairing_code, str) or not pairing_code.strip():
-        return json.dumps({
-            "status": "error",
-            "message": "Pairing code must be a non-empty string (fail-closed).",
-        })
+    token = _bridge_token()
+    url = _get_secret("ANDROID_BRIDGE_URL")
+    if not token or not url:
+        return json.dumps(
+            {
+                "status": "error",
+                "message": (
+                    "ANDROID_BRIDGE_URL and ANDROID_BRIDGE_TOKEN must be configured before "
+                    "setup. Run 'hermes config' (or accept the install prompt) and save "
+                    "both: ANDROID_BRIDGE_TOKEN = the pairing code from the Hermes Bridge "
+                    "app; ANDROID_BRIDGE_URL = the relay address, e.g. http://127.0.0.1:8766 "
+                    "or your TLS relay/reverse proxy."
+                ),
+            }
+        )
     try:
         port = _relay_port()
-        public_ip = _get_public_ip()
+        # Catalog rule 9 (private core imports): die tools/-Fassung nutzt
+        # den Paket-Kontext der Standalone-Edition (Repo-Root auf sys.path).
+        from tools.android_relay import (
+            start_relay,
+            is_phone_connected,
+            set_pairing_code,
+        )
 
-        # Save config to ~/.hermes/.env
-        relay_url = f"http://localhost:{port}"
+        start_relay(pairing_code=token, port=port)
+        # SEC-W2 W2-1: start_relay is a silent no-op with a running relay — a
+        # code rotation (e.g. after a leak) must still reach the relay.
+        # set_pairing_code always applies and kicks old-code phone WSs.
+        set_pairing_code(token)
+
+        # Check if phone is already connected
+        time.sleep(1)
+        phone_connected = is_phone_connected()
+
         try:
-            from hermes_cli.config import save_env_value
+            from urllib.parse import urlparse
 
-            save_env_value("ANDROID_BRIDGE_URL", relay_url)
-            save_env_value("ANDROID_BRIDGE_TOKEN", pairing_code)
-            save_env_value("ANDROID_RELAY_PORT", str(port))
-        except ImportError:
-            from pathlib import Path
-
-            env_path = Path.home() / ".hermes" / ".env"
-            env_path.parent.mkdir(parents=True, exist_ok=True)
-            _update_env_file(env_path, "ANDROID_BRIDGE_URL", relay_url)
-            _update_env_file(env_path, "ANDROID_BRIDGE_TOKEN", pairing_code)
-            _update_env_file(env_path, "ANDROID_RELAY_PORT", str(port))
-
-        # Update current process env
-        os.environ["ANDROID_BRIDGE_URL"] = relay_url
-        os.environ["ANDROID_BRIDGE_TOKEN"] = pairing_code
-
-        # Start the relay server
-        try:
-            from tools.android_relay import (
-                start_relay,
-                is_phone_connected,
-                set_pairing_code,
+            url_host = urlparse(url).hostname or ""
+        except (ValueError, AttributeError):
+            url_host = ""
+        if url_host and url_host not in ("localhost", "127.0.0.1", "::1"):
+            address_line = (
+                "Point the Hermes Bridge app at the address configured in "
+                f"ANDROID_BRIDGE_URL (host: {url_host}) — your TLS relay/reverse "
+                "proxy in front of this relay."
+            )
+        else:
+            bind_host = os.getenv("ANDROID_RELAY_HOST", "localhost")
+            address_line = (
+                f"This relay binds to {bind_host}:{port}. For a phone over the network, "
+                "bind ANDROID_RELAY_HOST to a reachable address with TLS "
+                "(ANDROID_RELAY_CERT + ANDROID_RELAY_KEY), or front the relay with your "
+                "own TLS reverse proxy and aim ANDROID_BRIDGE_URL at that address."
             )
 
-            start_relay(pairing_code=pairing_code, port=port)
-            # SEC-W2 W2-1: start_relay ist bei laufendem Relay ein stilles
-            # No-Op — der Code-Wechsel (Rotation, z. B. nach Leak) würde sonst
-            # nie am Relay ankommen. set_pairing_code wirkt IMMER und kickt
-            # bei Wechsel die Alt-Code-Phone-WS (Re-Auth mit neuem Code).
-            set_pairing_code(pairing_code)
-
-            # Check if phone is already connected
-            time.sleep(1)
-            phone_connected = is_phone_connected()
-
-            server_address = f"{public_ip}:{port}"
-
-            if phone_connected:
-                return json.dumps(
-                    {
-                        "status": "ok",
-                        "message": "Phone is connected and ready!",
-                        "phone_connected": True,
-                        "server_address": server_address,
-                    }
-                )
-            else:
-                return json.dumps(
-                    {
-                        "status": "ok",
-                        "message": "Relay is running. Now tell the user to connect their phone.",
-                        "phone_connected": False,
-                        "server_address": server_address,
-                        "user_instructions": (
-                            f"Open the Hermes Bridge app on your phone and enter:\n"
-                            f"  Server: {server_address}\n"
-                            f"  Pairing code: {pairing_code}\n"
-                            f"Then tap Connect."
-                        ),
-                    }
-                )
-        except ImportError:
+        if phone_connected:
             return json.dumps(
                 {
-                    "status": "error",
-                    "message": "android_relay module not found. Make sure hermes-android is installed.",
+                    "status": "ok",
+                    "message": "Phone is connected and ready!",
+                    "phone_connected": True,
                 }
             )
+        return json.dumps(
+            {
+                "status": "ok",
+                "message": "Relay is running. Now tell the user to connect their phone.",
+                "phone_connected": False,
+                "user_instructions": (
+                    "Open the Hermes Bridge app on your phone.\n"
+                    f"{address_line}\n"
+                    "Enter your pairing code (the value saved as ANDROID_BRIDGE_TOKEN, "
+                    "shown in the Hermes Bridge app) and tap Connect."
+                ),
+            }
+        )
 
     except Exception as e:
         return json.dumps({"status": "error", "message": str(e)})
 
 
-def _update_env_file(env_path, key: str, value: str):
-    """Simple .env file updater (fallback when hermes_cli.config not available)."""
-    lines = []
-    if env_path.exists():
-        lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines(True)
-    found = False
-    for i, line in enumerate(lines):
-        if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
-            found = True
-            break
-    if not found:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
-    env_path.write_text("".join(lines), encoding="utf-8")
-    # Restrict permissions: .env may contain the pairing token (full device access).
-    try:
-        env_path.chmod(0o600)
-    except OSError:
-        pass
+def android_pre_tool_call(
+    tool_name: str, args: Optional[dict] = None, **_hook_kwargs
+) -> Optional[dict]:
+    """pre_tool_call hook — route risk-gated phone actions through Hermes' human
+    approval gate (catalog review #6). The core resolves the ``approve``
+    directive with request_tool_approval: interactive contexts prompt the
+    person, cron honours approvals.cron_mode, and every other unattended
+    context refuses (fail closed). This hook never auto-approves."""
+    if tool_name not in _APPROVAL_GATED_TOOLS:
+        return None
+    reasons = {
+        "android_send_sms": "sends a real SMS from the paired phone",
+        "android_call": "starts a real phone call",
+        "android_file_delete": "deletes files on the paired phone",
+        "android_apk_install": "triggers an APK install on the paired phone",
+        "android_send_intent": "launches an Android intent on the paired phone",
+        "android_broadcast": "sends an Android broadcast on the paired phone",
+        "android_setup": "starts or rotates the phone relay",
+    }
+    reason = reasons.get(tool_name, "acts on the real, paired phone")
+    return {
+        "action": "approve",
+        "message": f"hermes-android requests approval — this tool {reason} ({tool_name}).",
+        "rule_key": f"hermes-android:{tool_name}",
+    }
 
 
 # ── Schema definitions ─────────────────────────────────────────────────────────
@@ -1557,20 +1547,8 @@ _SCHEMAS = {
     },
     "android_setup": {
         "name": "android_setup",
-        "description": "Start the Android bridge relay and set the pairing code. Call this when the user wants to connect their phone. The relay runs on this server — the phone connects to it remotely via WebSocket. Only needs the pairing code shown in the Hermes Bridge app on the phone.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "pairing_code": {
-                    "type": "string",
-                    # FIN-T1 RED-01: minLength verhindert den leeren Code schon
-                    # am Tool-Call (PoC: leerer Code = vollständiger Auth-Bypass).
-                    "minLength": 6,
-                    "description": "6-character pairing code shown in the Hermes Bridge app on the phone",
-                },
-            },
-            "required": ["pairing_code"],
-        },
+        "description": "Start the Android bridge relay with the settings the user already saved (ANDROID_BRIDGE_URL + ANDROID_BRIDGE_TOKEN via 'hermes config' or the install prompt — catalog review #2). Takes no arguments; the pairing code is never passed through the model. Call this when the user wants to connect their phone, then relay the user_instructions to them.",
+        "parameters": {"type": "object", "properties": {}, "required": []},
     },
     "android_clipboard_read": {
         "name": "android_clipboard_read",
@@ -1949,10 +1927,10 @@ _SCHEMAS = {
     "android_health": {
         "name": "android_health",
         "description": (
-            "Gesundheitsdaten aus Google Health Connect (read-only): Aggregate "
-            "über die letzten N Tage — Schritte, Distanz, Kalorien, Herzfrequenz "
-            "(min/avg/max), Schlafdauer, Sauerstoffsättigung, jüngstes Gewicht. "
-            "Wenn Berechtigungen fehlen: in der App 'Health-Daten erlauben' antippen."
+            "Health aggregates from Google Health Connect (read-only) over the "
+            "last N days — steps, distance, calories, heart rate (min/avg/max), "
+            "sleep duration, blood oxygen saturation, latest weight. If "
+            "permissions are missing, tap 'Health allow' in the companion app."
         ),
         "parameters": {
             "type": "object",
@@ -2210,7 +2188,7 @@ _HANDLERS = {
     "android_wait": lambda args, **kw: android_wait(**args),
     "android_get_apps": lambda args, **kw: android_get_apps(),
     "android_current_app": lambda args, **kw: android_current_app(),
-    "android_setup": lambda args, **kw: android_setup(**args),
+    "android_setup": lambda args, **kw: android_setup(),
     "android_clipboard_read": lambda args, **kw: android_clipboard_read(),
     "android_clipboard_write": lambda args, **kw: android_clipboard_write(**args),
     "android_notifications": lambda args, **kw: android_notifications(**args),

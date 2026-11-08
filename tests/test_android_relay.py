@@ -3626,7 +3626,7 @@ class TestSecW1RelayIdentityConfigHaertung:
         monkeypatch.setenv("ANDROID_RELAY_TLS", "1")
         monkeypatch.delenv("ANDROID_RELAY_CERT", raising=False)
         monkeypatch.delenv("ANDROID_RELAY_KEY", raising=False)
-        with pytest.raises(RuntimeError, match="ANDROID_RELAY_TLS=1 ohne"):
+        with pytest.raises(RuntimeError, match="ANDROID_RELAY_TLS=1 without"):
             _ssl_context()
 
     def test_tls_flag_zero_forces_plaintext_even_with_cert(self, monkeypatch, tmp_path):
@@ -3738,43 +3738,30 @@ class TestSecW2PairingRotation:
         assert not phone.closed, "Ohne Code-Wechsel darf die Phone-WS nicht sterben"
         stop_relay()
 
-    def test_android_setup_rotates_running_relay(self, tmp_path, monkeypatch):
-        """android_setup(CODE_NEU) bei laufendem Relay: Relay validiert danach
-        gegen den NEUEN Code (vorher: stilles start_relay-No-Op)."""
-        import os
+    def test_android_setup_rotates_running_relay(self, monkeypatch):
+        """android_setup() mit konfiguriertem Token rotiert ein laufendes
+        Relay gegen den NEUEN Code (vorher: stilles start_relay-No-Op)."""
+        import requests
         import sys
         import tools.android_relay as relay_mod
         import tools.android_tool as tool_mod
 
         PORT = 19896
-        # hermes_cli blockieren (sonst schriebe der Test in einer echten
-        # Hermes-Installation die Live-.env) → ImportError-Fallback nutzen.
+        # Hermes-Core blockieren → der Test läuft bewusst UNTER dem
+        # Standalone-Fallback (_get_secret liest die Prozess-Env, kein .env).
         monkeypatch.setitem(sys.modules, "hermes_cli", None)
+        monkeypatch.setitem(sys.modules, "agent", None)
         monkeypatch.setenv("ANDROID_RELAY_PORT", str(PORT))
         monkeypatch.setenv("ANDROID_BRIDGE_URL", f"http://localhost:{PORT}")
-        monkeypatch.setattr(tool_mod, "_get_public_ip", lambda: "203.0.113.7")
-        env_writes = []
-        monkeypatch.setattr(
-            tool_mod, "_update_env_file",
-            lambda env_path, key, value: env_writes.append(key))
+        monkeypatch.setenv("ANDROID_BRIDGE_TOKEN", self.NEW)
 
         start_relay(pairing_code=self.OLD, port=PORT)
         # Alt-Code noch gültig (503 = auth ok, kein Phone):
-        import requests
         r = requests.get(f"http://localhost:{PORT}/ping",
                          headers={"Authorization": f"Bearer {self.OLD}"}, timeout=5)
         assert r.status_code == 503
 
-        _env_keys = ("ANDROID_BRIDGE_URL", "ANDROID_BRIDGE_TOKEN", "ANDROID_RELAY_PORT")
-        _saved = {k: os.environ.get(k) for k in _env_keys}
-        try:
-            result = tool_mod.android_setup(self.NEW)
-        finally:
-            for k, v in _saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
+        result = tool_mod.android_setup()
         assert '"status": "ok"' in result, f"android_setup fehlgeschlagen: {result}"
 
         with relay_mod._relay_lock:

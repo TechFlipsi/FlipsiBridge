@@ -1,7 +1,7 @@
 ---
 name: android
 description: Control an Android phone remotely — navigate apps, tap, type, swipe, and automate Uber, WhatsApp, Spotify, Maps, Settings, Tinder
-version: 1.0.0
+version: 1.1.0
 metadata:
   hermes:
     tags: [android, phone, automation, accessibility]
@@ -10,49 +10,48 @@ metadata:
 
 # Android Device Control
 
-You can control an Android phone remotely using the `android_*` tools. The phone runs a companion app called **Hermes Bridge** which exposes an HTTP API. You communicate with it over the network — no USB, no ADB, no physical connection needed.
+You can control an Android phone remotely using the `android_*` tools. The phone runs a companion app called **Hermes Bridge**. The agent talks HTTP to a relay on the server; the phone dials out to that relay over WebSocket — no USB, no ADB, no physical connection needed.
 
 ## How It Works
 
 ```
-Hermes Agent (this server)  ──HTTP──>  Hermes Bridge app (Android phone)
-                                        ├── Reads screen via AccessibilityService
-                                        ├── Performs taps, types, swipes
-                                        └── Authenticated via pairing code
+Hermes Agent  ──HTTP──>  Relay (this server :8766)  ──WebSocket──>  Hermes Bridge app
+                                                                    ├── Reads screen via AccessibilityService
+                                                                    ├── Performs taps, types, swipes
+                                                                    └── Authenticated via pairing code
 ```
 
 ## Setup / Connecting a Phone
 
-When the user wants to connect their phone, ask for their **pairing code** — a 6-character code shown in the Hermes Bridge app (e.g. `K7V3NP`).
+Configuration is owned by the user, not by the agent: `ANDROID_BRIDGE_URL` (the relay address, e.g. `http://127.0.0.1:8766` or a TLS relay/reverse proxy) and `ANDROID_BRIDGE_TOKEN` (the pairing code from the Hermes Bridge app). The plugin's install prompt or `hermes config` saves both on the user's machine — ask the user to complete that step; the pairing code never travels through the model.
 
 Then call:
 ```
-android_setup("<pairing_code>")
+android_setup()
 ```
 
-This does two things:
-1. Starts a relay on this server (auto-detects the server's public IP)
-2. Returns the exact instructions to tell the user — the server address and pairing code to enter in their phone app
+(no arguments — the pairing code is read from the configured secret, never accepted as a tool argument)
 
-**Relay the `user_instructions` field from the result directly to the user.** It contains the server IP and port they need to type into the phone app.
+1. Starts the relay on this server using the configured settings
+2. Returns `user_instructions` telling the user where the phone connects: the ANDROID_BRIDGE_URL host, or ANDROID_RELAY_HOST with TLS (ANDROID_RELAY_CERT + ANDROID_RELAY_KEY), or a TLS reverse proxy in front of the relay
 
-After the user taps Connect on their phone, the phone connects to this server via WebSocket. Call `android_ping()` to verify the connection is live.
+**Relay the `user_instructions` field from the result directly to the user.**
+
+After the user taps Connect in the app, the phone dials out to this relay via WebSocket. Call `android_ping()` to verify the connection is live.
 
 **Do NOT ask about:**
 - USB, ADB, or developer options
-- The phone's IP address (not needed — the phone connects to the server, not the other way around)
-- nginx, firewalls, or port forwarding
-- Any networking concepts
+- The phone's IP address (the phone connects out to the relay — not the other way around)
 
-**Just ask for the pairing code, call setup, and relay the instructions.**
+**Risk-gated tools ask for approval:** `android_send_sms`, `android_call`, `android_file_delete`, `android_apk_install`, `android_send_intent`, `android_broadcast` and `android_setup` surface Hermes' human-approval prompt before they run; unattended runs (cron/gateway without an approver) refuse them. `android_macro` refuses those tools as steps — call them individually.
 
 ## Available Tools
 
-You have these 42 tools. Use them by name — they are function calls.
+You have these 58 tools. Use them by name — they are function calls.
 
 ### Connectivity
 - `android_ping()` — check if phone is connected and responding
-- `android_setup(pairing_code)` — start relay and configure connection
+- `android_setup()` — start the relay with the user's configured settings (no arguments)
 
 ### Reading the Screen
 

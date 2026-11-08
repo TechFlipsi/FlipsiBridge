@@ -1,9 +1,18 @@
 name: hermes-android
-version: 0.5.0
-description: "Remote Android device control — read screen, tap, type, open apps, take screenshots via the Hermes Bridge companion app"
-author: TechFlipsi (Fabian Kirchweger)
-requires_hermes: ">=0.3.0"
-requires_env: []
+version: 0.5.1
+description: "Remote Android device control — read screen, tap, type, open apps, take screenshots & screen recording, files, camera, notifications, microphone streaming, media, clipboard, SMS/calls, Health Connect via the Hermes Bridge companion app"
+author: TechFlipsi
+requires_hermes: ">=0.23.0"
+python_dependencies:
+  - "requests>=2.28"
+  - "aiohttp>=3.9,<4"
+requires_env:
+  - name: ANDROID_BRIDGE_URL
+    description: "Relay address the android_* tools call, e.g. http://127.0.0.1:8766 or your TLS relay/reverse proxy"
+    secret: false
+  - name: ANDROID_BRIDGE_TOKEN
+    description: "Pairing code from the Hermes Bridge app — doubles as the relay auth token"
+    secret: true
 provides_tools:
   - android_alarm
   - android_apk_install
@@ -63,5 +72,6 @@ provides_tools:
   - android_type
   - android_volume
   - android_wait
-provides_hooks: []
+provides_hooks:
+  - pre_tool_call
 provides_middleware: []
