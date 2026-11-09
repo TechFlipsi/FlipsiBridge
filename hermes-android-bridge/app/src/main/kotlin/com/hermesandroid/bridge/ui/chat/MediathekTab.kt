@@ -101,7 +101,19 @@ internal fun MediathekTabBody(
         }
     }
     var mediaItems by remember(agent.agentId) { mutableStateOf<List<MediathekIndex.Item>>(emptyList()) }
-    LaunchedEffect(agent.agentId, liveItems) {
+    // W4-FIX-JAG2 (C7): Effekt-Schlüssel = Media-SIGNATUR (Inhalt), nicht
+    // Listen-Identität. `conversation` änderte JE Verlaufs-Frame (auch reine
+    // Text-Bubbles) die listen-Referenz von liveItems → LaunchedEffect startete
+    // je Frame NEU → withContext(IO)-Store-Reload je Verlaufs-Frame. Eine
+    // Signatur über die Media-Eigenschaften (mediaId/kind/name/mime/size/Zeit)
+    // feuert NUR auf echtem Media-Wechsel (Ack füttert media_id → Reload);
+    // bei unveränderter Signatur bleibt der alte Merge-Stand (Inhalt gleich).
+    val liveSignature = remember(liveItems) {
+        liveItems.joinToString("|") {
+            "${it.mediaId}\u0000${it.kind}\u0000${it.name}\u0000${it.mime}\u0000${it.size}\u0000${it.time}"
+        }
+    }
+    LaunchedEffect(agent.agentId, liveSignature) {
         val loaded = withContext(Dispatchers.IO) {
             loadStoreItems(appContext, agent.agentId)
         }
