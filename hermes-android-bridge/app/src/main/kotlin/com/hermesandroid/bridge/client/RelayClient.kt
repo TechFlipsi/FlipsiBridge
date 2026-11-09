@@ -2242,21 +2242,31 @@ object RelayClient {
      * PH2-T10: msgId = Broker-Nachrichten-ID aus der Relay-Antwort (null bei
      * Fehler/leerer Antwort) — die UI bindet den Zustell-/Lese-Status genau
      * an diese msg_id (RelayClient.chatStatus).
+     * W4-FIX-JAG2 (C6): sentAtMs = der UI-Bubble-Zeitstempel (ChatScreen
+     * submitQuoted tippt ihn EINMAL beim Anhängen) — der Persist-Verband
+     * formatiert genau DIESEN ts, damit Disk-Restore-Dedupe (ChatTimelineMerge.
+     * dedupeKey, Minuten-Auflösung) und Anzeige-Bubble sich nicht an einem
+     * Minuten-Roll (Submit vs. HTTP-Ergebnis) zu Dubletten verzählen.
      */
-    fun sendChat(agentId: String, text: String, onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit) {
+    fun sendChat(
+        agentId: String,
+        text: String,
+        sentAtMs: Long = System.currentTimeMillis(),
+        onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit,
+    ) {
         val activeScope = scope
         if (activeScope == null || !isConnected) {
             // SIRS-02: auch der gescheiterte Versand bleibt im Verlauf (Chip
             // '✕ Fehlgeschlagen' überlebt den Restart statt zu verhungern).
             persistChatBubble(agentId, chatId = "", fromAgent = false, text,
-                System.currentTimeMillis(), status = "failed")
+                sentAtMs, status = "failed")
             deliverChatResult(onResult, false, "Keine Verbindung zum Relay", null)
             return
         }
         val base = serverUrl?.trim()?.trimEnd('/')
         if (base.isNullOrBlank()) {
             persistChatBubble(agentId, chatId = "", fromAgent = false, text,
-                System.currentTimeMillis(), status = "failed")
+                sentAtMs, status = "failed")
             deliverChatResult(onResult, false, "Kein Relay-Server konfiguriert", null)
             return
         }
@@ -2327,7 +2337,7 @@ object RelayClient {
                 // SIRS-02: eigener Versand persistieren (status-Snapshot:
                 // null = gesendet, failed = endgültig gescheitert).
                 persistChatBubble(agentId, historyChatId, fromAgent = false, text,
-                    System.currentTimeMillis(),
+                    sentAtMs,
                     if (code in 200..299) null else "failed")
                 if (code in 200..299) {
                     deliverChatResult(onResult, true, null, msgId)
@@ -2336,7 +2346,7 @@ object RelayClient {
                 }
             }.onFailure { e ->
                 persistChatBubble(agentId, historyChatId, fromAgent = false, text,
-                    System.currentTimeMillis(), status = "failed")
+                    sentAtMs, status = "failed")
                 deliverChatResult(onResult, false, e.message?.take(80) ?: "Senden fehlgeschlagen", null)
             }
         }

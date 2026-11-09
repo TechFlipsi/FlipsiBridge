@@ -387,13 +387,21 @@ fun ChatScreen(padding: PaddingValues) {
     fun submitQuoted(agent: ChatAgent, text: String, quote: ChatQuote?): Long {
         val quoteSnapshot = quote?.takeIf { ChatQuoteRules.quoteSpan(it.text).isNotEmpty() }
         val wire = ChatQuoteRules.wireText(text, quoteSnapshot)
+        // W4-FIX-JAG2 (C6): EIN Zeitstempel für UI-Bubble UND Persist-Versand.
+        // Vorher tippte die UI nowTime() beim Anhängen und RelayClient.persist
+        // beim HTTP-Ergebnis (System.currentTimeMillis() dort) — lag zwischen
+        // beidem ein Minuten-Roll (z. B. beim Antwort-Timeout > 1 min),
+        // unterschieden sich die dedupeKey-Minuten ("23:59" vs. "00:00") und
+        // der Restore-Merge baute Doppel-Bubbles. formatTimestamp(sentAt) ist
+        // exakt der Persist-Formatter (HH:mm, Locale.GERMANY) am selben ts.
+        val sentAtMs = System.currentTimeMillis()
         val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
         messages = messages + ChatMessage(
             id = nextId,
             agentId = agent.id,
             fromAgent = false,
             text = text,
-            time = nowTime(),
+            time = formatTimestamp(sentAtMs),
             quoted = quoteSnapshot,
         )
         // PH-FIX-CHAT-A (F1, Restore-Race): ab jetzt darf der Disk-Restore die
@@ -408,7 +416,9 @@ fun ChatScreen(padding: PaddingValues) {
             // W4-B (Zitieren): der VERSAND trägt den Draht-Text (Zitat gefaltet
             // in den bestehenden chat.send-Körper) — die Persistenz der Platte
             // folgt dem Draht → der Restore faltet zurück.
-            RelayClient.sendChat(agent.agentId, wire) { ok, error, msgId ->
+            // W4-FIX-JAG2 (C6): der Persist-Timestamp = der UI-Bubble-Ts —
+            // eine Uhr, keine Minuten-Roll-Kluft zwischen Anzeige und Platte.
+            RelayClient.sendChat(agent.agentId, wire, sentAtMs) { ok, error, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
