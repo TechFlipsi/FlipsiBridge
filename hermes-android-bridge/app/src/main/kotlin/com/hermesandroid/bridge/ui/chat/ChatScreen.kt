@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -21,6 +22,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,8 +44,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.MediaProtocol
@@ -788,54 +793,71 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f),
-            // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
-            // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
-            // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
-            // zugleich enger Zeilenbreite: „randnah + gequetscht“).
-            contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-        ) {
-            if (conversation.isEmpty()) {
-                item {
-                    Text(
-                        "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FlipsiColors.TextSecondary,
-                        modifier = Modifier.padding(16.dp),
+        // ── W4 (App-Lane C): Tab-Verband [Chat | Mediathek] am Chatscreen ────
+        // Der Mediathek-Tab lebt NEBEN dem Chat in derselben Conversation
+        // (gemeinsamer Kopf). Zustand je Agent: Agent-Wechsel setzt auf Chat
+        // zurück (remember(agent.id), bewusst KEIN saveable — Rotation/Wechsel
+        // kehren in die Chat-Ansicht zurück, das ist der natürliche Modus).
+        var convTab by remember(agent.id) { mutableStateOf(TAB_CHAT) }
+        ChatTabsRow(selected = convTab, onSelect = { convTab = it })
+        if (convTab == TAB_CHAT) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.weight(1f),
+                // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
+                // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
+                // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
+                // zugleich enger Zeilenbreite: „randnah + gequetscht“).
+                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            ) {
+                if (conversation.isEmpty()) {
+                    item {
+                        Text(
+                            "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = FlipsiColors.TextSecondary,
+                            modifier = Modifier.padding(16.dp),
+                        )
+                    }
+                }
+                items(conversation, key = { it.id }) { message ->
+                    MessageBubble(
+                        message = message,
+                        // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
+                        // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
+                        // bewusst nicht (kein echter Agent hinter dem Namen).
+                        senderName = agent.name.takeIf { agent.agentId.isNotBlank() },
+                        // PH2-T10: Zustell-/Lese-Chips je EIGENER Nachricht.
+                        status = if (!message.fromAgent) statusOfMessage(message) else null,
+                        // PH2-FIX (Jäger B7): Demo-Eintrag (blank agentId) → KEIN
+                        // Chip — '✓ Gesendet' wäre gelogen, es geht nichts raus.
+                        showStatusChip = agent.agentId.isNotBlank(),
+                        // PH2-T11: 'Antwort nach X s' je Agenten-Antwort.
+                        replyAfterMs = if (message.fromAgent) elapsedMsByMessageId(message.id) else null,
+                        // MEDIA-T1: Upload-Fortschritt eigener Medien-Bubbles
+                        // (x/y Chunks, ✓ beim Agenten-Ack aller Chunks).
+                        mediaUpload = message.media?.let { uploadOfMedia(it.mediaId) },
                     )
                 }
             }
-            items(conversation, key = { it.id }) { message ->
-                MessageBubble(
-                    message = message,
-                    // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
-                    // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
-                    // bewusst nicht (kein echter Agent hinter dem Namen).
-                    senderName = agent.name.takeIf { agent.agentId.isNotBlank() },
-                    // PH2-T10: Zustell-/Lese-Chips je EIGENER Nachricht.
-                    status = if (!message.fromAgent) statusOfMessage(message) else null,
-                    // PH2-FIX (Jäger B7): Demo-Eintrag (blank agentId) → KEIN
-                    // Chip — '✓ Gesendet' wäre gelogen, es geht nichts raus.
-                    showStatusChip = agent.agentId.isNotBlank(),
-                    // PH2-T11: 'Antwort nach X s' je Agenten-Antwort.
-                    replyAfterMs = if (message.fromAgent) elapsedMsByMessageId(message.id) else null,
-                    // MEDIA-T1: Upload-Fortschritt eigener Medien-Bubbles
-                    // (x/y Chunks, ✓ beim Agenten-Ack aller Chunks).
-                    mediaUpload = message.media?.let { uploadOfMedia(it.mediaId) },
-                )
-            }
+            HorizontalDivider(color = FlipsiColors.LineStrong)
+            ChatInputBar(
+                value = inputText,
+                onValueChange = onInputChange,
+                onSend = onSend,
+                onAttach = onAttach,
+                voiceRecording = voiceRecording,
+                onVoiceToggle = onVoiceToggle,
+            )
+        } else {
+            // ── W4 (App-Lane C): Mediathek-Tab — alle Medien DIESES Agenten
+            // (Store-Verbind + LIVE-Bubbles, STALE = Platzhalter-Karte).
+            MediathekTabBody(
+                agent = agent,
+                conversation = conversation,
+                modifier = Modifier.weight(1f),
+            )
         }
-        HorizontalDivider(color = FlipsiColors.LineStrong)
-        ChatInputBar(
-            value = inputText,
-            onValueChange = onInputChange,
-            onSend = onSend,
-            onAttach = onAttach,
-            voiceRecording = voiceRecording,
-            onVoiceToggle = onVoiceToggle,
-        )
     }
 }
 
@@ -1086,3 +1108,52 @@ val ElapsedMsByMsgIdSaver = listSaver<Map<Long, Long>, Any>(
         flat.chunked(2).associate { (id, ms) -> (id as Long) to (ms as Long) }
     },
 )
+
+// ── W4 (App-Lane C): Tab-Verband am Chatscreen je Agent ──────────────────────
+
+/** Tab-Wert „Chat“ (Standard-Ansicht der Conversation). */
+private const val TAB_CHAT = "chat"
+
+/** Tab-Wert „Mediathek“ (Medien-Sicht, siehe MediathekTabBody). */
+private const val TAB_MEDIATHEK = "mediathek"
+
+/**
+ * Tab-Zeile unter dem Conversation-Kopf: [Chat | Mediathek] als Filter-Chips
+ * (deutsch beschriftet via Strings-Keys, A11y: Text-Label + selektiert-Zustand
+ * — nie nur Farbe). Der Chip-Satz bleibt bewusst minimal (kein TabRow-Kohle-
+ * Wrapper, keine Anim — Reduced-Pass je Anim-Stelle).
+ */
+@Composable
+private fun ChatTabsRow(selected: String, onSelect: (String) -> Unit) {
+    val chatLabel = stringResource(R.string.chat_tab_chat)
+    val mediaLabel = stringResource(R.string.chat_tab_mediathek)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            selected = selected == TAB_CHAT,
+            onClick = { onSelect(TAB_CHAT) },
+            label = { Text(chatLabel) },
+            colors = FilterChipDefaults.filterChipColors(
+                containerColor = FlipsiColors.Panel,
+                labelColor = FlipsiColors.TextPrimary,
+                selectedContainerColor = FlipsiColors.Ember,
+                selectedLabelColor = FlipsiColors.OnEmber,
+            ),
+        )
+        FilterChip(
+            selected = selected == TAB_MEDIATHEK,
+            onClick = { onSelect(TAB_MEDIATHEK) },
+            label = { Text(mediaLabel) },
+            colors = FilterChipDefaults.filterChipColors(
+                containerColor = FlipsiColors.Panel,
+                labelColor = FlipsiColors.TextPrimary,
+                selectedContainerColor = FlipsiColors.Ember,
+                selectedLabelColor = FlipsiColors.OnEmber,
+            ),
+        )
+    }
+}

@@ -31,4 +31,20 @@
     <string name="section_pairing">Pairing</string>
     <string name="pairing_hint">Antippen kopiert den Code. Der Agent fragt danach beim Telefon-Setup.</string>
     <string name="pairing_regen">Neuen Code erzeugen</string>
+
+    <!-- W4 App-Lane C: Mediathek-Tab am Chatscreen je Agent -->
+    <string name="chat_tab_chat">Chat</string>
+    <string name="chat_tab_mediathek">Mediathek</string>
+    <string name="mediathek_empty_title">Noch keine Medien</string>
+    <string name="mediathek_empty_hint">Bilder, Sprachnachrichten und Dateien aus dem Chat erscheinen hier.</string>
+    <string name="mediathek_section_media">Bilder &amp; Videos</string>
+    <string name="mediathek_section_voices">Sprachnachrichten</string>
+    <string name="mediathek_section_files">Dateien</string>
+    <string name="mediathek_stale_hint">Die Datei liegt nicht mehr auf dem Gerät.</string>
+    <string name="mediathek_ref_hint">Nur Verweis — die Datei liegt nicht am Gerät.</string>
+    <string name="mediathek_view_fullscreen">Foto vergrößern</string>
+    <string name="mediathek_play_voice">Sprachnachricht abspielen</string>
+    <string name="mediathek_stop_voice">Wiedergabe stoppen</string>
+    <string name="mediathek_save_file">In Downloads speichern</string>
+    <string name="mediathek_saved_file">✓ Gespeichert (Downloads)</string>
 </resources>

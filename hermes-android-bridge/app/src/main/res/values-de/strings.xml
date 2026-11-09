@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W4 (App-Lane C): values-de — Deutsch als EXPLIZITE Quelle je Key (zusätzlich
+  zum values/-Default). Die Welle-Konvention values-de/values-en verlangt je
+  Key eine DE-Quelle in values-de — Inhalte identisch mit values/strings.xml
+  (das Default-Archiv bleibt Deutsch und fängt alle System-Locales ohne
+  Übersetzung).
+-->
+<resources>
+    <string name="app_name">FlipsiBridge</string>
+    <string name="tagline">Dein Agent am Handy — Hände, Augen und Stimme.</string>
+
+    <string name="accessibility_description">FlipsiBridge Bedienungshilfe — erlaubt dem Agent, den Bildschirm zu lesen und das Gerät zu bedienen.</string>
+
+    <string name="section_status">Status</string>
+    <string name="status_a11y">Bedienungshilfe</string>
+    <string name="status_server">Lokaler Server</string>
+    <string name="status_relay">Relay-Verbindung</string>
+    <string name="status_auth">Pairing-Code</string>
+
+    <string name="section_permissions">Berechtigungen</string>
+    <string name="perm_a11y_title">Bedienungshilfe-Dienst</string>
+    <string name="perm_a11y_desc">Erlaubt dem Agent, den Bildschirm zu lesen und zu bedienen (tippen, swipen, Apps öffnen).</string>
+    <string name="perm_overlay_title">Status-Overlay</string>
+    <string name="perm_overlay_desc">Kleine Statusanzeige über allen Apps, solange die Brücke aktiv ist.</string>
+    <string name="perm_screenrec_title">Bildschirmaufnahme</string>
+    <string name="perm_screenrec_desc">Für Screenshots. Bestätigt Android pro Sitzung — Standard-Popup von Android.</string>
+    <string name="perm_revival_title">Termux-Auto-Revival (opt-in)</string>
+    <string name="perm_revival_desc">Startet den lokalen Stack neu, wenn die Verbindung dauerhaft weg ist. Standardmäßig aus.</string>
+
+    <string name="section_connection">Verbindung</string>
+    <string name="conn_hint">Adresse des Relays auf deinem Server. Mit wss:// ist die Verbindung verschlüsselt.</string>
+    <string name="conn_url_hint">mein-relay.example.com:8766</string>
+    <string name="conn_connect">Verbinden</string>
+    <string name="conn_disconnect">Trennen</string>
+    <string name="caps_section_hint">Was der Agent am Handy tun darf — alles standardmäßig aus.</string>
+
+    <string name="section_pairing">Pairing</string>
+    <string name="pairing_hint">Antippen kopiert den Code. Der Agent fragt danach beim Telefon-Setup.</string>
+    <string name="pairing_regen">Neuen Code erzeugen</string>
+
+    <!-- W4 App-Lane C: Mediathek-Tab am Chatscreen je Agent -->
+    <string name="chat_tab_chat">Chat</string>
+    <string name="chat_tab_mediathek">Mediathek</string>
+    <string name="mediathek_empty_title">Noch keine Medien</string>
+    <string name="mediathek_empty_hint">Bilder, Sprachnachrichten und Dateien aus dem Chat erscheinen hier.</string>
+    <string name="mediathek_section_media">Bilder &amp; Videos</string>
+    <string name="mediathek_section_voices">Sprachnachrichten</string>
+    <string name="mediathek_section_files">Dateien</string>
+    <string name="mediathek_stale_hint">Die Datei liegt nicht mehr auf dem Gerät.</string>
+    <string name="mediathek_ref_hint">Nur Verweis — die Datei liegt nicht am Gerät.</string>
+    <string name="mediathek_view_fullscreen">Foto vergrößern</string>
+    <string name="mediathek_play_voice">Sprachnachricht abspielen</string>
+    <string name="mediathek_stop_voice">Wiedergabe stoppen</string>
+    <string name="mediathek_save_file">In Downloads speichern</string>
+    <string name="mediathek_saved_file">✓ Gespeichert (Downloads)</string>
+</resources>

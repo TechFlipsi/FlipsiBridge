@@ -357,8 +357,10 @@ internal fun AttachSheet(
 
 // ── Helfer (Android, nicht JVM-getestet — Logik-Deckel in MediaProtocol) ───
 
-/** Bild dekodieren mit Sampling (RAM-Schutz; Ziel-Mindestauflösung px). */
-private fun decodeImageThumbnail(path: String, targetMin: Int = 640): android.graphics.Bitmap? {
+/** Bild dekodieren mit Sampling (RAM-Schutz; Ziel-Mindestauflösung px).
+ *  W4 (App-Lane C): internal — auch die Mediathek-Kacheln nutzen denselben
+ *  downgesampelten Dekoder (ein Thumbnail-Weg, keine Doppel-Logik). */
+internal fun decodeImageThumbnail(path: String, targetMin: Int = 640): android.graphics.Bitmap? {
     if (path.isBlank()) return null
     val file = File(path)
     if (!file.exists()) return null
@@ -379,8 +381,10 @@ private fun decodeImageThumbnail(path: String, targetMin: Int = 640): android.gr
     }.getOrNull()
 }
 
-/** Dauer einer Audio-Datei (MediaMetadataRetriever, 0 = unbekannt). */
-private fun voiceDurationMs(path: String): Long = runCatching {
+/** Dauer einer Audio-Datei (MediaMetadataRetriever, 0 = unbekannt).
+ *  W4 (App-Lane C): internal — MediaTab-Player-Zeile liest dieselbe Dauer (statisch,
+ *  Reduced-Pass: kein Fortschritts-Ticker). */
+internal fun voiceDurationMs(path: String): Long = runCatching {
     val retriever = MediaMetadataRetriever()
     retriever.setDataSource(path)
     val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
@@ -397,8 +401,9 @@ internal fun formatVoiceDuration(ms: Long): String {
     )
 }
 
-/** Datei via MediaStore in Downloads sichern (API 29+); true = ok. */
-private fun saveToDownloads(
+/** Datei via MediaStore in Downloads sichern (API 29+); true = ok.
+ *  W4 (App-Lane C): internal — Datei-Zeilen der Mediathek sichern denselben Weg. */
+internal fun saveToDownloads(
     context: android.content.Context,
     name: String,
     mime: String,
