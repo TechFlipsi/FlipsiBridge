@@ -67,4 +67,12 @@
     <string name="chat_quote_block_a11y">Zitierte Nachricht von %1$s</string>
     <string name="chat_reply_strip_label">Antworten an %1$s</string>
     <string name="chat_reply_cancel_a11y">Antwort-Verweis entfernen</string>
+
+    <!-- W4 App-Lane B: Chat-Suche (Magnifier-Verband: Leiste + Treffer + Sprung) -->
+    <string name="chat_search_open_a11y">Verlauf durchsuchen</string>
+    <string name="chat_search_close_a11y">Suche schließen</string>
+    <string name="chat_search_hint">Im Verlauf suchen</string>
+    <string name="chat_search_clear_a11y">Sucheingabe leeren</string>
+    <string name="chat_search_empty">Keine Treffer</string>
+    <string name="chat_search_hit_a11y">Suchtreffer</string>
 </resources>

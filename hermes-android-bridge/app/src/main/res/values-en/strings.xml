@@ -70,4 +70,12 @@
     <string name="chat_quote_block_a11y">Quoted message from %1$s</string>
     <string name="chat_reply_strip_label">Reply to %1$s</string>
     <string name="chat_reply_cancel_a11y">Remove reply reference</string>
+
+    <!-- W4 App-Lane B: chat search (magnifier wiring: bar + hits + jump) -->
+    <string name="chat_search_open_a11y">Search the chat history</string>
+    <string name="chat_search_close_a11y">Close search</string>
+    <string name="chat_search_hint">Search the chat history</string>
+    <string name="chat_search_clear_a11y">Clear search input</string>
+    <string name="chat_search_empty">No matches</string>
+    <string name="chat_search_hit_a11y">Search hit</string>
 </resources>

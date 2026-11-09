@@ -3,6 +3,7 @@ package com.hermesandroid.bridge.ui.chat
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -337,7 +338,12 @@ fun MessageBubble(
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der Geste-Rücklauf-Stelle
     // (ChatMotionRules): true = Settle sofort, kein Tween.
     chatReducedMotion: Boolean = false,
+    // W4-B (Chat-Suche): Sprung-Highlight (Ember-Rand + Text-Verband, nie
+    // nur Farbe) — ~1,6 s je Sprung-Anker der ConversationBody-Suche.
+    searchHighlight: Boolean = false,
 ) {
+    // W4-B (Chat-Suche): TalkBack-Beschreibung der Suchtreffer-Bubble.
+    val searchHitDescription = stringResource(R.string.chat_search_hit_a11y)
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
     // Breite ein (16 dp Außen + 12 dp Text-Padding = „randnah + gequetscht“).
@@ -470,13 +476,30 @@ fun MessageBubble(
                                 onDragEnd = { settleSwipe() },
                                 onDragCancel = { settleSwipe() },
                             )
-                        },
+                        }
+                        .then(
+                            // W4-B (Chat-Suche): Sprung-Highlight — Ember-Rand
+                            // + TalkBack-Verband „Suchtreffer“ (nie nur Farbe).
+                            if (searchHighlight) {
+                                Modifier.semantics {
+                                    contentDescription = searchHitDescription
+                                }
+                            } else {
+                                Modifier
+                            }
+                        ),
                     shape = if (message.fromAgent) {
                         RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
                     } else {
                         RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
                     },
                     color = if (message.fromAgent) FlipsiColors.PanelElev else FlipsiColors.EmberDim,
+                    // W4-B (Chat-Suche): Sprung-Highlight der Suche — Ember-Rand
+                    // (A11y: zusätzlich contentDescription „Suchtreffer“, nie
+                    // nur Farbe; Verkabelung in der Modifier-Kette oben).
+                    border = if (searchHighlight) {
+                        BorderStroke(2.dp, FlipsiColors.Ember)
+                    } else null,
                 ) {
                     // W4-B (Zitieren): Vertrag — die zitierte Nachricht erscheint
                     // ÜBER der Sende-/Empfangs-Bubble (Messenger-Muster).

@@ -4,6 +4,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +25,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -32,6 +34,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -46,8 +49,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.R
@@ -885,6 +892,36 @@ private fun ConversationBody(
     val reducedMotion = remember(agent.agentId) {
         ChatMotionRules.reduced(ChatMotionRules.animatorScale(compositionContext.contentResolver))
     }
+    // ── W4-B (Chat-Suche): Magnifier-Verband ─────────────────────────────────
+    // Suchleiste + Treffer-Liste über dem VOLLSTÄNDIGEN Verlauf (Disk-Restore
+    // via ChatHistoryStore + Live-Ankömmlinge — NIEMALS am chatEvents-200er-
+    // Cap hängend, Filter-Verband in ChatSearchRules). Sprung-Anker: Tap in
+    // der Trefferliste kehrt zur Timeline zurück und scrollt zur Bubble.
+    var searchOpen by remember(agent.agentId) { mutableStateOf(false) }
+    var searchQuery by remember(agent.agentId) { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
+    var searchFocusTarget by remember { mutableStateOf<Long?>(null) }
+    var searchHighlightId by remember { mutableStateOf<Long?>(null) }
+    val searchMatches = remember(searchQuery, conversation) {
+        ChatSearchRules.matches(searchQuery, conversation)
+    }
+    val searchActive = searchOpen && ChatSearchRules.active(searchQuery)
+    LaunchedEffect(searchOpen) {
+        if (searchOpen) {
+            runCatching { searchFocus.requestFocus() }
+        }
+    }
+    LaunchedEffect(searchFocusTarget) {
+        val target = searchFocusTarget ?: return@LaunchedEffect
+        searchFocusTarget = null
+        val idx = conversation.indexOfFirst { it.id == target }
+        if (idx < 0) return@LaunchedEffect
+        // Anim-Stelle: Sprung-Scroll über die Reduced-Pass-Faser (ChatMotionRules).
+        if (reducedMotion) listState.scrollToItem(idx) else listState.animateScrollToItem(idx)
+        searchHighlightId = target
+        delay(1_600L)
+        searchHighlightId = null
+    }
     // PH-FIX-CHAT-A (F4): die offene Conversation beim RelayClient melden —
     // Antworten DIESES Agenten erzeugen keine Notification, solange die App
     // im Vordergrund ist (RelayClient prüft beides). Beim Verlassen
@@ -904,7 +941,18 @@ private fun ConversationBody(
             .fillMaxSize()
             .padding(padding),
     ) {
-        ConversationHeader(agent = agent, working = working, onBack = onBack, onFpCheck = onFpCheck)
+        ConversationHeader(
+            agent = agent,
+            working = working,
+            onBack = onBack,
+            onFpCheck = onFpCheck,
+            // W4-B (Chat-Suche): Magnifier-Knopf toggelt die Suchleiste.
+            searchOpen = searchOpen,
+            onSearchToggle = {
+                searchOpen = !searchOpen
+                if (!searchOpen) searchQuery = ""
+            },
+        )
         HorizontalDivider(color = FlipsiColors.LineStrong)
         // PH2-FIX (E2E P1): dismissbare Fehler-Zeile direkt unter dem Kopf —
         // der Send-Fehler ist auf der Chat-Route sichtbar, ohne die Route zu
@@ -921,56 +969,85 @@ private fun ConversationBody(
         var convTab by remember(agent.id) { mutableStateOf(TAB_CHAT) }
         ChatTabsRow(selected = convTab, onSelect = { convTab = it })
         if (convTab == TAB_CHAT) {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f),
-                // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
-                // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
-                // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
-                // zugleich enger Zeilenbreite: „randnah + gequetscht“).
-                contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-            ) {
-                if (conversation.isEmpty()) {
-                    item {
-                        Text(
-                            "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = FlipsiColors.TextSecondary,
-                            modifier = Modifier.padding(16.dp),
+            // W4-B (Chat-Suche): Suchleiste unter dem Tab-Verband (offen =
+            // Tastatur fokusiert; X leert erst die Query, schließt dann).
+            if (searchOpen) {
+                ConversationSearchBar(
+                    query = searchQuery,
+                    onQueryChange = { searchQuery = it },
+                    focusRequester = searchFocus,
+                    onClose = {
+                        if (searchQuery.isNotBlank()) searchQuery = "" else searchOpen = false
+                    },
+                )
+            }
+            if (searchActive) {
+                // Treffer-Liste ersetzt die Timeline (gleicher Slot); Sprung-
+                // Anker: Tap schließt die Liste (Query bleibt) → Timeline +
+                // Scroll + Ember-Highlight je Sprung-Effekt oben.
+                ConversationSearchResults(
+                    matches = searchMatches,
+                    agentName = agent.name.takeIf { agent.agentId.isNotBlank() },
+                    onJump = { matchId ->
+                        searchOpen = false
+                        searchFocusTarget = matchId
+                    },
+                    modifier = Modifier.weight(1f),
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.weight(1f),
+                    // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
+                    // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
+                    // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
+                    // zugleich enger Zeilenbreite: „randnah + gequetscht“).
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                ) {
+                    if (conversation.isEmpty()) {
+                        item {
+                            Text(
+                                "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = FlipsiColors.TextSecondary,
+                                modifier = Modifier.padding(16.dp),
+                            )
+                        }
+                    }
+                    items(conversation, key = { it.id }) { message ->
+                        MessageBubble(
+                            message = message,
+                            // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
+                            // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
+                            // bewusst nicht (kein echter Agent hinter dem Namen).
+                            senderName = agent.name.takeIf { agent.agentId.isNotBlank() },
+                            // PH2-T10: Zustell-/Lese-Chips je EIGENER Nachricht.
+                            status = if (!message.fromAgent) statusOfMessage(message) else null,
+                            // PH2-FIX (Jäger B7): Demo-Eintrag (blank agentId) → KEIN
+                            // Chip — '✓ Gesendet' wäre gelogen, es geht nichts raus.
+                            showStatusChip = agent.agentId.isNotBlank(),
+                            // PH2-T11: 'Antwort nach X s' je Agenten-Antwort.
+                            replyAfterMs = if (message.fromAgent) elapsedMsByMessageId(message.id) else null,
+                            // MEDIA-T1: Upload-Fortschritt eigener Medien-Bubbles
+                            // (x/y Chunks, ✓ beim Agenten-Ack aller Chunks).
+                            mediaUpload = message.media?.let { uploadOfMedia(it.mediaId) },
+                            // W4-B (Zitieren): Longpress → Antwort-Verweis als Werte-
+                            // Snapshot (ChatQuote). senderName nur beim echten Agenten
+                            // (Demo-Eintrag blank agentId → Label „KI“ im Strip).
+                            onReply = {
+                                replyQuote = ChatQuote(
+                                    fromAgent = message.fromAgent,
+                                    senderName = if (message.fromAgent && agent.agentId.isNotBlank()) agent.name else "",
+                                    text = message.text,
+                                )
+                            },
+                            // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der
+                            // Geste-Rücklauf-Stelle (Settle je Anim-Scala).
+                            chatReducedMotion = reducedMotion,
+                            // W4-B (Chat-Suche): Sprung-Highlight (Ember-Rand ~1,6 s).
+                            searchHighlight = searchHighlightId == message.id,
                         )
                     }
-                }
-                items(conversation, key = { it.id }) { message ->
-                    MessageBubble(
-                        message = message,
-                        // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
-                        // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
-                        // bewusst nicht (kein echter Agent hinter dem Namen).
-                        senderName = agent.name.takeIf { agent.agentId.isNotBlank() },
-                        // PH2-T10: Zustell-/Lese-Chips je EIGENER Nachricht.
-                        status = if (!message.fromAgent) statusOfMessage(message) else null,
-                        // PH2-FIX (Jäger B7): Demo-Eintrag (blank agentId) → KEIN
-                        // Chip — '✓ Gesendet' wäre gelogen, es geht nichts raus.
-                        showStatusChip = agent.agentId.isNotBlank(),
-                        // PH2-T11: 'Antwort nach X s' je Agenten-Antwort.
-                        replyAfterMs = if (message.fromAgent) elapsedMsByMessageId(message.id) else null,
-                        // MEDIA-T1: Upload-Fortschritt eigener Medien-Bubbles
-                        // (x/y Chunks, ✓ beim Agenten-Ack aller Chunks).
-                        mediaUpload = message.media?.let { uploadOfMedia(it.mediaId) },
-                        // W4-B (Zitieren): Longpress → Antwort-Verweis als Werte-
-                        // Snapshot (ChatQuote). senderName nur beim echten Agenten
-                        // (Demo-Eintrag blank agentId → Label „KI“ im Strip).
-                        onReply = {
-                            replyQuote = ChatQuote(
-                                fromAgent = message.fromAgent,
-                                senderName = if (message.fromAgent && agent.agentId.isNotBlank()) agent.name else "",
-                                text = message.text,
-                            )
-                        },
-                        // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der
-                        // Geste-Rücklauf-Stelle (Settle je Anim-Scala).
-                        chatReducedMotion = reducedMotion,
-                    )
                 }
             }
             // W4-B (Zitieren): Antwort-Overlay — Longpress auf eine Bubble setzt
@@ -1029,6 +1106,9 @@ private fun ConversationBody(
  * PH2-T10 (F2-S3): arbeitet der Agent gerade (chat.activity working=true),
  * zeigt der Kopf einen kleinen Spinner + 'arbeitet … (mm:ss)' — die Zeit
  * läuft sekündlich ab started_at (Empfang beim Agenten) hoch.
+ * W4-B (Chat-Suche): Magnifier-Knopf am Chat-Kopf → Suchleiste + Treffer-
+ * Liste + Sprung-Anker (ChatSearchRules/ConversationBody); der Knopf toggelt
+ * (Suchleiste offen = Schließen-Semantik, A11y je Zustand).
  */
 @Composable
 private fun ConversationHeader(
@@ -1036,6 +1116,10 @@ private fun ConversationHeader(
     working: RelayClient.AgentActivity?,
     onBack: () -> Unit,
     onFpCheck: () -> Unit,
+    // W4-B (Chat-Suche): Magnifier-Toggle (offen/geschlossen wird oben im
+    // ConversationBody gehalten — der Kopf reicht nur den Knopf durch).
+    searchOpen: Boolean = false,
+    onSearchToggle: () -> Unit = {},
 ) {
     // mm:ss seit started_at — je Sekunde neu gerechnet (nur bei working).
     // PH-FIX-CHAT-A (F5): 10-Minuten-Deckel statt while(true)-Ewigzähler —
@@ -1108,6 +1192,17 @@ private fun ConversationHeader(
         // sendet 'FP-ABGLEICH: <hex>' als normale (verschlüsselte) Nachricht;
         // der Agent antwortet automatisch ✓ gleich / ✗ ABWEICHUNG (rot-Banner).
         Spacer(Modifier.weight(1f))
+        // W4-B (Chat-Suche): Magnifier-Knopf am Chat-Kopf — toggelt die
+        // Suchleiste; A11y-Label je Zustand (nie nur Farbe).
+        IconButton(onClick = onSearchToggle) {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = stringResource(
+                    if (searchOpen) R.string.chat_search_close_a11y else R.string.chat_search_open_a11y,
+                ),
+                tint = FlipsiColors.TextPrimary,
+            )
+        }
         OutlinedButton(
             onClick = onFpCheck,
             modifier = Modifier.padding(end = 4.dp),
@@ -1318,5 +1413,133 @@ private fun ChatTabsRow(selected: String, onSelect: (String) -> Unit) {
                 selectedLabelColor = FlipsiColors.OnEmber,
             ),
         )
+    }
+}
+
+// ── W4-B (Chat-Suche): Suchleiste + Trefferliste ─────────────────────────────
+
+/**
+ * W4-B (Chat-Suche): Suchleiste unter dem Tab-Verband — Suchtext-Feld mit
+ * Fokus-Anker (Tastatur öffnet je Magnifier-Toggle) und X-Knopf (X = leert
+ * erst die Query; leere Query = Leiste zu).
+ *
+ * ## Drill-Acker (Bau-Welle, Emulator)
+ * - Magnifier → Leiste erscheint, Tastatur fokusiert (FocusRequester); Query
+ *   tippt → Trefferliste ersetzt die Timeline im selben Slot.
+ * - X mit Query → Query leer, Leiste bleibt; X mit leerer Query → Leiste zu,
+ *   Timeline unverändert an der Stelle (kein Scroll-Sprung).
+ * - Leiste lebt IM Chat-Tab-Zweig (Mediathek-Tab zeigt sie nicht) — Agent-
+ *   Wechsel setzt den Suchzustand je Agent zurück (remember(agent.agentId)).
+ */
+@Composable
+private fun ConversationSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    focusRequester: FocusRequester,
+    onClose: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        OutlinedTextField(
+            value = query,
+            onValueChange = onQueryChange,
+            singleLine = true,
+            modifier = Modifier
+                .weight(1f)
+                .focusRequester(focusRequester),
+            placeholder = {
+                Text(
+                    stringResource(R.string.chat_search_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+        )
+        IconButton(onClick = onClose) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.chat_search_clear_a11y),
+                tint = FlipsiColors.TextPrimary,
+            )
+        }
+    }
+}
+
+/**
+ * W4-B (Chat-Suche): Trefferliste im Timeline-Slot — Zähl-Zeile (deutsch je
+ * Singular/Plural) + chronologische Trefferzeilen (Zeit · Absender-Label ·
+ * Fenster-Ausschnitt). Tap = Sprung-Anker ([onJump] mit Bubble-id; der Sprung-
+ * Effekt in ConversationBody schließt die Liste, scrollt zur Bubble und
+ * markiert sie ~1,6 s — Reduced-Pass-Faser: sofortiger Sprung-Scroll).
+ *
+ * ## Drill-Acker (Bau-Welle, Emulator)
+ * - >200-Eintrag-Verlauf: Suchbegriff im ÄLTESTEN Eintrag trifft (Filter-
+ *   Verband über den Disk-Restore, nie am 200er-chatEvents-Cap hängend).
+ * - Treffer im ZITAT einer Antwort-Bubble springt zur Bubble (mitgesucht).
+ * - Kein Treffer → „Keine Treffer“-Zeile; Cap 50 Treffer je Anzeige (Scan
+ *   läuft im Vollbestand).
+ * - TalkBack: Zeit + Label + Fenster-Ausschnitt je Zeile; Ember-Highlight ist
+ *   Rand + Text-Verband (nie nur Farbe).
+ */
+@Composable
+private fun ConversationSearchResults(
+    matches: List<ChatSearchRules.SearchMatch>,
+    agentName: String?,
+    onJump: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier = modifier) {
+        Text(
+            ChatSearchRules.countLabel(matches.size),
+            style = MaterialTheme.typography.labelSmall,
+            color = FlipsiColors.TextSecondary,
+            modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 2.dp),
+        )
+        if (matches.isEmpty()) {
+            Text(
+                stringResource(R.string.chat_search_empty),
+                style = MaterialTheme.typography.bodyMedium,
+                color = FlipsiColors.TextSecondary,
+                modifier = Modifier.padding(16.dp),
+            )
+        } else {
+            LazyColumn {
+                items(matches, key = { it.messageId }) { match ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onJump(match.messageId) }
+                            .heightIn(min = 52.dp)
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            match.time,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = FlipsiColors.TextSecondary,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            ChatQuoteRules.quoteLabel(match.fromAgent, agentName),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (match.fromAgent) FlipsiColors.Ember else FlipsiColors.LineStrong,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            match.previewText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = FlipsiColors.TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                }
+            }
+        }
     }
 }
