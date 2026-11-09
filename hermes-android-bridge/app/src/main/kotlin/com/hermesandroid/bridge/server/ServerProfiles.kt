@@ -403,8 +403,20 @@ object ServerProfiles {
     private fun persist() {
         val f = storeFile() ?: return
         runCatching {
-            f.delete()
-            f.writeText(gson.toJson(dto))
+            // W4-FIX-JAG2 (C9): ATOMAR schreiben (Temp + rename) — das alte
+            // delete+writeText hatte ein Crash-Fenster zwischen delete und
+            // writeText (oder mitten im writeText): App-Rauswurf/force-stop dort
+            // = leere Datei = kompletter Profil-Store weg (Kopplung, Wizard-Rot).
+            // Temp-Datei im selben Dir (rename bleibt im Dateisystem atomar);
+            // scheitert das rename (plattformabhängig über existierender Datei),
+            // klassischer copy+delete-Fallback (Alt-Bestand bleibt bis zum
+            // Schluss lesbar, Parität zu writeAtomic im ChatHistoryStore).
+            val tmp = File(f.parentFile, ".${f.name}.part")
+            tmp.writeText(gson.toJson(dto))
+            if (!tmp.renameTo(f)) {
+                f.writeText(tmp.readText())
+                tmp.delete()
+            }
         }.onFailure { Log.w(TAG, "Profil-Write fehlgeschlagen: ${it.message}") }
     }
 
