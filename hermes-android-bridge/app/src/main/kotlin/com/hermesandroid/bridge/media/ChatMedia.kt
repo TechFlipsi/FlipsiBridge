@@ -50,6 +50,31 @@ object MediaProtocol {
     fun newMediaId(random: () -> ByteArray): String =
         "med-" + random().joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
+    /**
+     * W4-01c (App-Lane A, B3-Verband): Broker-msg_id aus der /media-Chunk-
+     * RESPONSE binden — NUR der Completion-Chunk (seq == total-1) liefert die
+     * ID, die die chat.status-Kette keys (Relay W4-B3: je Chunk-POST eine
+     * Broker-msg_id, uuid4-Form ≤ 36+Zeichen; der Adapter nimmt die
+     * Completing-Chunk-ID für chat.read.enc). Alt-/Nutzer-Relay ohne B3-Fix
+     * → null (Response ohne msg_id) → App-Chip bleibt ehrlich „✓ Gesendet“.
+     * Verband (Relay-Adapter-Parität): str, Trim non-empty, ≤ 128 Zeichen,
+     * nicht-primitive JSON-Felder und defekte Bodies = null (kein Exception-
+     * Pfad zur UI).
+     */
+    fun chunkResponseMsgId(bodyJson: String?, seq: Int, total: Int): String? {
+        if (seq < 0 || total < 1 || seq != total - 1) return null
+        if (bodyJson.isNullOrBlank()) return null
+        val parsed = runCatching {
+            com.google.gson.JsonParser.parseString(bodyJson).asJsonObject
+        }.getOrNull() ?: return null
+        val raw = parsed.get("msg_id")
+            ?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }
+            ?.asString
+            ?.trim()
+            ?: return null
+        return raw.takeIf { it.isNotEmpty() && it.length <= 128 }
+    }
+
     /** Metadaten-Validierung VOR dem Versand (fail-closed, spart Bandbreite). */
     fun validateForSend(kind: String, name: String, size: Long): String? {
         if (kind !in KINDS) return "unbekannte Media-Art: $kind"

@@ -5,6 +5,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -12,6 +13,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -458,18 +461,38 @@ fun ChatScreen(padding: PaddingValues) {
         if (agent.agentId.isBlank()) {
             // Demo-Fallback: kein echter Agent, kein Fake-Upload.
         } else {
-            RelayClient.sendMedia(agent.agentId, kind, name, mime, bytes) { ok, error, mediaId ->
+            RelayClient.sendMedia(agent.agentId, kind, name, mime, bytes) { ok, error, mediaId, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
                         agent.agentId to "Media: ${error ?: "unbekannter Fehler"}"
                         )
-                } else if (mediaId != null) {
-                    // media_id in die Bubble schreiben → Upload-Fortschritt bindet.
-                    messages = messages.map { msg ->
-                        if (msg.id == nextId && msg.media != null) {
-                            msg.copy(media = msg.media.copy(mediaId = mediaId))
-                        } else msg
+                } else {
+                    if (mediaId != null) {
+                        // media_id in die Bubble schreiben → Upload-Fortschritt bindet.
+                        messages = messages.map { msg ->
+                            if (msg.id == nextId && msg.media != null) {
+                                msg.copy(media = msg.media.copy(mediaId = mediaId))
+                            } else msg
+                        }
+                    }
+                    if (msgId != null) {
+                        // W4-01c (App-Lane A, W4-APP-03): msg_id-Spiegel-Verband —
+                        // die Media-Bubble hört ab jetzt denselben ChatStatus-
+                        // Chip-Verband wie Text: chat.status (Key msg_id) liefert
+                        // queued→delivered→read → Chip „✓ Gesendet → ✓✓ Zuge-
+                        // stellt → ✓✓ Gelesen (blau)" UNTER der Media-Bubble
+                        // (Chip-Zeile in ChatWidgets.MessageBubble rendert
+                        // bereits für Medien-Bubbles — die msg_id-Bindung war
+                        // die fehlende Faser). B3-Verband (Relay W4-B3, 14:29):
+                        // die msg_id kommt aus der FINAL-Chunk-Response je
+                        // Chunk-POST (Relay erzeugt je POST eine Broker-msg_id;
+                        // der Adapter nimmt die Completing-Chunk-ID für den
+                        // chat.read.enc-Receipt). null bei Nutzer-/Alt-Relay
+                        // ohne B3-Fix → Chip bleibt ehrlich „✓ Gesendet".
+                        // Demo-Eintrag (blank agentId) sendet nie → kein Chip,
+                        // unangetastet.
+                        msgIdByLocalId = msgIdByLocalId + (nextId to msgId)
                     }
                 }
             }
@@ -808,7 +831,25 @@ private fun AgentListBody(
 
 // ── Conversation (Verlauf + Eingabe) ────────────────────────────────────────
 
-/** Eine Conversation: Kopf, scrollender Verlauf und Eingabe-Leiste unten. */
+/**
+ * Eine Conversation: Kopf, scrollender Verlauf und Eingabe-Leiste unten.
+ *
+ * W4-01 (App-Lane A, W4-01a) Header-Fix-Verband + IME-Verband — Contract
+ * EXECUTIONSTATE §343 (verbatim, mit Manifest `windowSoftInputMode=
+ * "adjustResize"` als Schiene 1):
+ *  - Header (Agent-Name/FP-Button), Divider und Fehler-/E2E-Banner fix OBEN —
+ *    außerhalb jeder ime-gepolsterten Streckung (kein imePadding auf dieser
+ *    Column!),
+ *  - Nachrichten-Liste weight(1f) (wird unterm IME-Fenster geschweigt),
+ *  - NUR die ChatInputBar trägt imePadding()+navigationBarsPadding()
+ *    (IME-Polster direkt am Box-Wrap der InputBar, darunter im Code).
+ * edge-to-edge-Grundstand 09.11. = inaktiv (enableEdgeToEdge = 0 Treffer im
+ * App-Tree) → klassischer Decor-fits-Pfad; Insets-Schienen sind dort 0 dp und
+ * werden mit späterer edge-to-edge-Aktivierung wirksam. UX-Beweis NUR über
+ * Emulator-Drill (RP3-Vertrag, siehe Beweis-Marker am InputBar-Box-Wrap) —
+ * Robolectric kennt die IME-Grenze nicht (R6); Stand-PC-Re-Drill = spätere
+ * Build-Welle.
+ */
 @Composable
 private fun ConversationBody(
     padding: PaddingValues,
@@ -931,14 +972,36 @@ private fun ConversationBody(
                 ReplyQuoteStrip(quote = quote, onCancel = onDismissReply)
             }
             HorizontalDivider(color = FlipsiColors.LineStrong)
-            ChatInputBar(
-                value = inputText,
-                onValueChange = onInputChange,
-                onSend = onSend,
-                onAttach = onAttach,
-                voiceRecording = voiceRecording,
-                onVoiceToggle = onVoiceToggle,
-            )
+            // W4-01 (App-Lane A, W4-01a): IME-Verband — NUR die InputBar trägt
+            // imePadding()+navigationBarsPadding(); der Header (Agent-Name/
+            // FP-Button) und die Divider/Banner leben oberhalb und werden von
+            // der Tastatur NIEMALS verdrängt (Contract §343 (2), verbatim:
+            // „Header/Fingerprint-Zeile fix OBEN (AUSSERHALB jeder ime-
+            // gepolsterten Column), Nachrichten-Liste weight(1f), nur InputBar
+            // bekommt imePadding()+navigationBarsPadding()"). Die Liste selbst
+            // bekommt KEIN imePadding (Content-Ende bleibt beim Scrollen
+            // sichtbar, weight(1f) schweigt sie unterm adjustResize-Fenster).
+            // Grundstand edge-to-edge = 0 Treffer (Manifest-Kommentar) → beide
+            // Insets liefern heute 0 dp und werden mit späterem edge-to-edge
+            // wirksam (keine Doppelpolster-Risiken in beiden Modi).
+            // Beweis-Marker W4-01: Emulator-Drill RP3 (Tastatur auf → Header
+            // sichtbar, InputBar über Tastatur) mit XML-Dump offen-Tastatur-
+            // Stand → qa/screens4/ (Stand-PC-Re-Drill = spätere Build-Welle).
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .imePadding()
+                    .navigationBarsPadding(),
+            ) {
+                ChatInputBar(
+                    value = inputText,
+                    onValueChange = onInputChange,
+                    onSend = onSend,
+                    onAttach = onAttach,
+                    voiceRecording = voiceRecording,
+                    onVoiceToggle = onVoiceToggle,
+                )
+            }
         } else {
             // ── W4 (App-Lane C): Mediathek-Tab — alle Medien DIESES Agenten
             // (Store-Verbind + LIVE-Bubbles, STALE = Platzhalter-Karte).

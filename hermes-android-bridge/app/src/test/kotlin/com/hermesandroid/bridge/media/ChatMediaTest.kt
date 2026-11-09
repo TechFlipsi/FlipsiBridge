@@ -229,4 +229,38 @@ class ChatMediaTest {
         // Cap 2: die älteste (a) wurde verdrängt — pendingCount bleibt ≤ 2.
         assertTrue(timed.pendingCount() <= 2)
     }
+
+    // ── W4-01c (App-Lane A, B3-Verband): Broker-msg_id aus Chunk-Response ───
+
+    @Test
+    fun `chunkResponseMsgId bindet NUR den Completion-Chunk seq gleich total-1`() {
+        val body = "{\"chat_id\":\"chat-12345678\",\"msg_id\":\"3f0d2a9e-6f1b-4a1c-9a2b-8f2d6b7c5a41\",\"media_id\":\"med-x\",\"seq\":2,\"agent_id\":\"jarvis\",\"delivered\":true,\"queued\":false}"
+        assertNull("früher Chunk (0/3) → nicht binden", MediaProtocol.chunkResponseMsgId(body, 0, 3))
+        assertNull("Mittel-Chunk (1/3) → nicht binden", MediaProtocol.chunkResponseMsgId(body, 1, 3))
+        assertEquals("Final-Chunk (2/3) → binden", "3f0d2a9e-6f1b-4a1c-9a2b-8f2d6b7c5a41", MediaProtocol.chunkResponseMsgId(body, 2, 3))
+        assertEquals("Single-Chunk (0/1) = Final-Chunk → binden", "3f0d2a9e-6f1b-4a1c-9a2b-8f2d6b7c5a41", MediaProtocol.chunkResponseMsgId(body, 0, 1))
+        assertNull("seq > total-1 = invalides Index-Verband → null", MediaProtocol.chunkResponseMsgId(body, 5, 3))
+        assertNull("total < 1 → null", MediaProtocol.chunkResponseMsgId(body, 0, 0))
+    }
+
+    @Test
+    fun `chunkResponseMsgId lehnt Alt-Relay-Bodies-ohne-msg-id-ab-ehrlicher Chip`() {
+        assertNull("kein Body (alt-Relay-Response) → null", MediaProtocol.chunkResponseMsgId(null, 0, 1))
+        assertNull("leerer Body → null", MediaProtocol.chunkResponseMsgId("   ", 0, 1))
+        assertNull("Response ohne msg_id (Nutzer-Relay) → null",
+            MediaProtocol.chunkResponseMsgId("{\"chat_id\":\"chat-x\",\"media_id\":\"med-x\",\"seq\":0}", 0, 1))
+        assertNull("leere msg_id → null", MediaProtocol.chunkResponseMsgId("{\"msg_id\": \"\"}", 0, 1))
+        assertNull("msg_id nicht als String (RED-05-Parität) → null", MediaProtocol.chunkResponseMsgId("{\"msg_id\": 42}", 0, 1))
+        assertNull("msg_id als Liste → null", MediaProtocol.chunkResponseMsgId("{\"msg_id\": [\"a\"]}", 0, 1))
+        assertNull("defekter JSON-Body → null (kein Exception-Pfad zur UI)", MediaProtocol.chunkResponseMsgId("{\"msg_id\": oops", 0, 1))
+    }
+
+    @Test
+    fun `chunkResponseMsgId Verband str trim nonempty le128 B3 Relay Parität`() {
+        // Relay W4-B3-Form: str(uuid.uuid4()) — 36-Zeichen-Form mit Trim-Rand:
+        val padded = "{\"msg_id\": \"  abcdef01-2345-4678-9abc-def012345678  \"}"
+        assertEquals("abcdef01-2345-4678-9abc-def012345678", MediaProtocol.chunkResponseMsgId(padded, 0, 1))
+        assertNull(">128 Zeichen (B3-Ausreißer) → null", MediaProtocol.chunkResponseMsgId("{\"msg_id\": \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"}", 0, 1))
+        assertEquals("128 Zeichen exakt gilt", "y".repeat(128), MediaProtocol.chunkResponseMsgId("{\"msg_id\": \"yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy\"}", 0, 1))
+    }
 }

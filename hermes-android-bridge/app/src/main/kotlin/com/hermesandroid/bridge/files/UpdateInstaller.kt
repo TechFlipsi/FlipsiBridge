@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.hermesandroid.bridge.client.PinSource
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -63,9 +64,16 @@ object UpdateInstaller {
         // Upgrade-Pfad: apk/latest ist fest, kein Aufrufer-Einfluss möglich.
         val downloadUrl = "$base/apk/latest"
 
+        // W4-01b (W3-03, App-Lane A): eigener Client = PINNING-VERBAND
+        // mitversorgen — /apk/latest (Self-Update-Loop) lädt über den gepinnten
+        // Relay-Host. Nur REDACTED-RELAY ist gepinnt (PinSource/SF5):
+        // Nutzer-Relay-URLs laden unverändert hostname-only. Bemerkung
+        // (Bestands-Lücke, W4-12/13-Lane): der Client hat noch KEIN
+        // MtlsSupport.decorate() — mTLS-Verband folgt in der mTLS-Welle.
         val client = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(120, TimeUnit.SECONDS)
+            .apply { PinSource.pinner()?.let { certificatePinner(it) } }
             .build()
 
         val request = Request.Builder()
@@ -117,6 +125,12 @@ object UpdateInstaller {
                 }
             }
             digest = md.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+        } catch (e: javax.net.ssl.SSLPeerUnverifiedException) {
+            // W4-01b (W3-03, App-Lane A): Pin-Verstoß ehrlich benennen (VOR dem
+            // IOException-Griff, da SSLPeerUnverifiedException ⊂ IOException).
+            // Beweis-Marker: Negativ-Drill (falscher Pin) → dieser Text statt
+            // des generischen Exception-Griffs; Logcat-Sieb CertificatePinner.
+            return Result(false, 502, "Zertifikats-Pin fehlgeschlagen — Update-Download verweigert (${e.javaClass.simpleName})")
         } catch (e: IOException) {
             return Result(false, 502, "Download fehlgeschlagen: ${e.javaClass.simpleName}: ${e.message ?: ""}".trim())
         } catch (e: Exception) {
