@@ -125,7 +125,10 @@ object RelayClient {
     private const val KEY_REVIVAL_ENABLED = "termux_revival_enabled"
 
     private val gson = Gson()
-    private val client = MtlsSupport.decorate(
+    // W4-FIX-JAG2 (Drill-Hatch): lazy statt eager — der Trust-Schalter liest
+    // Settings.Global beim ERSTEN Connect (BridgeApplication.instance + die
+    // Drill-Einstellung sind dann gesetzt; beim Object-Init war beides null).
+    private val client: OkHttpClient by lazy { MtlsSupport.decorate(
         OkHttpClient.Builder()
             // PH-FIX-CHAT-A (F6, 30-s-Keepalive): WS-Ping-Frames (opcode 0x9)
             // im 30-s-Raster — Spiegel zum 30-s-Keepalive-Raster der Agenten.
@@ -176,7 +179,7 @@ object RelayClient {
                 Log.w(TAG, "DRILL-TRUST-ALL aktiv (Debug + Settings-Knopf) — NUR Drill-Socket")
             })
             .build()
-    )
+    ) }
 
     /** Status-Zuhörer — MainActivity/Service/UI hören je selbst zu (keine Slot-Race). */
     private val statusListeners = CopyOnWriteArrayList<(connected: Boolean, message: String) -> Unit>()
