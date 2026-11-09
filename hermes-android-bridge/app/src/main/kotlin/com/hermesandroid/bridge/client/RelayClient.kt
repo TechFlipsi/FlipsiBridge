@@ -137,6 +137,14 @@ object RelayClient {
             // (v0.12.0 Akku P1-1 hatte 20→45 s erhöht, weil der Relay eh alle
             // 15 s heartbeatet — die App-EIGENE Toterkennung war der Engpass.)
             .pingInterval(java.time.Duration.ofSeconds(30))
+            // W4-01b (W3-03, App-Lane A): SPKI-PINNING VOR decorate() — der
+            // Pin-Verband hängt am Client, BEVOR MtlsSupport.decorate() über
+            // newBuilder() das mTLS-Socket einbaut (OkHttp newBuilder() erbt
+            // certificatePinner — decorate() kann das Pinning nicht umgehen).
+            // Nur der eigene Relay-Host ist gepinnt (PinSource/SF5); Nutzer-
+            // Relays laufen hostname-only. Debug-Kill-Switch für Drills: siehe
+            // PinSource.setPinningDisabledForDrill (nimmt NUR die PIN-Schicht).
+            .apply { PinSource.pinner()?.let { certificatePinner(it) } }
             .build()
     )
 
@@ -525,6 +533,17 @@ object RelayClient {
         // wer je eine Relay-Verbindung einrichtet, hat "vor dem Gating" genutzt.
         prefs?.edit()?.putBoolean("legacy_had_relay", true)?.apply()
 
+        // W4-01b (W3-03, App-Lane A): Info-Merker `pins_installed` — true,
+        // wenn die konfigurierte Relay-URL den gepinnten Host trägt. Die Info
+        // bleibt an die Verbindungs-ÜBERNAHME gebunden (je connect neu
+        // geschrieben) — Profil-Wechsel auf ein Nutzer-Relay (ohne Pins,
+        // SF5) setzt ihn korrekt auf false. Keine Verhaltens-Auswirkung —
+        // nur ehrliche Status-/Diagnose-Auslage (Verbindungs-/Zertifikats-
+        // Status-UI = W4-APP-14-Lane).
+        prefs?.edit()
+            ?.putBoolean(PinSource.PREF_PINS_INSTALLED, PinSource.isPinnedHost(serverUrl))
+            ?.apply()
+
         this.serverUrl = serverUrl
         // Bewusste Neu-Kopplung: gesperrten Auth-Zustand räumen — der User gibt
         // den Code bewusst eine Chance (SSOT macht den Code ohnehin aktuell).
@@ -802,8 +821,23 @@ object RelayClient {
                 // Wizard-Fehlerhilfe (401/403 → Code falsch, 429 → Sperre,
                 // 0 → Timeout/Netz) — kein Text-Grep über Statusmeldungen.
                 lastFailureHttpCode = httpCode
-                val errorDetail = "Verbindungsfehler: ${t.javaClass.simpleName} (HTTP $httpCode)"
-                Log.e(TAG, "WebSocket failure: $errorDetail")
+                // W4-01b (W3-03, App-Lane A): Pin-Verstoß als EIGENE FAILED-
+                // Ursache (Contract „Pin-Verstoß als FAILED-Ursache",
+                // WELLE4-APP-02) — ehrlicher Text in Statuszeile/Banner statt
+                // des generischen Exception-Rauschens; Logcat behält die
+                // volle Klasse (Sieb-Terme: CertificatePinner|OkHttp|RelayClient).
+                // W4-D-Koexistenz: der strukturerte HTTP-Code (Wizard-Taxonomie)
+                // bleibt — bei 0 mit SSLPeerUnverifiedException zeigt der
+                // Wizard trotzdem die Pin-Ursache-Meldung im Statusbanner.
+                val pinFailure = PinSource.pinFailureText(t)
+                val errorDetail = pinFailure
+                    ?: "Verbindungsfehler: ${t.javaClass.simpleName} (HTTP $httpCode)"
+                if (pinFailure != null) {
+                    Log.e(TAG, "CertificatePinner FAILURE — $pinFailure " +
+                        "(Quelle: ${t.javaClass.simpleName}, HTTP $httpCode)")
+                } else {
+                    Log.e(TAG, "WebSocket failure: $errorDetail")
+                }
                 isConnected = false
                 // PH-FIX-CHAT-A (F5): wie onClosed — verwaiste working-States
                 // räumen (kein Spinner-Ewigzähler auf toter Verbindung).

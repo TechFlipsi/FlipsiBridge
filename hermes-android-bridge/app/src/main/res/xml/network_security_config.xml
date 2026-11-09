@@ -9,6 +9,28 @@
   Schnüffler-F5: der alte Kommentar versprach "konfigurierbare private
   IP-Range" — nie wahr; eine cleartext-LAN-Konnektion unter anderem Host
   stieß still an der Plattform-Sperre an (kamd als "Verbindungsbug" an).
+
+  W4-01b (W3-03, App-Lane A, 09.11.2026): SPKI-PINNING für das EIGENE Relay
+  als PLATTFORM-Schiene (OkHttp-Pinner-Schiene = client/PinSource.kt, derselbe
+  Pin-Stand — beide Schienen decken exakt denselben Host ab, niemals die
+  Cleartext-Ausnahme, niemals Nutzer-Relays (SF5: hostname-only)). Beweis der
+  Pin-Kette: openssl s_client -connect REDACTED-RELAY:443 -showcerts
+  (Verify return code: 0 (ok), gezogen 09.11.2026 am kibot) — SPKI-SHA256 je
+  Kettenglied:
+    Leaf  REDACTED-RELAY     (LE Short-Lived, EC-384, 7-Tage-Zert,
+                                   2026-11-08..15 — Positiv-Pin; Leaf-Schlüssel
+                                   KANN je Renewal wechseln)
+    YE1   CN=YE1,O=Let's Encrypt  (bis 2028-09-02 — Backup-Träger der Rotation)
+    Root  CN=Root YE,O=ISRG       (bis 2032-09-02)
+    X2    CN=ISRG Root X2,O=ISRG  (Cross-Sign Root X1, bis 2032-09-02)
+  Pin-Logik: EIN Erfolgs-Pin genügt (Chain-Glied trifft einen Pin) — Leaf-
+  Renewal mit gleichem Intermediate/Root bleibt verbunden; NUR ein
+  Intermediate-/Root-Wechsel zwingt zum gleichzeitigen Neu-Seed BEIDER
+  Schienen (OkHttp-Pinner + dieses Pin-Set).
+  expiration (fail-open nach Ablauf = bewusste Notbremse der Plattform,
+  kein Dauer-Bricking): 2027-05-11 — harte Erinnerung, den Pin-Verband
+  spätestens dann gegen die live gezogene Kette neu zu prüfen/zu setzen
+  (Pflicht im Release-Verband je Welle; Verband mit Sir dokumentiert).
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false">
@@ -16,6 +38,21 @@
             <certificates src="system" />
         </trust-anchors>
     </base-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <!-- EIGENES Relay: SPKI-Pin-Verband (W4-01b) — includeSubdomains=false
+             (Exact-Host, Parität zu PinSource.pinsFor). -->
+        <domain includeSubdomains="false">REDACTED-RELAY</domain>
+        <pin-set expiration="2027-05-11">
+            <!-- Leaf REDACTED-RELAY (Positiv-Pin) -->
+            <pin digest="sha256/qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=" />
+            <!-- Backup: Intermediate YE1 (O=Let's Encrypt, bis 2028-09-02) -->
+            <pin digest="sha256/brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=" />
+            <!-- Backup: Root YE (O=ISRG, bis 2032-09-02) -->
+            <pin digest="sha256/sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=" />
+            <!-- Backup: ISRG Root X2 (Cross-Sign X1, bis 2032-09-02) -->
+            <pin digest="sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=" />
+        </pin-set>
+    </domain-config>
     <domain-config cleartextTrafficPermitted="true">
         <!-- EIN generischer Heim-LAN-DNS-Name (hosts-Eintrag) -->
         <domain includeSubdomains="false">dashboard.lan</domain>
