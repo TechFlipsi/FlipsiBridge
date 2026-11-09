@@ -951,7 +951,15 @@ private fun ConversationBody(
         onDispose { RelayClient.chatVisibleAgentId = null }
     }
     // Auf die neueste Nachricht scrollen (unten = neueste).
+    // W4-FIX-JAG2 (C8): Ende-Gate während der Chat-Suche — der Effekt feuerte
+    // je conversation.size-Änderung (auch JE neue Antwort mitten im Such-
+    // Sprung) und riss den animateScrollToItem-Sprung zur Treffer-Bubble
+    // zum Listen-Ende zurück (Konflikt zweier Scroll-Anims, Sprung verloren).
+    // Bei offener Suchleiste folgt der Verlauf dem Nutzer (Suchleiste zu =
+    // gewohntes Ende Folgen; ein Rest-Zustand wird beim Schließen nicht
+    // nachgezogen — der Nutzer ist eh am Lesen).
     LaunchedEffect(conversation.size) {
+        if (searchOpen) return@LaunchedEffect
         if (conversation.isNotEmpty()) {
             listState.animateScrollToItem(conversation.lastIndex)
         }
