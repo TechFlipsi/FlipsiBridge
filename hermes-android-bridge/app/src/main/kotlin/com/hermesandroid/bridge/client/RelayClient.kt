@@ -767,6 +767,10 @@ object RelayClient {
 
         // W4-FIX-JAG2 (C2): Queue + EIN Verbraucher je Connect — startet VOR
         // dem WebSocket (onMessage kann nie in eine leere Queue schreiben).
+        // Vorherige Queue schließen (Auth-Sonde/Re-Dock laufen ohne disconnect):
+        // deren Verbraucher endet mit dem Loop-Schluss, es bleibt genau EIN
+        // lebender Verbraucher je Generation.
+        inboundQueue?.close()
         val queue: Channel<Pair<WebSocket, String>> = Channel(Channel.UNLIMITED)
         inboundQueue = queue
         scope?.launch {
