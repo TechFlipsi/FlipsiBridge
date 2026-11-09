@@ -406,18 +406,38 @@ fun ChatScreen(padding: PaddingValues) {
         if (agent.agentId.isBlank()) {
             // Demo-Fallback: kein echter Agent, kein Fake-Upload.
         } else {
-            RelayClient.sendMedia(agent.agentId, kind, name, mime, bytes) { ok, error, mediaId ->
+            RelayClient.sendMedia(agent.agentId, kind, name, mime, bytes) { ok, error, mediaId, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
                         agent.agentId to "Media: ${error ?: "unbekannter Fehler"}"
                         )
-                } else if (mediaId != null) {
-                    // media_id in die Bubble schreiben → Upload-Fortschritt bindet.
-                    messages = messages.map { msg ->
-                        if (msg.id == nextId && msg.media != null) {
-                            msg.copy(media = msg.media.copy(mediaId = mediaId))
-                        } else msg
+                } else {
+                    if (mediaId != null) {
+                        // media_id in die Bubble schreiben → Upload-Fortschritt bindet.
+                        messages = messages.map { msg ->
+                            if (msg.id == nextId && msg.media != null) {
+                                msg.copy(media = msg.media.copy(mediaId = mediaId))
+                            } else msg
+                        }
+                    }
+                    if (msgId != null) {
+                        // W4-01c (App-Lane A, W4-APP-03): msg_id-Spiegel-Verband —
+                        // die Media-Bubble hört ab jetzt denselben ChatStatus-
+                        // Chip-Verband wie Text: chat.status (Key msg_id) liefert
+                        // queued→delivered→read → Chip „✓ Gesendet → ✓✓ Zuge-
+                        // stellt → ✓✓ Gelesen (blau)" UNTER der Media-Bubble
+                        // (Chip-Zeile in ChatWidgets.MessageBubble rendert
+                        // bereits für Medien-Bubbles — die msg_id-Bindung war
+                        // die fehlende Faser). B3-Verband (Relay W4-B3, 14:29):
+                        // die msg_id kommt aus der FINAL-Chunk-Response je
+                        // Chunk-POST (Relay erzeugt je POST eine Broker-msg_id;
+                        // der Adapter nimmt die Completing-Chunk-ID für den
+                        // chat.read.enc-Receipt). null bei Nutzer-/Alt-Relay
+                        // ohne B3-Fix → Chip bleibt ehrlich „✓ Gesendet".
+                        // Demo-Eintrag (blank agentId) sendet nie → kein Chip,
+                        // unangetastet.
+                        msgIdByLocalId = msgIdByLocalId + (nextId to msgId)
                     }
                 }
             }

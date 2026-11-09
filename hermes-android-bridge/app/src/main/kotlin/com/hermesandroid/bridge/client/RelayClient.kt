@@ -1886,13 +1886,22 @@ object RelayClient {
      * Klartext — der Klartext-Fallback ist FORBIDDEN, Parität zu enc-Frames).
      * Fortschritt via [mediaUploads] (sentChunks + ackedChunks je media_id).
      */
+    /**
+     * MEDIA-T1: Medium als lokalen Chunk-Upload anstoßen + W4-01c-Chip-Bindung
+     * (B3-Verband): [onResult] erhält nach dem FINALEN Chunk die Broker-msg_id
+     * aus der Relay-Response (Relay W4-B3: je Chunk-POST eine Broker-msg_id,
+     * chat_status queued/delivered/read keyen darauf; der Adapter nimmt die
+     * msg_id des Completing-Chunks für chat.read.enc). [msgId] = null bei
+     * Fehlern UND bei Relays ohne B3-Fix (Nutzer-Relays/Alt-Relay) — der Chip
+     * bleibt in beiden Fällen ehrlich („✓ Gesendet"/„✕ Fehlgeschlagen").
+     */
     fun sendMedia(
         agentId: String,
         kind: String,
         name: String,
         mime: String,
         bytes: ByteArray,
-        onResult: (ok: Boolean, error: String?, mediaId: String?) -> Unit,
+        onResult: (ok: Boolean, error: String?, mediaId: String?, msgId: String?) -> Unit,
     ) {
         val activeScope = scope
         val mediaId = MediaProtocol.newMediaId { CryptoEngine.secureRandomBytes(16) }
@@ -1928,8 +1937,8 @@ object RelayClient {
                     val outcome = runCatching {
                         uploadMediaChunks(base, agentId, peer, chatId, mediaId, kind, name, mime, bytes)
                     }
-                    outcome.onSuccess { sent ->
-                        if (sent) {
+                    outcome.onSuccess { result ->
+                        if (result.sent) {
                             // Upload angenommen — Bubble-Text für Verlauf/UI.
                             val label = MediaProtocol.kindLabel(kind)
                             val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
@@ -1940,7 +1949,11 @@ object RelayClient {
                                 mediaKind = kind, mediaName = name, mediaMime = mime,
                                 mediaSize = bytes.size.toLong(), mediaId = mediaId,
                             )
-                            deliverMediaResult(onResult, true, null, mediaId)
+                            // W4-01c (B3-Verband): Broker-msg_id des Final-Chunks
+                            // an die UI (ChatScreen-Bindung → msgIdByLocalId →
+                            // ChatStatus-Chip-Kette queued → delivered → read);
+                            // null bei Alt-/Nutzer-Relay ohne B3 → Chip ehrlich.
+                            deliverMediaResult(onResult, true, null, mediaId, result.finalMsgId)
                         } else {
                             markMediaUploadFailed(mediaId, "Relay lehnte Chunks ab")
                             deliverMediaResult(onResult, false, "Relay lehnte Chunks ab", null)
@@ -1965,10 +1978,17 @@ object RelayClient {
         name: String,
         mime: String,
         bytes: ByteArray,
-    ): Boolean {
+    ): MediaUploadOutcome {
         val chunks = MediaChunker.chunk(bytes)
         val sha = MediaProtocol.sha256Hex(bytes)
         _mediaUploads.update { it + (mediaId to MediaUploadState(agentId, kind, name, chunks.size)) }
+        // W4-01c (B3-Verband): die Broker-msg_id des FINALEN Chunks (seq ==
+        // total-1) aus der Relay-Response binden — der Relay W4-B3 erzeugt je
+        // Chunk-POST eine Broker-msg_id (chat_status queued, Response-Feld,
+        // Agent-Frame) und der Adapter nimmt die Completing-Chunk-ID für den
+        // chat.read.enc-Receipt. Alt-/Nutzer-Relay ohne B3 → null → Chip
+        // bleibt ehrlich „✓ Gesendet" (kein Bruch, kein Fake-Zustand).
+        var finalMsgId: String? = null
         for ((index, chunk) in chunks.withIndex()) {
             val payload = buildMap {
                 put("media_id", mediaId)
@@ -2004,7 +2024,14 @@ object RelayClient {
             client.newCall(request).execute().use { response ->
                 if (response.code !in 200..299) {
                     Log.w(TAG, "MEDIA-T1: /media Chunk ${chunk.seq} abgelehnt (HTTP ${response.code})")
-                    return false
+                    return MediaUploadOutcome(sent = false, finalMsgId = null)
+                }
+                // W4-01c (B3-Verband): msg_id je Chunk-Response mitlesen —
+                // gebunden wird NUR die des FINALEN Chunks (Adapter-Completing-
+                // Chunk-Parität); früher Chunk-Response-IDs bleiben ungenutzt.
+                val responseText = response.body?.string()
+                if (index == chunks.lastIndex) {
+                    finalMsgId = MediaProtocol.chunkResponseMsgId(responseText, chunk.seq, chunks.size)
                 }
                 _mediaUploads.update {
                     it + ((it[mediaId] ?: return@update it).let { state ->
@@ -2013,8 +2040,14 @@ object RelayClient {
                 }
             }
         }
-        return true
+        return MediaUploadOutcome(sent = true, finalMsgId = finalMsgId)
     }
+
+    /** W4-01c (B3-Verband): Ergebnis je Chunk-Upload mit Broker-msg_id. */
+    private data class MediaUploadOutcome(
+        val sent: Boolean,
+        val finalMsgId: String?,
+    )
 
     /** Media-Upload endgültig gescheitert → State + Verlauf-Chip 'failed'. */
     private fun markMediaUploadFailed(mediaId: String, error: String) {
@@ -2140,16 +2173,23 @@ object RelayClient {
         }
     }
 
-    /** Media-Sende-Ergebnis immer auf den Main-Thread posten (UI-Bindung). */
+    /**
+     * Media-Sende-Ergebnis immer auf den Main-Thread posten (UI-Bindung).
+     * W4-01c: [msgId] = Broker-msg_id des Final-Chunks aus der Relay-Response
+     * (B3-Verband) — null auf allen Fehlerpfaden UND bei Relays ohne
+     * B3-Fix (Nutzer-/Alt-Relay) → Chip bleibt ehrlich, es gibt keinen
+     * Broker-Status zu binden.
+     */
     private fun deliverMediaResult(
-        onResult: (ok: Boolean, error: String?, mediaId: String?) -> Unit,
+        onResult: (ok: Boolean, error: String?, mediaId: String?, msgId: String?) -> Unit,
         ok: Boolean,
         error: String?,
         mediaId: String?,
+        msgId: String? = null,
     ) {
         try {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
-                runCatching { onResult(ok, error, mediaId) }
+                runCatching { onResult(ok, error, mediaId, msgId) }
             }
         } catch (_: Exception) {}
     }
