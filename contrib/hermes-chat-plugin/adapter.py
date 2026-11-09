@@ -107,6 +107,24 @@ _MEDIA_ASSEMBLERS_MAX = 8                 # gleichzeitige halbfertige Uploads
 _MEDIA_ASSEMBLER_TTL_S = 30 * 60          # halbfertige Assemblies entsorgen
 _MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
 
+# ── W4-B2: Adapter-gesteuerte Slash-Befehle (Chat-Präfix-Parser) ──────────────
+# SCOPE-GUARD (W4-B2, verbindlich): Die Befehlsautorität lebt NUR hier, im
+# FlipsiBridge-Chat-Adapter — KEIN Gateway-Hook, KEIN globaler Command-Shim,
+# KEIN anderer Plattform-Adapter (Konvention 0932dba). Die App behandelt
+# Slash-Text als gewöhnliche Nachricht (kein UI-Spezialfall); Erkennung,
+# Antwort und Scope laufen im Nach-Dekrypt-Verband des Adapters. Der Phone-
+# Payload kann die Liste NICHT erweitern (_SLASH_COMMANDS = frozenset-
+# Modulkonstante), und der Parser liegt bewusst nur auf dem Inbound-Pfad —
+# Agent-Antworten laufen nie durch _dispatch_frame (kein Loop-Risiko).
+_SLASH_COMMANDS = frozenset({"new", "status", "help"})
+_HELP_TEXT = (
+    "Befehle:\n"
+    "/new — Agenten-Unterhaltung zurücksetzen (mit Bestätigung)\n"
+    "/status — Status: E2E-Sitzung, Verbindung, Verlauf-Kurzbasis\n"
+    "/help — diese Befehlsliste\n"
+    "Hinweis: Befehle steuert der Adapter, nicht die App."
+)
+
 
 class MediaError(RuntimeError):
     """Media-Übertragung fehlgeschlagen (Struktur/Größe/Integrität)."""
@@ -1406,6 +1424,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._received_at[chat_id] = int(time.time() * 1000)
         while len(self._received_at) > 256:
             self._received_at.pop(next(iter(self._received_at)))
+        # W4-B2: Adapter-gesteuerter Slash-Präfix-Parser — NACH Dekrypt und
+        # Fp-Gatter, VOR der Gateway-Zustellung. True = lokal behandelt (kein
+        # Gateway-Push; Read-Receipt + Antwort hier); /new und alle Nicht-
+        # Befehle fallen durch (normale Deliver-Pipeline).
+        if self._handle_slash_command(envelope, chat_id, text or ""):
+            return
         # PH2-FIX (Jäger B4): chat.read erst NACH der Verarbeitung — vorher
         # wurde der Read schon beim bloßen Frame-Empfang bestätigt (Lüge:
         # 'gelesen', bevor der Text überhaupt angekommen war).
@@ -1700,6 +1724,119 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._send_read_receipt(chat_id, str(envelope.get("msg_id", "") or ""))
         self._schedule(self._fp_reply(chat_id, matches, sess))
         return True
+
+    # ── W4-B2: Adapter-gesteuerte Slash-Befehle (/new /status /help) ───────────
+
+    def _handle_slash_command(self, envelope: dict, chat_id: str, text: str) -> bool:
+        """Chat-Präfix-Parser im Nach-Dekrypt-Verband (W4-B2).
+
+        True = lokal behandelt — KEIN Gateway-Push, KEINE Zustellung:
+          /status → Status-Nachricht aus Adapter-internen Quellen
+                    (eigenes Antwort-Verband: Read-Receipt + chat.reply.enc
+                    bei aktiver Session via send()).
+          /help   → Befehlsliste (_HELP_TEXT, eigenes Antwort-Verband).
+        False = nichts Befehls-artiges erkannt → normale Nachricht weiterlaufen:
+          - /new wird 1:1 durchgelassen — der Gateway ist Session-Eigentümer
+            (reset_triggers [" /new", "/reset"] in gateway/config.py; das
+            destructive-Confirm-Gate des Gateways ist DIE Bestätigung, die
+            Gateway-Antwort ist die Bestätigungs-Bubble der App — DECISION O-5,
+            keine Adapter-Doppel-Bubble). KEIN crypto.session_reset: der
+            Ratchet-Status bleibt (kein E2E-Side-Effect eines Chat-Befehls,
+            Abgrenzung SIRS-01/B8).
+          - JEDE andere '/…'-Eingabe (unbekannter Befehl, '/etc/hosts prüfen',
+            'foo /new bar' etc.) ist keine Befehlsfläche → normal senden
+            (false-positive-Verband; nur exakter Start-Match auf token0).
+        """
+        stripped = text.strip()
+        if not stripped.startswith("/"):
+            return False
+        token0 = stripped.split()[0]
+        cmd = token0[1:]
+        if cmd not in _SLASH_COMMANDS:
+            # Unbekanntes '/…' = normale Nachricht (false-positive-Verband).
+            return False
+        msg_id = str(envelope.get("msg_id", "") or "")
+        if cmd == "new":
+            # Session-Reset-Verband des Gateways entscheidet (inkl. Bestätigung);
+            # der Adapter quittiert nichts lokal und lässt das Roh-Textevent
+            # unverändert durch (Args-Grammatik = Gateway-Gate).
+            logger.info(
+                "FlipsiBridge: /new empfangen — 1:1 an den Gateway durchgereicht "
+                "(Session-Reset mit Bestätigungs-Gate; KEIN crypto.session_reset, "
+                "Ratchet-Status bleibt)")
+            return False
+        # /status & /help: JEDE Command-Verarbeitung bestätigt zuerst
+        # (SIRS-03-Parität, Chip → blau); Args ohne Grammatik = Kurzhinweis.
+        suffix = ""
+        if len(stripped.split()) > 1:
+            suffix = "\nHinweis: Argumente nach /%s werden ignoriert." % cmd
+        self._send_read_receipt(chat_id, msg_id)
+        reply = self._slash_status_report() if cmd == "status" else _HELP_TEXT
+        self._schedule(self._slash_reply(chat_id, reply + suffix))
+        return True
+
+    def _slash_status_report(self) -> str:
+        """W4-B2: /status — kompakte Status-Nachricht NUR aus Adapter-Quellen.
+
+        Ehrliche Anzeige: fehlende Quelle wird verbal markiert ('keine …',
+        'nicht verbunden'), kein Fake. Bewusst NICHT darin: der Phone-
+        Chatverlauf (ChatHistoryStore = App-Eigentum, kein Adapter-Zugriff)
+        und der Agenten-Roster (der Adapter kennt nur sich selbst).
+        """
+        lines: list[str] = []
+        if self._connected:
+            conn = "verbunden"
+        else:
+            conn = "NICHT verbunden"
+        lines.append("Verbindung: %s — %s (%s)" % (
+            conn, self.relay_url or "(keine Relay-URL konfiguriert)", self.ws_route))
+        session = self._active_session()
+        if session is not None:
+            rest_h = max(
+                0, int(_SESSION_MAX_AGE_SECONDS - (time.time() - session.created))
+            ) // 3600
+            lines.append("E2E: Session %s — Fingerprint %s — Restlaufzeit ~%d h (24-h-Cap)"
+                         % (session.session_id[:8],
+                            fingerprint_display(session.fingerprint), rest_h))
+        else:
+            lines.append("E2E: keine aktive E2E-Session")
+        lines.append("Agent: %s (%s)" % (self.agent_id, self.display_name))
+        if self._received_at:
+            newest_ms = max(self._received_at.values())
+            lines.append("Letzte Aktivität: %s" % time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(newest_ms / 1000)))
+        else:
+            lines.append("Letzte Aktivität: keine (noch nichts empfangen)")
+        try:
+            entries = [name for name in os.listdir(self.media_dir)
+                       if os.path.isfile(os.path.join(self.media_dir, name))]
+            used = sum(os.path.getsize(os.path.join(self.media_dir, name))
+                       for name in entries)
+            lines.append("Medien: %d Dateien (%s) von %s Budget" % (
+                len(entries), _format_media_bytes(used),
+                _format_media_bytes(self.media_dir_max_bytes)))
+        except OSError:
+            lines.append("Medien: Verzeichnis nicht lesbar")
+        if self.rejected_frames:
+            counts: dict[str, int] = {}
+            for rejected in self.rejected_frames:
+                reason = str(rejected.get("reason") or "?")
+                counts[reason] = counts.get(reason, 0) + 1
+            top = sorted(counts.items(), key=lambda item: item[1], reverse=True)[:3]
+            lines.append("Verworfene Frames: " + "; ".join(
+                "%s ×%d" % (reason, count) for reason, count in top))
+        else:
+            lines.append("Verworfene Frames: keine")
+        return "\n".join(lines)
+
+    async def _slash_reply(self, chat_id: str, text: str) -> None:
+        """Antwort-Send eines Slash-Befehls (läuft über die bestehende E2E-
+        Kette: chat.reply.enc bei aktiver Session); ein Sendefehler bricht
+        nie den Frame-Loop (_fp_reply-Muster)."""
+        try:
+            await self.send(chat_id, text)
+        except Exception as exc:
+            logger.warning("FlipsiBridge: Slash-Antwort fehlgeschlagen: %s", exc)
 
     async def _send_session_reset(self, session_id: str, reason: str) -> None:
         """PH-3/SIRS-01: crypto.session_reset ans Relay — die Gegenseite
