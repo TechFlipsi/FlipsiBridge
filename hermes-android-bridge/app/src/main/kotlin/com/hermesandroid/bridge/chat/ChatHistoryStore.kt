@@ -175,9 +175,15 @@ object ChatHistoryStore {
     /** FIFO- + Byte-Kürzung (älteste zuerst, nie jünger verlieren). */
     private fun capLines(lines: List<String>): List<String> {
         val out = lines.toMutableList()
-        while (out.size > MAX_PER_AGENT || bytesOf(out) > MAX_FILE_BYTES) {
+        // W4-FIX-JAG2 (C10): laufend mitgezogenes Byte-Total (O(n)) — das alte
+        // While rief bytesOf(out) JE Runde neu (O(n²)). Mit der UTF-8-Anpassung
+        // in bytesOf zieht hier removeAt nur den Beitrag der entfernten Zeile
+        // ab; Semantik identisch (leere Liste: total=0 → Schleife endet wie
+        // bisher über den isEmpty-Abbruch).
+        var total = bytesOf(out)
+        while (out.size > MAX_PER_AGENT || total > MAX_FILE_BYTES) {
             if (out.isEmpty()) break
-            out.removeAt(0)
+            total -= out.removeAt(0).toByteArray(Charsets.UTF_8).size + 1L
         }
         return out
     }
@@ -207,7 +213,13 @@ object ChatHistoryStore {
     private fun readLines(file: File): List<String> =
         if (file.exists()) file.readLines().filter { it.isNotBlank() } else emptyList()
 
-    private fun bytesOf(lines: List<String>): Long = lines.sumOf { it.length + 1L }
+    /**
+     * W4-FIX-JAG2 (C10): Byte-Invariante zählt UTF-8-Bytes, nicht UTF-16-Chars.
+     * Vorher `it.length` (UTF-16-Einheiten): Umlaute (2 UTF-8-Bytes je Char)
+     * und Emoji (4) ließen die 512-KiB-Dateigrenze um >45 % unterlaufen.
+     */
+    private fun bytesOf(lines: List<String>): Long =
+        lines.sumOf { it.toByteArray(Charsets.UTF_8).size + 1L }
 
     private fun parse(lines: List<String>): List<Entry> =
         lines.mapNotNull { line ->
