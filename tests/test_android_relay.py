@@ -4001,3 +4001,41 @@ class TestJ3RefreshEncFrameTs:
         phone_src = inspect.getsource(R._flush_phone_outbox)
         assert "_refresh_enc_frame_ts" in agent_src, "Agent-Spool-Flush muss ts neu schreiben"
         assert "_refresh_enc_frame_ts" in phone_src, "Phone-Outbox-Flush muss ts neu schreiben"
+
+
+class TestW4Jag2ChatStatusCap:
+    """W4-FIX-JAG2 (S6): chat_status hatte nur die 24-h-ts-Retention — ein
+    Flood FRISCHER msg_ids wuchs ungebunden binnen der Retention (RAM-DoS,
+    Schwesterfall von chat_activity/SEC-W1 D2). FIFO-Cap Parität."""
+
+    def _state(self):
+        from tools.android_relay import _RelayState
+        return _RelayState("code", 8799)
+
+    def test_cap_chat_status_fifos_oldest_first(self):
+        from tools import android_relay as relay
+        state = self._state()
+        for i in range(relay._CHAT_STATUS_MAX + 10):
+            state.chat_status[f"m{i}"] = {
+                "chat_id": "c", "agent_id": "a", "status": "queued", "ts": float(i),
+            }
+        relay._cap_chat_status(state)
+        assert len(state.chat_status) == relay._CHAT_STATUS_MAX
+        assert "m0" not in state.chat_status and "m9" not in state.chat_status
+        assert "m10" in state.chat_status
+        # FIFO (Einfüge-Reihenfolge), nicht LRU: der älteste Überlebende steht
+        # in der Map an ERSTER Stelle.
+        assert next(iter(state.chat_status)) == "m10"
+
+    def test_set_chat_status_enforces_cap_under_broker_lock(self):
+        """Der echte Schreibpfad hält den Deckel (Prune + Cap unter broker_lock)."""
+        import asyncio
+        from tools import android_relay as relay
+        state = self._state()
+
+        async def run():
+            for i in range(relay._CHAT_STATUS_MAX + 4):
+                await relay._set_chat_status(state, f"m{i}", "c", "a", "queued")
+
+        asyncio.run(run())
+        assert len(state.chat_status) == relay._CHAT_STATUS_MAX
