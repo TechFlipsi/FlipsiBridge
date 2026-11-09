@@ -43,6 +43,7 @@ import com.hermesandroid.bridge.server.CommandDispatcher
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -166,6 +167,18 @@ object RelayClient {
 
     private var webSocket: WebSocket? = null
     private var scope: CoroutineScope? = null
+
+    /**
+     * W4-FIX-JAG2 (C2): Frame-Queue mit Ordnungsgarantie. Vorher lief JE
+     * WS-Frame in einer eigenen `scope.launch` auf dem Multi-Thread-IO-Pool —
+     * jede Suspend-Stelle in [handleMessage] erlaubte Überholvorgänge (die
+     * Narben J5/W1C-4 stammen genau daher). Jetzt: onMessage schreibt nur
+     * (trySend, O(1)) in die FIFO-Queue, EIN Verbraucher-Lauf werkel die
+     * Frames in Empfangs-Reihenfolge ab. UNLIMITED = ein voller Puffer
+     * entwertet nichts (OkHttp liefern die Frames ohnehin sequenziell);
+     * die Queue lebt pro Connect (doConnect baut sie, disconnect räumt).
+     */
+    private var inboundQueue: Channel<Pair<WebSocket, String>>? = null
     private var watchdogScope: CoroutineScope? = null
     private var reconnectJob: Job? = null
     private var prefs: SharedPreferences? = null
@@ -595,6 +608,11 @@ object RelayClient {
         webSocket = null
         scope?.cancel()
         scope = null
+        // W4-FIX-JAG2 (C2): Queue mit dem Scope räumen — späte onMessage-
+        // Einreihungen der alten Verbindung landen in der Tonne (der Socket
+        // wird ohnehin gekappt und generation+1 bricht die Handler früh).
+        inboundQueue?.close()
+        inboundQueue = null
         isConnected = false
         // PH-FIX-CHAT-A (F5): bewusstes Trennen räumt die working-States
         // ebenso — ohne Verbindung kann kein Agent „arbeiten“.
@@ -747,6 +765,22 @@ object RelayClient {
             return
         }
 
+        // W4-FIX-JAG2 (C2): Queue + EIN Verbraucher je Connect — startet VOR
+        // dem WebSocket (onMessage kann nie in eine leere Queue schreiben).
+        val queue: Channel<Pair<WebSocket, String>> = Channel(Channel.UNLIMITED)
+        inboundQueue = queue
+        scope?.launch {
+            for ((ws, frame) in queue) {
+                try {
+                    handleMessage(ws, frame)
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Exception) {
+                    Log.w(TAG, "Frame-Verarbeitung fehlgeschlagen: ${e.message}")
+                }
+            }
+        }
+
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
 
             override fun onOpen(webSocket: WebSocket, response: Response) {
@@ -780,9 +814,11 @@ object RelayClient {
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
-                scope?.launch {
-                    handleMessage(webSocket, text)
-                }
+                // W4-FIX-JAG2 (C2): O(1)-Einreihung in die FIFO-Queue statt
+                // je-Frame scope.launch — der EINe Verbraucher abarbeitet die
+                // Frames in Empfangs-Reihenfolge (keine Überholemöglichkeit
+                // mehr an Suspend-Stellen von handleMessage).
+                inboundQueue?.trySend(webSocket to text)
             }
 
             override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
