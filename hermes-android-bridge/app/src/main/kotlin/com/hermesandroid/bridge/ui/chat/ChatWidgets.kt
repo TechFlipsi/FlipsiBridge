@@ -1,6 +1,8 @@
 package com.hermesandroid.bridge.ui.chat
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -30,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -61,10 +65,27 @@ data class ChatMediaInfo(
 )
 
 /**
+ * W4-B (Zitieren): Snapshot der zitierten Nachricht — bewusst WERTE statt
+ * Verweis: die Bubble überlebt Prozess-Tod + Disk-Restore (ChatHistoryStore)
+ * ohne Lookup, ein quoted_id-Verweis könnte nach evicteten Einträgen ins
+ * Leere laufen. [senderName] leer/„Du“? — Label baut [ChatQuoteRules.quoteLabel].
+ */
+data class ChatQuote(
+    val fromAgent: Boolean, // true = Agenten-Antwort wird beantwortet („KI“-Marke)
+    val senderName: String, // Anzeigename des Agenten (leer = Demo-Eintrag)
+    val text: String,       // Anzeige-Text des Originals (Media-Bubbles: Label)
+)
+
+/**
  * Eine Chat-Nachricht. [fromAgent] = true → Antwort des Agenten (KI) und
  * bekommt deshalb das „KI“-Badge (Art. 50 AI-Act-Kennzeichnungspflicht).
  * MEDIA-T1: [media] != null → Media-Bubble (Bild/Voice/Datei-Rendering in
  * [MessageBubble] statt Fließtext).
+ * W4-B (Zitieren): [quoted] != null → beantwortete Nachricht — der Zitat-
+ * Block rendert die zitierte Nachricht ÜBER dem Antwort-Text der Sende-/
+ * Empfangs-Bubble (Messenger-Muster). [text] bleibt die REINE Antwort
+ * (das Draht-Format mit Zitat baut ChatQuoteRules.wireText nur für Versand +
+ * Platte).
  */
 data class ChatMessage(
     val id: Long,
@@ -74,6 +95,7 @@ data class ChatMessage(
     /** Anzeige-Zeitstempel „HH:mm“ — als String gehalten, damit der Saver primitiv bleibt. */
     val time: String,
     val media: ChatMediaInfo? = null,
+    val quoted: ChatQuote? = null,
 )
 
 /**
@@ -90,15 +112,28 @@ data class ChatAgent(
 
 /**
  * Saver für den Nachrichten-Verlauf in rememberSaveable: jede Nachricht wird
- * flach in primitive Werte zerlegt. MEDIA-T1: FESTE 11er-Gruppe pro
- * Nachricht (id, agentId, fromAgent, text, time, hasMedia, mediaId, kind,
- * name, size, path) — hat eine Nachricht kein Media, bleiben die Media-
- * Slots leer (feste Größe = robustes chunked-Restore, kein Gruppen-Verrutschen).
+ * flach in primitive Werte zerlegt. MEDIA-T1: FESTE Gruppe pro Nachricht
+ * (id, agentId, fromAgent, text, time, hasMedia, mediaId, kind, name, size,
+ * path) — hat eine Nachricht kein Media, bleiben die Media-Slots leer (feste
+ * Größe = robustes chunked-Restore, kein Gruppen-Verrutschen).
+ *
+ * W4-B (Zitieren): VERSIONIERTES Format — erstes Element der Flachliste ist
+ * die Gruppen-Version, danach feste 14er-Gruppen (11 Basis-Slots + hasQuote,
+ * quoteFromAgent, quoteSender, quoteText; die Zeit des ORIGINALS gehört
+ * bewusst nicht ins Zitat-Snapshot-Format). Der Versions-Marker ist determi-
+ * nistisch vom Legacy-Format trennbar: Vor-W4-Flachlisten beginnen mit der
+ * Long-id, die W4-Flachliste mit dem Int-VERSION. Legacy-Bundles (Zwischen-
+ * stand vor dieser Welle) werden ohne Zitat unverändert restauriert — kein
+ * Gruppen-Verrutschen.
  */
+private const val MSG_SAVER_LEGACY_GROUP = 11
+private const val MSG_SAVER_GROUP = 14   // 11 Basis + hasQuote + fromAgent + sender + text
+private const val MSG_SAVER_VERSION = 2
+
 val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
     save = { list ->
-        list.flatMap { m ->
-            listOf(
+        val flat = list.flatMap { m ->
+            listOf<Any>(
                 m.id, m.agentId, m.fromAgent, m.text, m.time,
                 m.media != null,
                 m.media?.mediaId ?: "",
@@ -106,11 +141,19 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 m.media?.name ?: "",
                 m.media?.size ?: 0L,
                 m.media?.localPath ?: "",
+                m.quoted != null,
+                m.quoted?.fromAgent ?: false,
+                m.quoted?.senderName ?: "",
+                m.quoted?.text ?: "",
             )
         }
+        listOf(MSG_SAVER_VERSION) + flat
     },
     restore = { flat ->
-        flat.chunked(11).map { g ->
+        val versioned = flat.firstOrNull() is Int
+        val body = if (versioned) flat.drop(1) else flat
+        val group = if (versioned) MSG_SAVER_GROUP else MSG_SAVER_LEGACY_GROUP
+        body.chunked(group).map { g ->
             val media = if (g[5] as Boolean) {
                 ChatMediaInfo(
                     mediaId = g[6] as String,
@@ -121,6 +164,13 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                     localPath = g[10] as String,
                 )
             } else null
+            val quoted = if (versioned && g[11] as Boolean) {
+                ChatQuote(
+                    fromAgent = g[12] as Boolean,
+                    senderName = g[13] as String,
+                    text = g[14] as String,
+                )
+            } else null
             ChatMessage(
                 id = g[0] as Long,
                 agentId = g[1] as Int,
@@ -128,6 +178,7 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 text = g[3] as String,
                 time = g[4] as String,
                 media = media,
+                quoted = quoted,
             )
         }
     },
@@ -231,7 +282,25 @@ private fun statusChip(status: String?): StatusChip = when (status) {
  * neben dem „KI“-Badge (vorher stand hartkodiert „KI“ über jeder Antwort,
  * der Name des Agenten war der Bubble nicht bekannt). null = alter Zustand
  * (Demo-Eintrag ohne Backend).
+ *
+ * W4-B (Zitieren):
+ * - [message.quoted] != null → Zitat-Block ÜBER dem Inhalt der Bubble
+ *   (Vertrag: die zitierte Nachricht erscheint über der Sende-/Empfangs-
+ *   Bubble) — [ChatQuoteBlock], Akzentkante nach Ursprung.
+ * - [onReply] = Longpress auf der Bubble → Zitieren-Overlay (gleiche Wirkung
+ *   später auch über die Wischgeste, W4-B Swipe-to-Reply). TalkBack liest
+ *   onLongClickLabel mit (R.string.chat_quote_a11y).
+ *
+ * ## Drill-Acker (Bau-Welle, Emulator)
+ * - Longpress auf Agenten-Bubble → Zitieren-Strip über der Eingabe-Leiste;
+ *   Senden → Antwort-Bubble mit Zitat-Block darüber.
+ * - Zitat eines DEMO-Eintrags (blank agentId) → Strip mit „KI“-Label, kein
+ *   Relay-Versand (submitText-Fallback-Pfad).
+ * - Rotation: Zitat-Block überlebt (Saver v2, 14er-Gruppen).
+ * - TalkBack: onLongClickLabel „Nachricht zitieren“; Zitat-Block liest
+ *   contentDescription „Zitierte Nachricht“ + Text mit.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun MessageBubble(
     message: ChatMessage,
@@ -245,6 +314,9 @@ fun MessageBubble(
     // oder rot bei Fehlschlag.
     mediaUpload: RelayClient.MediaUploadState? = null,
     modifier: Modifier = Modifier,
+    // W4-B (Zitieren): Longpress → Zitieren-Overlay (ConversationBody setzt
+    // den Strip über der Eingabe-Leiste und den Zitat-Verband beim Senden).
+    onReply: () -> Unit = {},
 ) {
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
@@ -304,7 +376,15 @@ fun MessageBubble(
                 Surface(
                     // Gestreckte Ecke unten zur Schreibseite, runde Ecken sonst;
                     // maximale Breite, damit lange Texte umbrechen statt randlos laufen.
-                    modifier = Modifier.widthIn(max = maxBubbleWidth),
+                    // W4-B (Zitieren): Longpress → onReply (Zitieren-Overlay);
+                    // onLongClickLabel als TalkBack-Aktion (A11y-Verband).
+                    modifier = Modifier
+                        .widthIn(max = maxBubbleWidth)
+                        .combinedClickable(
+                            onClick = {},
+                            onLongClick = onReply,
+                            onLongClickLabel = stringResource(R.string.chat_quote_a11y),
+                        ),
                     shape = if (message.fromAgent) {
                         RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
                     } else {
@@ -312,6 +392,9 @@ fun MessageBubble(
                     },
                     color = if (message.fromAgent) FlipsiColors.PanelElev else FlipsiColors.EmberDim,
                 ) {
+                    // W4-B (Zitieren): Vertrag — die zitierte Nachricht erscheint
+                    // ÜBER der Sende-/Empfangs-Bubble (Messenger-Muster).
+                    message.quoted?.let { quote -> ChatQuoteBlock(quote = quote) }
                     if (message.media != null) {
                         // MEDIA-T1: Media-Bubble je Art (Bild/Voice/Datei/Video).
                         MediaBubbleContent(
@@ -390,6 +473,119 @@ fun MessageBubble(
                     }
                 }
             }
+        }
+    }
+}
+
+// ── W4-B (Zitieren): Zitat-Block + Zitieren-Strip ────────────────────────────
+
+/**
+ * W4-B (Zitieren): Zitat-Block IN der Sende-/Empfangs-Bubble — die zitierte
+ * Nachricht erscheint ÜBER der Antwort (Vertrag). Dunkles Panel + Akzent-
+ * kante je Ursprung: Ember = Agenten-Antwort beantwortet, LineStrong = eigene
+ * Nachricht beantwortet; Text immer voll lesbar (nie nur Farbe).
+ *
+ * ## Drill-Acker (Bau-Welle, Emulator)
+ * - Eigene Antwort auf Agenten-Bubble → Ember-Kante, Label = Agent-Name.
+ * - Antwort auf eigene Bubble → graue Kante, Label „Du“.
+ * - Aufgetrennter Text: maxLines = 2 + Ellipsis (kein Endlos-Zitat in der
+ *   Bubble; das Draht-Limit cappen über MAX_QUOTE_CHARS).
+ */
+@Composable
+internal fun ChatQuoteBlock(quote: ChatQuote, modifier: Modifier = Modifier) {
+    val label = ChatQuoteRules.quoteLabel(quote.fromAgent, quote.senderName)
+    val blockDescription = stringResource(R.string.chat_quote_block_a11y, label)
+    val accent = if (quote.fromAgent) FlipsiColors.Ember else FlipsiColors.LineStrong
+    Row(
+        modifier = modifier
+            .padding(start = 10.dp, end = 10.dp, top = 8.dp)
+            .background(color = FlipsiColors.Panel, shape = RoundedCornerShape(6.dp))
+            .semantics { contentDescription = blockDescription } // Zitat-Text liest mit
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .heightIn(min = 28.dp)
+                .background(color = accent, shape = RoundedCornerShape(2.dp)),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = accent,
+            )
+            Text(
+                quote.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * W4-B (Zitieren): Zitieren-Strip ÜBER der Eingabe-Leiste (das Antwort-Overlay
+ * nach Longpress auf eine Bubble) — Quelle der Antwort + Original-Zitat + X
+ * zum Abwählen. Der Strip hängt am replyQuote-State der Konversation in
+ * ChatScreen: Senden baut den Draht-Text (ChatQuoteRules.wireText) und den
+ * Zitat-Block.
+ *
+ * ## Drill-Acker (Bau-Welle, Emulator)
+ * - Longpress auf Bubble → Strip erscheint, Eingabe fokussierbar bleibt.
+ * - X im Strip → Strip weg, Senden ohne Zitat (reine Bubble).
+ * - Strip überlebt das Tippen in das Textfeld (kein Auto-Dismiss).
+ * - TalkBack: Label „Antworten an …“, X liest Entfernen-Beschreibung.
+ */
+@Composable
+internal fun ReplyQuoteStrip(quote: ChatQuote, onCancel: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = FlipsiColors.PanelElev)
+            .padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .width(3.dp)
+                .heightIn(min = 30.dp)
+                .background(
+                    color = if (quote.fromAgent) FlipsiColors.Ember else FlipsiColors.LineStrong,
+                    shape = RoundedCornerShape(2.dp),
+                ),
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                stringResource(
+                    R.string.chat_reply_strip_label,
+                    ChatQuoteRules.quoteLabel(quote.fromAgent, quote.senderName),
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = FlipsiColors.Ember,
+            )
+            Text(
+                quote.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextPrimary,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+        IconButton(onClick = onCancel) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.chat_reply_cancel_a11y),
+                tint = FlipsiColors.TextPrimary,
+            )
         }
     }
 }

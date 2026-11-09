@@ -212,12 +212,20 @@ fun ChatScreen(padding: PaddingValues) {
             val restoredKeys = HashSet<String>(entries.size)
             for (entry in entries) {
                 val id = nextId++
+                // W4-B (Zitieren): EIGENE Bubbles persistieren den Zitat-Draht-
+                // Text (Platte-Wahrheit, s. submitQuoted) — der Restore faltet
+                // ihn zurück in reine Antwort + ChatQuote-Snapshot, damit die
+                // restaurierte Bubble wie die Live-Bubble rendern (Zitat-Block
+                // über der Antwort). Agenten-Bubbles bleiben Echo (nie gefaltet).
+                val restoredWire = if (!entry.fromAgent) {
+                    ChatQuoteRules.splitWireText(entry.text)
+                } else null
                 restored.add(
                     ChatMessage(
                         id = id,
                         agentId = entry.agentId.hashCode(),
                         fromAgent = entry.fromAgent,
-                        text = entry.text,
+                        text = restoredWire?.reply ?: entry.text,
                         time = entry.time,
                         // MEDIA-T1: persistierte Media-Verweise (Pfad kann nach
                         // App-Update/Device-Wechsel weg sein → Text-Label bleibt).
@@ -229,6 +237,15 @@ fun ChatScreen(padding: PaddingValues) {
                                 mime = entry.mediaMime ?: "",
                                 size = entry.mediaSize ?: 0L,
                                 localPath = entry.mediaPath?.takeIf { java.io.File(it).exists() } ?: "",
+                            )
+                        },
+                        quoted = restoredWire?.let { wire ->
+                            ChatQuote(
+                                fromAgent = wire.fromAgent,
+                                // Restoremögliches Maximum: Ursprung + Zitat-Text
+                                // (Draht trägt keinen Namen — Label „Du“/„KI“).
+                                senderName = "",
+                                text = wire.quoteText,
                             )
                         },
                     ),
@@ -244,8 +261,21 @@ fun ChatScreen(padding: PaddingValues) {
             // Disk-Stand + die Live-Einträge dieser Session, die noch NICHT
             // auf der Platte liegen (Dedupe über restoredKeys).
             messages = if (liveMessagesPresent) {
-                restored + messages.filter {
-                    ChatTimelineMerge.dedupeKey(it.agentId, it.fromAgent, it.text, it.time) !in restoredKeys
+                // W4-B (Zitieren): Live-Bubbles mit Antwort-Verweis dedupen
+                // über ihren DRAHT-Text (so steht der Zwilling auf der Platte)
+                // — im Restore-Race (Persist-Write schafft es in den Load)
+                // würden reply-Text vs. Draht-Text sonst Dubletten bauen.
+                restored + messages.filter { live ->
+                    val liveKey = if (live.quoted != null) {
+                        ChatTimelineMerge.dedupeKey(
+                            live.agentId, live.fromAgent,
+                            ChatQuoteRules.wireText(live.text, live.quoted),
+                            live.time,
+                        )
+                    } else {
+                        ChatTimelineMerge.dedupeKey(live.agentId, live.fromAgent, live.text, live.time)
+                    }
+                    liveKey !in restoredKeys
                 }
             } else {
                 restored
@@ -319,14 +349,26 @@ fun ChatScreen(padding: PaddingValues) {
     // PH-3 Welle 2: rot-Banner (Fingerprint-ABWEICHUNG / Session-Reset).
     val e2eBanner by RelayClient.e2eBanner.collectAsState()
 
+    // ── W4-B (Zitieren): Zitieren-Verband ────────────────────────────────────
+
+    // Aktiver Antwort-Verweis (Snapshot der Bubble, die der Longpress gewählt
+    // hat). null = kein Zitier-Modus. Kein saveable: nach einer Rotation ist
+    // der Zitier-Modus beendet — konservativ, nie ein Zitat an die falsche
+    // Bubble kleben. Rückfold der restaurierten Bubbles unten (splitWireText).
+    var replyQuote by remember { mutableStateOf<ChatQuote?>(null) }
+
     /**
-     * Lokale Nachricht anhängen + Relay-Versand (von Eingabe und FP-Abgleich
-     * gemeinsam genutzt — identischer Sendeweg, identische Fehlerbehandlung).
-     * Gibt die local_id der angehängten Nachricht zurück (SIRS-03: die App
-     * merkt sich die FP-Abgleich-Nachricht, um ihren Chip mit der Antwort zu
-     * heilen).
+     * W4-B (Zitieren): Antwort mit Zitier-Verband — Ratchet-Vertrag: kein
+     * neuer Frame-Typ. Der DRAHT-Text enthält das Zitat im bestehenden Körper
+     * (ChatQuoteRules.wireText → `text`-Feld von chat.send / chat.send.enc);
+     * die LIVE-Bubble zeigt die reine Antwort + den strukturierten Zitat-
+     * Block über ihr. Die Platte-Wahrheit ist der Draht-Text (persistiert
+     * RelayClient.sendChat ohnehin mit dem GESAMTEN text-Arg) — der Restore
+     * faltet ihn unten mit ChatQuoteRules.splitWireText zurück.
      */
-    fun submitText(agent: ChatAgent, text: String): Long {
+    fun submitQuoted(agent: ChatAgent, text: String, quote: ChatQuote?): Long {
+        val quoteSnapshot = quote?.takeIf { ChatQuoteRules.quoteSpan(it.text).isNotEmpty() }
+        val wire = ChatQuoteRules.wireText(text, quoteSnapshot)
         val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
         messages = messages + ChatMessage(
             id = nextId,
@@ -334,6 +376,7 @@ fun ChatScreen(padding: PaddingValues) {
             fromAgent = false,
             text = text,
             time = nowTime(),
+            quoted = quoteSnapshot,
         )
         // PH-FIX-CHAT-A (F1, Restore-Race): ab jetzt darf der Disk-Restore die
         // Liste nicht mehr komplett ersetzen (s. Restore-Merge oben).
@@ -344,7 +387,10 @@ fun ChatScreen(padding: PaddingValues) {
         } else {
             // PH2-MERGE: echter Versand über den Relay-Broker; bei aktiver
             // E2E-Session verschlüsselt RelayClient.sendChat selbst (chat.send.enc).
-            RelayClient.sendChat(agent.agentId, text) { ok, error, msgId ->
+            // W4-B (Zitieren): der VERSAND trägt den Draht-Text (Zitat gefaltet
+            // in den bestehenden chat.send-Körper) — die Persistenz der Platte
+            // folgt dem Draht → der Restore faltet zurück.
+            RelayClient.sendChat(agent.agentId, wire) { ok, error, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
@@ -358,6 +404,15 @@ fun ChatScreen(padding: PaddingValues) {
         }
         return nextId
     }
+
+    /**
+     * Lokale Nachricht anhängen + Relay-Versand (von Eingabe und FP-Abgleich
+     * gemeinsam genutzt — identischer Sendeweg, identische Fehlerbehandlung).
+     * Gibt die local_id der angehängten Nachricht zurück (SIRS-03: die App
+     * merkt sich die FP-Abgleich-Nachricht, um ihren Chip mit der Antwort zu
+     * heilen).
+     */
+    fun submitText(agent: ChatAgent, text: String): Long = submitQuoted(agent, text, quote = null)
 
     // ── MEDIA-T1: Medien-/Datei-Versand (Picker, Voice, Upload) ───────────
 
@@ -560,6 +615,9 @@ fun ChatScreen(padding: PaddingValues) {
         }
         selectedAgentId = -1
         inputText = ""
+        // W4-B (Zitieren): der aktive Antwort-Verweis stirbt mit der
+        // Conversation — nie ein Zitat aus Verlaufsliste A in Agent B kleben.
+        replyQuote = null
     }
 
     // Back in der Conversation: erst zurück zur Agenten-Liste; die Route-Back-
@@ -590,6 +648,8 @@ fun ChatScreen(padding: PaddingValues) {
                 // Eingabe beginnt je Conversation neu (Entwurf je Agent
                 // bewusst nicht — ein Feld reicht, State bleibt minimal).
                 inputText = ""
+                // W4-B (Zitieren): Zitier-Modus ebenfalls je Conversation neu.
+                replyQuote = null
             },
         )
     } else {
@@ -634,7 +694,11 @@ fun ChatScreen(padding: PaddingValues) {
                 val text = inputText.trim()
                 if (text.isNotEmpty()) {
                     inputText = ""
-                    submitText(agent, text)
+                    // W4-B (Zitieren): mit aktivem Antwort-Verweis geht die
+                    // Antwort in den Zitier-Verband (Draht-Text + Live-Bubble
+                    // mit Zitat-Block, s. submitQuoted).
+                    submitQuoted(agent, text, replyQuote)
+                    replyQuote = null
                 }
             },
             // PH-3 Welle 2 (Sirs Revision (iii)): FP-Abgleich-Button — sendet
@@ -667,6 +731,10 @@ fun ChatScreen(padding: PaddingValues) {
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
+            // W4-B (Zitieren): Antwort-Overlay (Strip über der Eingabe-Leiste)
+            // + Zitat-Block über der gesendeten Bubble; onReply = Longpress.
+            replyQuote = replyQuote,
+            onDismissReply = { replyQuote = null },
             onBack = {
                 // PH2-FIX (Jäger B6): Banner des Agenten beim Verlassen clearen.
                 closeConversation()
@@ -763,6 +831,10 @@ private fun ConversationBody(
     voiceRecording: Boolean = false,
     onVoiceToggle: (() -> Unit)? = null,
     uploadOfMedia: (String) -> RelayClient.MediaUploadState? = { null },
+    // W4-B (Zitieren): aktiver Antwort-Verweis (null = kein Zitier-Modus) +
+    // Abwahl-Binding für das Overlay-Strip.
+    replyQuote: ChatQuote? = null,
+    onDismissReply: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     // PH-FIX-CHAT-A (F4): die offene Conversation beim RelayClient melden —
@@ -837,8 +909,26 @@ private fun ConversationBody(
                         // MEDIA-T1: Upload-Fortschritt eigener Medien-Bubbles
                         // (x/y Chunks, ✓ beim Agenten-Ack aller Chunks).
                         mediaUpload = message.media?.let { uploadOfMedia(it.mediaId) },
+                        // W4-B (Zitieren): Longpress → Antwort-Verweis als Werte-
+                        // Snapshot (ChatQuote). senderName nur beim echten Agenten
+                        // (Demo-Eintrag blank agentId → Label „KI“ im Strip).
+                        onReply = {
+                            replyQuote = ChatQuote(
+                                fromAgent = message.fromAgent,
+                                senderName = if (message.fromAgent && agent.agentId.isNotBlank()) agent.name else "",
+                                text = message.text,
+                            )
+                        },
                     )
                 }
+            }
+            // W4-B (Zitieren): Antwort-Overlay — Longpress auf eine Bubble setzt
+            // den Antwort-Verweis, das Strip zeigt Original-Zitat über der
+            // Eingabe-Leiste; Senden klebt den Zitat-Block über die neue Bubble.
+            // (Chat-spezifisch: der Strip hängt an replyQuote und gehört in den
+            // Verlaufszweig — der Mediathek-Tab zeigt ihn nicht.)
+            replyQuote?.let { quote ->
+                ReplyQuoteStrip(quote = quote, onCancel = onDismissReply)
             }
             HorizontalDivider(color = FlipsiColors.LineStrong)
             ChatInputBar(
