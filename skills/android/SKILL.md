@@ -25,16 +25,25 @@ Hermes Agent (this server)  ──HTTP──>  Hermes Bridge app (Android phone)
 
 When the user wants to connect their phone, ask for their **pairing code** — a 6-character code shown in the Hermes Bridge app (e.g. `K7V3NP`).
 
+**W4-FIX-JAG2 (S5): the pairing code is NEVER a tool argument** — it reaches
+the relay through Hermes' secret route. Make sure BOTH secrets are saved
+(`hermes config` or the install prompt):
+- `ANDROID_BRIDGE_TOKEN` — the pairing code from the Hermes Bridge app
+- `ANDROID_BRIDGE_URL` — the relay address, e.g. `http://127.0.0.1:8766`
+  or the user's TLS relay/reverse proxy in front of it
+
 Then call:
 ```
-android_setup("<pairing_code>")
+android_setup()
 ```
 
-This does two things:
-1. Starts a relay on this server (auto-detects the server's public IP)
+This does:
+1. Starts/rotates the relay with the configured settings (NO public-IP lookup — the phone dials OUT to the configured `ANDROID_BRIDGE_URL`)
 2. Returns the exact instructions to tell the user — the server address and pairing code to enter in their phone app
 
-**Relay the `user_instructions` field from the result directly to the user.** It contains the server IP and port they need to type into the phone app.
+If the result is `status: "error"` about ANDROID_BRIDGE_URL/ANDROID_BRIDGE_TOKEN, have the user save both secrets first and call setup again.
+
+**Relay the `user_instructions` field from the result directly to the user.** It contains the server address they need to type into the phone app.
 
 After the user taps Connect on their phone, the phone connects to this server via WebSocket. Call `android_ping()` to verify the connection is live.
 
@@ -44,7 +53,7 @@ After the user taps Connect on their phone, the phone connects to this server vi
 - nginx, firewalls, or port forwarding
 - Any networking concepts
 
-**Just ask for the pairing code, call setup, and relay the instructions.**
+**Just ask for the pairing code, make sure both secrets are saved, call setup, and relay the instructions.**
 
 ## Available Tools
 
@@ -52,7 +61,7 @@ You have these 42 tools. Use them by name — they are function calls.
 
 ### Connectivity
 - `android_ping()` — check if phone is connected and responding
-- `android_setup(pairing_code)` — start relay and configure connection
+- `android_setup()` — start/rotate the phone relay (pairing code via `ANDROID_BRIDGE_TOKEN` secret route, never an argument)
 
 ### Reading the Screen
 
