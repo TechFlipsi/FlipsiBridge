@@ -304,7 +304,23 @@ def _fb_v1_kdf(dh1: bytes, dh2: bytes, dh3: bytes, psk: bytes, session_id: str,
 
 def _enc_aad(session_id: str, chat_id: str, agent_id: str) -> bytes:
     """AAD = 'fb-v1|session_id|chat_id|agent_id' (Typ bewusst NICHT drin:
-    der Relay benennt chat.reply.enc → chat.event.enc um)."""
+    der Relay benennt chat.reply.enc → chat.event.enc um).
+
+    W4-FIX-JAG2 (S3): msg_id bleibt bewusst AUCH außerhalb des AAD —
+    dokumentierte Acceptance, kein Fix:
+      * Kompat: jede AAD-Änderung bricht die laufenden Alt-Adapter/APK-
+        Sessions (AAD steckt in JE enc-Frame; keine Übergangsvariante ohne
+        Doppel-Decode-Pfad). Frame-Typen sind in dieser Welle unveränderlich.
+      * Realitätsgrad: der Kanal ist TLS-gebunden (eigene Relay-URL, Pin-
+        Verband) — msg_id-Substitution erfordert eine Relay-Kompromittierung,
+        gegen die AAD ohnehin nichts schützt (der Relay öffnet nie ct).
+      * Rolle: msg_id ist Ack-/Dedupe-Buchhaltung (chat.read-Ziel, Status-
+        Schlüssel), kein Integritätsträger — der Inhalts-Schutz trägt ct+
+        AAD; ein gefälschtes msg_id ohne passenden ts/Status-Wegwerfen
+        verschiebt nur, WO ein legitimer Frame ankommt, nicht WAS drin steht.
+    Falls eine künftige Welle Bindung nachholt: AAD-Extension-Feld + Version-
+    Sprung des enc-Formats, NIE still auf denselben Verband umschalten.
+    """
     # SEC-W1 B F-02: Surrogate-haltige IDs warfen UnicodeEncodeError, der
     # den Frame-Loop töten konnte (kein CryptoFrameError-Fang) — jetzt
     # deterministisch als CryptoFrameError (Frame wird verworfen, Loop lebt).
