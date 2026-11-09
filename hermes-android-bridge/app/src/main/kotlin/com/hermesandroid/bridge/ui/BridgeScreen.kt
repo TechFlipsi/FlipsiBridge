@@ -100,6 +100,7 @@ import com.hermesandroid.bridge.permissions.DeviceIntentResolver
 import com.hermesandroid.bridge.security.AppLockSettingsCard
 import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
+import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.chat.ChatScreen
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
