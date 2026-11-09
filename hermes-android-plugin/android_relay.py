@@ -2742,10 +2742,16 @@ def _refresh_enc_frame_ts(message: dict) -> dict:
 
 
 def _mark_chat_delivered_if_sent(message: dict) -> bool:
-    """PH2-T10: chat.send/chat.send.enc → delivered-Metadaten liefern, sonst False."""
+    """PH2-T10: chat.send/chat.send.enc/chat.media.enc → delivered-Metadaten
+    liefern, sonst False.
+
+    W4-B3: Media-Chunks tragen seit der pure-Medien-Lücke-Fix ebenfalls eine
+    Broker-msg_id — der delivered-Aufstieg (Agent-WS-Send erfolgreich) erbt
+    denselben Status-Verband wie Chat-Text (Chip-Kette queued → delivered
+    → read)."""
     return (
         isinstance(message, dict)
-        and message.get("type") in ("chat.send", "chat.send.enc")
+        and message.get("type") in ("chat.send", "chat.send.enc", "chat.media.enc")
         and isinstance(message.get("msg_id"), str)
         and bool(message["msg_id"])
     )
@@ -3402,10 +3408,16 @@ async def _handle_media(request: web.Request, state: _RelayState) -> web.StreamR
         return web.json_response({"error": "replay detected"}, status=429)
 
     # Klare Media-Metadaten (Whitelist, nie Inhalt) in den Agent-Frame.
+    # W4-B3 (Read-Ack-P3-Fix): jede Chunk-POST erzeugt eine Broker-msg_id
+    # (Parität /chat enc-Zweig) — das Phone lernt sie aus dieser Response
+    # (App-Chip-Bindung), der Adapter führt sie im Deliver-Envelope nach, so
+    # dass chat.read.enc 'Gelesen' endlich greift (pure-Medien-Lücke zu).
     media_id = body["media_id"]
+    msg_id = str(uuid.uuid4())
     message = {
         "type": "chat.media.enc", "v": 1,
         "chat_id": chat_id,
+        "msg_id": msg_id,
         "agent_id": agent_id,
         "session_id": body["session_id"],
         "media_id": media_id,
@@ -3436,10 +3448,14 @@ async def _handle_media(request: web.Request, state: _RelayState) -> web.StreamR
                 {"error": "chat_id belongs to another agent"}, status=403)
         state.chat_owner[chat_id] = (agent_id, time.time())
 
+    # W4-B3: Broker-Annahme = queued (Parität /chat enc-Zweig Z. 3156) — der
+    # Phone-Status-Chip bindet an msg_id: queued → delivered → read.
+    await _set_chat_status(state, msg_id, chat_id, agent_id, "queued")
     delivered = await _deliver_to_agent(state, agent_id, message)
     return web.json_response(
         {
             "chat_id": chat_id,
+            "msg_id": msg_id,
             "media_id": media_id,
             "seq": body["seq"],
             "agent_id": agent_id,

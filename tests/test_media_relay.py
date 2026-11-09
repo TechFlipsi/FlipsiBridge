@@ -66,6 +66,7 @@ if _PH3_SYS_PATH not in sys.path:
     sys.path.insert(0, _PH3_SYS_PATH)
 sys.modules.setdefault("gateway", None)
 import adapter as _ph3_adapter  # noqa: E402  (contrib/hermes-chat-plugin/adapter.py)
+from test_adapter import _Msg as _AdapterMsg  # noqa: E402  (Mock-WS-Frame)
 
 import aiohttp  # noqa: E402
 
@@ -551,3 +552,257 @@ class TestMediaBroker:
 
         dumped = "\n".join(r.getMessage() for r in caplog.records)
         assert "chat.media" in dumped, "Verwurf des Klartext-Media-Frames muss geloggt werden"
+
+
+# ── W4-B3: Read-Ack-P3-Fix (pure-Medien-Lücke) ────────────────────────────────
+# Vorher: /media erzeugte KEIN msg_id und KEINEN chat_status → der Adapter
+# sendete nach Medien-Empfang chat.read.enc mit LEERER msg_id → der Relay
+# verworfen fail-safe → 'Gelesen'-Chip blieb bei reinen Medien aus.
+# Jetzt: Broker-msg_id je Chunk-POST (Parität /chat enc-Zweig) + queued-Status
+# + msg_id in Response/Frame; Adapter führt sie im Deliver-Envelope nach — der
+# EXISTIERENDE Read-Kettkomplex markiert 'read'. Frame-Typen unverändert.
+
+
+class TestMediaReadAckMsgId:
+    """Relay-Verband eines Media-Chunks: msg_id + Status-Kette + Read-Mark."""
+
+    PORT = 19970
+    CODE = "MEDACK01"
+    TOKEN = "media-agent-token"
+    SESSION_ID = "media-e2e-session-0001"
+    CHAT = "chat-media-readack-1"
+    MEDIA = "med-readack-000001"
+
+    # Agent-Identity-Fixtures (1:1 TestMediaBroker).
+    IK_A_PRIV = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
+    IK_A_PUB = "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+    SPK_A_PRIV = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    SPK_A_PUB = "52a5524b0c32e8a47f239ab6ca8e42c3b9316a54cae4854ecdb5889311cc9a7e"
+
+    @property
+    def identity(self):
+        return {"identity_priv": self.IK_A_PRIV, "identity_pub": self.IK_A_PUB,
+                "prekey_priv": self.SPK_A_PRIV, "prekey_pub": self.SPK_A_PUB}
+
+    def _start(self, tmp_path, monkeypatch, port):
+        cfg = tmp_path / "relay-config.json"
+        cfg.write_text(json.dumps({
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+            "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+            "CHAT_RATE_PER_SECOND": 50,
+        }), encoding="utf-8")
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", str(cfg))
+        start_relay(pairing_code=self.CODE, port=port)
+        return f"http://127.0.0.1:{port}"
+
+    async def _handshake(self, http, base, agent_ws, phone_ws, session_id):
+        import tools.android_relay as _relay  # noqa: F401  (für _relay_instance)
+        got = await http.get(f"{base}/key_get", params={"agent_id": "alpha"},
+                             headers={"Authorization": f"Bearer {self.CODE}"})
+        assert got.status == 200
+        keys = await got.json()
+        peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
+        hello = peer.make_hello(session_id)
+        resp = await http.post(f"{base}/crypto_hello", json=hello,
+                               headers={"Authorization": f"Bearer {self.CODE}"})
+        assert resp.status == 200
+        hello_frame = await agent_ws.receive_json(timeout=6)
+        assert hello_frame["type"] == "crypto.hello"
+        agent_session, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+            hello_frame, self.identity)
+        await agent_ws.send_json(ack)
+        ack_frame = await _recv_until(phone_ws, "crypto.hello_ack", timeout=6)
+        peer.consume_ack(ack_frame)
+        return peer, agent_session
+
+    def _post_media_body(self, peer, chat_id, media_id, data_b64):
+        """/media-Body (1 Chunk, sha256 im Chunk-0-Payload)."""
+        import base64
+        import hashlib
+        payload = {"media_id": media_id, "seq": 0, "total": 1,
+                   "data": base64.b64encode(data_b64).decode("ascii"),
+                   "sha256": hashlib.sha256(data_b64).hexdigest()}
+        frame = peer.encrypt_frame("chat.media.enc", chat_id, payload,
+                                   clear={"media_id": media_id, "seq": 0, "total": 1,
+                                          "kind": "image", "name": "foto.jpg",
+                                          "mime": "image/jpeg", "size": len(data_b64)})
+        return {"agent_id": "alpha", "chat_id": chat_id,
+                "session_id": frame["session_id"], "ts": frame["ts"],
+                "hdr": frame["hdr"], "nonce": frame["nonce"], "ct": frame["ct"],
+                "media_id": media_id, "seq": 0, "total": 1, "kind": "image",
+                "name": "foto.jpg", "mime": "image/jpeg", "size": len(data_b64)}
+
+    def test_media_broker_msg_id_full_status_chain(self, tmp_path, monkeypatch):
+        """/media 200-Body enthält msg_id; der geforwardete Agent-Frame trägt
+        sie; chat_status zeigt queued→delivered; chat.read.enc mit GENAU dieser
+        msg_id → chat_status 'read' + chat.status-Frame ans Phone."""
+        import tools.android_relay as _relay_mod
+        base = self._start(tmp_path, monkeypatch, self.PORT)
+        session_id = self.SESSION_ID + "-readack"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as http:
+                phone = await http.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                parked: list[dict] = []
+                await _recv_until(phone, "relay.state", timeout=6, parked=parked)
+                agent = await http.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6, parked=parked)
+                peer, agent_session = await self._handshake(
+                    http, base, agent, phone, session_id)
+
+                body = self._post_media_body(peer, self.CHAT, self.MEDIA,
+                                             b"pure-media-chunk-0001")
+                resp = await http.post(f"{base}/media", json=body,
+                                       headers={"Authorization": f"Bearer {self.CODE}"})
+                assert resp.status == 200, await resp.text()
+                ack = await resp.json()
+                msg_id = ack.get("msg_id")
+                assert isinstance(msg_id, str) and len(msg_id) >= 8, \
+                    f"/media-Response muss die Broker-msg_id tragen: {ack}"
+                assert ack["media_id"] == self.MEDIA and ack["delivered"] is True
+
+                # Agent-Frame trägt dieselbe msg_id (klare Metadaten).
+                frame = await _recv_until(agent, "chat.media.enc", timeout=6)
+                assert frame["msg_id"] == msg_id, "Broker-msg_id im Forward fehlt"
+
+                # chat_status-Entry existiert und steigt auf delivered auf.
+                state = _relay_mod._relay_instance
+                assert state is not None
+                entry = state.chat_status.get(msg_id)
+                assert entry is not None, "chat_status-Entry (queued) fehlt"
+                assert entry["chat_id"] == self.CHAT
+                assert entry["agent_id"] == "alpha"
+                assert entry["status"] in ("queued", "delivered")
+                # Status-Kette ans Phone: queued (Broker-Annahme) → dann
+                # delivered (Agent-WS-Send erfolgreich, W4-B3-Erbe).
+                queued_status = await _recv_until(phone, "chat.status", timeout=6,
+                                                  parked=parked)
+                assert queued_status["msg_id"] == msg_id
+                assert queued_status["status"] == "queued"
+                assert queued_status["chat_id"] == self.CHAT
+                delivered_status = await _recv_until(phone, "chat.status", timeout=6,
+                                                     parked=parked)
+                assert delivered_status["msg_id"] == msg_id
+                assert delivered_status["status"] == "delivered"
+
+                # Adapter-Verband simuliert: chat.read.enc mit GENAU dieser
+                # msg_id (Adapter führt sie nach dem Deliver-Envelope nach).
+                read = agent_session.encrypt_frame(
+                    "chat.read.enc", self.CHAT, {"msg_id": msg_id},
+                    clear={"msg_id": msg_id})
+                await agent.send_json(read)
+                read_ack = await _recv_until(phone, "chat.status", timeout=6,
+                                             parked=parked)
+                assert read_ack["status"] == "read"
+                assert read_ack["msg_id"] == msg_id, \
+                    f"'Gelesen' muss GENAU die Chunk-msg_id stempeln: {read_ack}"
+                mirror = await _recv_until(phone, "chat.read.enc", timeout=6,
+                                           parked=None)
+                assert mirror["msg_id"] == msg_id, "enc-Spiegel trägt die msg_id"
+                assert state.chat_status[msg_id]["status"] == "read"
+
+                # Regression (W4-B3-Forderung): Wiederholter read (NEUE Ratchet-
+                # Frames, gleiche msg_id) → kein Status-Duplikat/Downgrade
+                # (Dedup _set_chat_status bleibt); der Mirror kommt erneut,
+                # aber kein zweiter chat.status.
+                await agent.send_json(agent_session.encrypt_frame(
+                    "chat.read.enc", self.CHAT, {"msg_id": msg_id},
+                    clear={"msg_id": msg_id}))
+                dup_mirror = await _recv_until(phone, "chat.read.enc", timeout=6)
+                assert dup_mirror["msg_id"] == msg_id
+                with pytest.raises(Exception):
+                    await _recv_until(phone, "chat.status", timeout=0.8)
+                assert state.chat_status[msg_id]["status"] == "read"
+
+                await agent.close()
+                await phone.close()
+
+        asyncio.run(scenario())
+
+
+class TestMediaAdapterMsgId:
+    """Adapter-Verband (W4-B3): Deliver-Envelope führt die Broker-msg_id nach,
+    so dass der Read-Frame sie trägt; fehlende msg_id (Alt-Relay) = heutiges
+    Verhalten (leere msg_id → Relay verwirft fail-safe)."""
+
+    def test_full_assembly_read_ack_carries_msg_id(self, tmp_path):
+        """Neuer Relay-Verband: der final abgeschlossene Chunk trägt seine
+        Broker-msg_id — chat.read.enc bekommt genau sie (clear + Ratchet-
+        Spiegel), die Pipeline-Nachricht bleibt unverändert."""
+        import asyncio
+        import hashlib
+
+        from test_adapter import (  # noqa: E402  (Plugin-Test-Helfer)
+            _establish_session, _make_crypto_adapter, _media_chunk_frame)
+
+        async def scenario():
+            a, ws = _make_crypto_adapter(
+                tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "md")})
+            received: list[dict] = []
+            a.message_callback = received.append
+            await a.connect()
+            peer = await _establish_session(a, ws)
+            raw = b"adapter-msgid-1" * 20
+            frame = _media_chunk_frame(
+                peer, "device-1", "med-adap-msgid-1", 0, 1,
+                _ph3_adapter._b64e(raw), sha=hashlib.sha256(raw).hexdigest(),
+                size=len(raw))
+            frame["msg_id"] = "11111111-2222-3333-4444-555555555555"
+            ws.inbox.append(_AdapterMsg("TEXT", json.dumps(frame)))
+            await a.drain_bg_tasks()
+            await asyncio.sleep(0.05)
+
+            assert len(received) == 1, "Pipeline-Nachricht unverändert"
+            assert received[0]["text"].startswith("[Foto]")
+            enc_reads = [f for f in ws.sent if f["type"] == "chat.read.enc"]
+            assert enc_reads, "chat.read.enc nach Medien-Empfang muss rausgehen"
+            read = enc_reads[-1]
+            assert read["msg_id"] == frame["msg_id"], \
+                f"Read-Frame muss die Broker-msg_id tragen: {read}"
+            mirror = peer.decrypt_frame(read)
+            assert mirror["msg_id"] == frame["msg_id"], "Ratchet-Spiegel trägt sie"
+            assert read["type"] == "chat.read.enc"  # Frame-Typen unverändert
+            await a.disconnect()
+
+        asyncio.run(scenario())
+
+    def test_missing_msg_id_keeps_legacy_fail_safe(self, tmp_path):
+        """Alt-Relay (0.14.1-Live)-Simulation: Frame OHNE msg_id → Read-Frame
+        mit LEERER msg_id (heutiges Verhalten unverändert; Relay verwirft
+        fail-safe), Pipeline bleibt intakt."""
+        import asyncio
+        import hashlib
+
+        from test_adapter import (  # noqa: E402  (Plugin-Test-Helfer)
+            _establish_session, _make_crypto_adapter, _media_chunk_frame)
+
+        async def scenario():
+            a, ws = _make_crypto_adapter(
+                tmp_path, env_extra={"FLIPSI_MEDIA_DIR": str(tmp_path / "md")})
+            received: list[dict] = []
+            a.message_callback = received.append
+            await a.connect()
+            peer = await _establish_session(a, ws)
+            raw = b"legacy-shape" * 20
+            frame = _media_chunk_frame(
+                peer, "device-1", "med-adap-legacy-01", 0, 1,
+                _ph3_adapter._b64e(raw), sha=hashlib.sha256(raw).hexdigest(),
+                size=len(raw))
+            assert "msg_id" not in frame, "Alt-Relay-Form ohne msg_id simulieren"
+            ws.inbox.append(_AdapterMsg("TEXT", json.dumps(frame)))
+            await a.drain_bg_tasks()
+            await asyncio.sleep(0.05)
+
+            assert len(received) == 1, "Deliver unverändert"
+            enc_reads = [f for f in ws.sent if f["type"] == "chat.read.enc"]
+            assert enc_reads and enc_reads[-1]["msg_id"] == "", \
+                "Leere msg_id = exakt heutiges Verhalten (fail-safe beim Relay)"
+            await a.disconnect()
+
+        asyncio.run(scenario())

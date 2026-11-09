@@ -2068,11 +2068,18 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         label = _media_kind_label(kind)
         text = (f"[{label}] {name} ({_format_media_bytes(size)}) — "
                 f"gespeichert unter: {path}")
-        # PH2-FIX (Jäger B4)-Parität: verarbeitet → read; media hat keine
-        # Broker-msg_id, der chunk_ack übernimmt die Empfangs-Bestätigung.
+        # PH2-FIX (Jäger B4)-Parität: verarbeitet → read. W4-B3 (Read-Ack-P3-
+        # Fix): die Broker-msg_id des CHUNKS, der das Assembly abgeschlossen
+        # hat, wandert in den Deliver-Envelope — danach trägt der EXISTIERENDE
+        # Read-Chain (_deliver_inbound → _send_read_receipt → chat.read.enc mit
+        # klarer msg_id) die 'Gelesen'-Markierung und der Relay schlägt im
+        # chat_status zu (Chip-Kette queued → delivered → read bei reinen
+        # Medien). Fehlt die msg_id (alter Relay < W4), bleibt es exakt beim
+        # heutigen Verhalten: leere msg_id → Relay verwirft fail-safe.
         self._deliver_inbound(chat_id, text, {
             "type": "chat.media.enc", "media_id": media_id, "kind": kind,
-            "name": name, "size": size, "path": path})
+            "name": name, "size": size, "path": path,
+            "msg_id": str(envelope.get("msg_id", "") or "")})
 
     def _media_assemble(self, media_id: str, seq: int, total: int,
                         payload: dict, envelope: dict) -> tuple[Optional[bytes], dict]:
