@@ -878,6 +878,13 @@ private fun ConversationBody(
     onDismissReply: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
+    // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
+    // je Composition (ChatMotionRules); steuert Geste-Settle UND Sprung-
+    // Scroll der Chat-Suche (je Anim-Stelle genau einmal entschieden).
+    val compositionContext = LocalContext.current
+    val reducedMotion = remember(agent.agentId) {
+        ChatMotionRules.reduced(ChatMotionRules.animatorScale(compositionContext.contentResolver))
+    }
     // PH-FIX-CHAT-A (F4): die offene Conversation beim RelayClient melden —
     // Antworten DIESES Agenten erzeugen keine Notification, solange die App
     // im Vordergrund ist (RelayClient prüft beides). Beim Verlassen
@@ -960,6 +967,9 @@ private fun ConversationBody(
                                 text = message.text,
                             )
                         },
+                        // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der
+                        // Geste-Rücklauf-Stelle (Settle je Anim-Scala).
+                        chatReducedMotion = reducedMotion,
                     )
                 }
             }

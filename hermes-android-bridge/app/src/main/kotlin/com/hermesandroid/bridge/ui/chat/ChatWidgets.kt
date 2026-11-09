@@ -1,8 +1,11 @@
 package com.hermesandroid.bridge.ui.chat
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -28,10 +31,19 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -42,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.ui.FlipsiColors
+import kotlinx.coroutines.launch
 
 /**
  * Chat-Bausteine (PH-2-T3): Message-Bubble, Agenten-Zeile, Eingabe-Leiste.
@@ -287,13 +300,17 @@ private fun statusChip(status: String?): StatusChip = when (status) {
  * - [message.quoted] != null → Zitat-Block ÜBER dem Inhalt der Bubble
  *   (Vertrag: die zitierte Nachricht erscheint über der Sende-/Empfangs-
  *   Bubble) — [ChatQuoteBlock], Akzentkante nach Ursprung.
- * - [onReply] = Longpress auf der Bubble → Zitieren-Overlay (gleiche Wirkung
- *   später auch über die Wischgeste, W4-B Swipe-to-Reply). TalkBack liest
+ * - [onReply] = Longpress auf der Bubble → Zitieren-Overlay (GLEICHE Wirkung
+ *   über die Wischgeste nach rechts, W4-B Swipe-to-Reply). TalkBack liest
  *   onLongClickLabel mit (R.string.chat_quote_a11y).
+ * - [chatReducedMotion] = Reduced-Pass-Faser (ChatMotionRules): steuert NUR
+ *   die Settle-Anim der Geste-Rücklauf-Stelle (0 ms statt Tween).
  *
  * ## Drill-Acker (Bau-Welle, Emulator)
  * - Longpress auf Agenten-Bubble → Zitieren-Strip über der Eingabe-Leiste;
  *   Senden → Antwort-Bubble mit Zitat-Block darüber.
+ * - Wisch nach rechts ≥ 32 dp → derselbe Strip (gleiche Wirkung); < Schwelle
+ *   oder nach links → nichts, Bubble rollt zurück (Reduced: ohne Tween).
  * - Zitat eines DEMO-Eintrags (blank agentId) → Strip mit „KI“-Label, kein
  *   Relay-Versand (submitText-Fallback-Pfad).
  * - Rotation: Zitat-Block überlebt (Saver v2, 14er-Gruppen).
@@ -317,6 +334,9 @@ fun MessageBubble(
     // W4-B (Zitieren): Longpress → Zitieren-Overlay (ConversationBody setzt
     // den Strip über der Eingabe-Leiste und den Zitat-Verband beim Senden).
     onReply: () -> Unit = {},
+    // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der Geste-Rücklauf-Stelle
+    // (ChatMotionRules): true = Settle sofort, kein Tween.
+    chatReducedMotion: Boolean = false,
 ) {
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
@@ -324,6 +344,35 @@ fun MessageBubble(
     // Messenger-Muster: Bubble max ≈ 78 % der Listenbreite.
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
         val maxBubbleWidth = maxWidth * 0.78f
+        // W4-B (Swipe-to-Reply): Geste-Faser — [swipeTravel] ist die SYNC-Wahrheit
+        // der Finger-Übersetzung (je Drag-Puls direkt gesetzt, kein Coroutine-
+        // Tween bzw. sofort bei Reduced-Motion, ChatMotionRules). Auslöser =
+        // GLEICHE onReply-Wirkung wie Longpress; Callback über rememberUpdatedState
+        // (Geste-Lauf bleibt stabil, kein stale Closure je Recomposition).
+        var swipeTravel by remember(message.id) { mutableStateOf(0f) }
+        val settleAnim = remember(message.id) { Animatable(0f) }
+        val swipeScope = rememberCoroutineScope()
+        val replyCallback = rememberUpdatedState(onReply)
+        val reducedState = rememberUpdatedState(chatReducedMotion)
+        val density = LocalDensity.current
+        val swipeTriggerPx = with(density) { ChatSwipeRules.TRIGGER_DP.dp.toPx() }
+        val swipeMaxPx = with(density) { ChatSwipeRules.MAX_TRAVEL_DP.dp.toPx() }
+        fun settleSwipe() {
+            // Settle-Faser: aktuelle Fahrt in die Anim übergeben, Ziel 0.
+            val from = swipeTravel
+            swipeTravel = 0f
+            if (reducedState.value) {
+                // Reduced-Pass: OHNE Tween — Ziel ist schon erreicht.
+                return
+            }
+            swipeScope.launch {
+                settleAnim.snapTo(from)
+                settleAnim.animateTo(0f, tween(ChatSwipeRules.settleTweenMs(false)))
+            }
+        }
+        fun cancelSettle() {
+            swipeScope.launch { settleAnim.snapTo(0f) }
+        }
         Row(
             // PH-FIX-CHAT-A (F2): 8 dp hier + 12 dp contentPadding der Liste
             // (ChatScreen) = 20 dp Außenabstand zum Bildschirmrand — der
@@ -384,7 +433,44 @@ fun MessageBubble(
                             onClick = {},
                             onLongClick = onReply,
                             onLongClickLabel = stringResource(R.string.chat_quote_a11y),
-                        ),
+                        )
+                        // W4-B (Swipe-to-Reply): Finger-Folge über graphicsLayer
+                        // (Layer-Redraw, keine Recomposition je Drag-Puls) +
+                        // Geste-Sensor NACH der Click-Verkabelung.
+                        .graphicsLayer { translationX = swipeTravel + settleAnim.value }
+                        .pointerInput(Unit) {
+                            var fired = false
+                            detectHorizontalDragGestures(
+                                onDragStart = {
+                                    // Neue Drag-Sequenz: Latch zurücksetzen,
+                                    // laufende Settle-Anim abreißen (Snap auf 0).
+                                    fired = false
+                                    cancelSettle()
+                                },
+                                onHorizontalDrag = { change, dragAmount ->
+                                    change.consume()
+                                    if (fired) {
+                                        // Ausgelöst: Rest-Fahrt stilllegen.
+                                        return@detectHorizontalDragGestures
+                                    }
+                                    // SYNC-Fahrt: direkt setzen (kein Coroutine-Lag);
+                                    // Klemmung [0, MAX] = Links-Fahrt nie sichtbar.
+                                    swipeTravel = ChatSwipeRules.clampTravel(
+                                        swipeTravel + dragAmount,
+                                        swipeMaxPx,
+                                    )
+                                    // NUR nach rechts (Links-Fahrt bleibt
+                                    // Listen-Fling, clampTravel hält bei 0).
+                                    if (ChatSwipeRules.triggered(swipeTravel, swipeTriggerPx)) {
+                                        fired = true
+                                        settleSwipe()
+                                        replyCallback.value()
+                                    }
+                                },
+                                onDragEnd = { settleSwipe() },
+                                onDragCancel = { settleSwipe() },
+                            )
+                        },
                     shape = if (message.fromAgent) {
                         RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
                     } else {
