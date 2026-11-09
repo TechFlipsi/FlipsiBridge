@@ -106,9 +106,15 @@ object ChatHistoryStore {
     fun append(root: File, entry: Entry) {
         runCatching {
             root.mkdirs()
-            val file = adoptLegacyFile(root, entry.agentId,
-                fileFor(root, entry.agentId))
             synchronized(fileLock) {
+                // W4-FIX-JAG2 (C4): die Legacy-Adoption ZIEHT jetzt unter dem
+                // Prozess-Lock. Vorher lief adoptLegacyFile außerhalb — zwei
+                // nebenläufige Pfade (append-Executor vs. Load) konnten beide
+                // „Legacy existiert, Ziel fehlt“ sehen und beide adoptieren
+                // (copy+delete-Zweig konnte den frisch geschriebenen Stand des
+                // ersten Pfades mit dem Legacy-Stand überbauen).
+                val file = adoptLegacyFile(root, entry.agentId,
+                    fileFor(root, entry.agentId))
                 // J12: O(1)-Append (eine Zeile anhängen) statt Voll-Rewrite.
                 FileOutputStream(file, true).use {
                     it.write((gson.toJson(entry) + "\n").toByteArray(Charsets.UTF_8))
@@ -133,8 +139,13 @@ object ChatHistoryStore {
      *  J12: Hier zieht die Kürzung (FIFO + Byte-Obergrenze) — persistiert,
      *  wenn tatsächlich gekürzt wurde. */
     fun load(root: File, agentId: String): List<Entry> {
-        val file = adoptLegacyFile(root, agentId, fileFor(root, agentId))
-        val lines = synchronized(fileLock) { readLines(file).toMutableList() }
+        // W4-FIX-JAG2 (C4): Adoption + Read unter EINEM Lock-Sprung (siehe
+        // append) — sonst konkurrierte die Adoption mit einem parallelen
+        // append/load auf dieselbe Agent-Datei.
+        val (file, lines) = synchronized(fileLock) {
+            val f = adoptLegacyFile(root, agentId, fileFor(root, agentId))
+            f to readLines(f).toMutableList()
+        }
         val capped = capLines(lines)
         if (capped.size < lines.size) {
             runCatching { synchronized(fileLock) { writeAtomic(file, capped) } }
@@ -144,9 +155,15 @@ object ChatHistoryStore {
 
     /** Alle Agenten-Verläufe, cross-Agent chronologisch (seq-Sortierung). */
     fun loadAll(root: File): List<Entry> =
-        (root.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: emptyArray())
-            .flatMap { parse(readLines(it)) }
-            .sortedBy { it.seq }
+        // W4-FIX-JAG2 (C5): der Voll-Load zieht unter demselben Prozess-Lock
+        // wie append/load-Kürzung — vorher las er die .jsonl-Dateien
+        // unverriegert (torn-read: eine zwischen ListFiles und Read umbenannte
+        // Datei + halbe Append-Zeile = still verschluckter Eintrag je Restore).
+        synchronized(fileLock) {
+            (root.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: emptyArray())
+                .flatMap { parse(readLines(it)) }
+                .sortedBy { it.seq }
+        }
 
     // ── Interna ──────────────────────────────────────────────────────────────
 
