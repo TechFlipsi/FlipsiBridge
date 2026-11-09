@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W4 (App-Lane C): values-en/strings.xml — English je Key für
+  res/values/strings.xml (deutsche Default-Fassung) + die Lane-C-Keys
+  (chat_tab_*, mediathek_*, settings_language_title, settings_language_desc,
+  language_option_*). Die resources/values-en/ DECKT damit ALLE Keys des
+  Basis-strings.xml + meiner Keys ab. Andere Lanes führen EIGENE values-en-
+  Dateien im SELBEN Directory (res/values-en/merged im Build, je Key genau
+  EINE Quelle — W4-Konvention, cf. onboarding_multi_server.xml von Lane D):
+  deren Keys NICHT hier doppelt aufführen (Duplicate-Ressourcen = aapt-Fehler).
+-->
+<resources>
+    <string name="app_name">FlipsiBridge</string>
+    <string name="tagline">Your agent on your phone — hands, eyes and voice.</string>
+
+    <string name="accessibility_description">FlipsiBridge accessibility service — lets the agent read the screen and operate the device.</string>
+
+    <string name="section_status">Status</string>
+    <string name="status_a11y">Accessibility</string>
+    <string name="status_server">Local server</string>
+    <string name="status_relay">Relay connection</string>
+    <string name="status_auth">Pairing code</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_a11y_title">Accessibility service</string>
+    <string name="perm_a11y_desc">Lets the agent read and operate the screen (tap, swipe, open apps).</string>
+    <string name="perm_overlay_title">Status overlay</string>
+    <string name="perm_overlay_desc">Small status display above all apps while the bridge is active.</string>
+    <string name="perm_screenrec_title">Screen recording</string>
+    <string name="perm_screenrec_desc">For screenshots. Android confirms per session — standard Android pop-up.</string>
+    <string name="perm_revival_title">Termux auto-revival (opt-in)</string>
+    <string name="perm_revival_desc">Restarts the local stack when the connection is gone for good. Off by default.</string>
+
+    <string name="section_connection">Connection</string>
+    <string name="conn_hint">Address of the relay on your server. With wss:// the connection is encrypted.</string>
+    <string name="conn_url_hint">my-relay.example.com:8766</string>
+    <string name="conn_connect">Connect</string>
+    <string name="conn_disconnect">Disconnect</string>
+    <string name="caps_section_hint">What the agent may do on the phone — everything off by default.</string>
+
+    <string name="section_pairing">Pairing</string>
+    <string name="pairing_hint">Tap to copy the code. The agent asks for it during phone setup.</string>
+    <string name="pairing_regen">Generate new code</string>
+
+    <!-- W4 App-Lane C: Mediathek tab on the per-agent chat screen -->
+    <string name="chat_tab_chat">Chat</string>
+    <string name="chat_tab_mediathek">Media</string>
+    <string name="mediathek_empty_title">No media yet</string>
+    <string name="mediathek_empty_hint">Pictures, voice messages and files from this chat appear here.</string>
+    <string name="mediathek_section_media">Pictures &amp; videos</string>
+    <string name="mediathek_section_voices">Voice messages</string>
+    <string name="mediathek_section_files">Files</string>
+    <string name="mediathek_stale_hint">This file is no longer on the device.</string>
+    <string name="mediathek_ref_hint">Reference only — the file is not stored on the device.</string>
+    <string name="mediathek_view_fullscreen">Show picture full size</string>
+    <string name="mediathek_play_voice">Play voice message</string>
+    <string name="mediathek_stop_voice">Stop playback</string>
+    <string name="mediathek_save_file">Save to Downloads</string>
+    <string name="mediathek_saved_file">✓ Saved (Downloads)</string>
+
+    <!-- W4 App-Lane C: in-app language selection (Settings → Language) -->
+    <string name="settings_language_title">Language</string>
+    <string name="settings_language_desc">App language — independent of the system.</string>
+    <string name="language_option_system">System default</string>
+    <string name="language_option_de">Deutsch</string>
+    <string name="language_option_en">English</string>
+
+    <!-- W4 App-Lane B: quoting (long-press → reply-with-quote) -->
+    <string name="chat_quote_a11y">Quote message</string>
+    <string name="chat_quote_block_a11y">Quoted message from %1$s</string>
+    <string name="chat_reply_strip_label">Reply to %1$s</string>
+    <string name="chat_reply_cancel_a11y">Remove reply reference</string>
+</resources>

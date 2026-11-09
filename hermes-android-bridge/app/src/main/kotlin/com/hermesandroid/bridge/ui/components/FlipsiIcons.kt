@@ -71,6 +71,8 @@ object SettingsIcons {
     @DrawableRes val security: Int = R.drawable.ic_privacy
     // PH-3 Welle 2: Gruppe 5 „Verschlüsselung“ (Schlüssel-Drawable).
     @DrawableRes val crypto: Int = R.drawable.ic_key
+    // W4 App-Lane C: Gruppe „Sprache“ (Erde/Kugel-Drawable, haus-eigen).
+    @DrawableRes val language: Int = R.drawable.ic_language
 }
 
 /** Berechtigungs-Icons (OS-Freigaben-Zeilen). */

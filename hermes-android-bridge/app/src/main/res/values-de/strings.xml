@@ -54,4 +54,17 @@
     <string name="mediathek_stop_voice">Wiedergabe stoppen</string>
     <string name="mediathek_save_file">In Downloads speichern</string>
     <string name="mediathek_saved_file">✓ Gespeichert (Downloads)</string>
+
+    <!-- W4 App-Lane C: In-App-Sprachwahl (Einstellungen → Sprache) -->
+    <string name="settings_language_title">Sprache</string>
+    <string name="settings_language_desc">Sprache der App — unabhängig vom System.</string>
+    <string name="language_option_system">Systemstandard</string>
+    <string name="language_option_de">Deutsch</string>
+    <string name="language_option_en">English</string>
+
+    <!-- W4 App-Lane B: Zitieren (Longpress → Zitier-Verband) -->
+    <string name="chat_quote_a11y">Nachricht zitieren</string>
+    <string name="chat_quote_block_a11y">Zitierte Nachricht von %1$s</string>
+    <string name="chat_reply_strip_label">Antworten an %1$s</string>
+    <string name="chat_reply_cancel_a11y">Antwort-Verweis entfernen</string>
 </resources>
