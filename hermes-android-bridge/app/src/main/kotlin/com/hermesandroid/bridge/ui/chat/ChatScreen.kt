@@ -931,14 +931,41 @@ private fun ConversationBody(
             runCatching { searchFocus.requestFocus() }
         }
     }
+    // W4-FIX-JAG3 (Suche-Sprung): searchFocusTarget ist ZUGLEICH der Key DIESES
+    // Effekts — ein Write auf den State mitten im Lauf ist ein Key-Diff und
+    // startet den Effekt neu; der vorige Job stirbt an der nächsten Suspension.
+    // Alte Ordnung (Reset AM ANFANG) tötete den Job an der Scroll-Suspension
+    // VOR jedem Write: Sprung + Ember starben beide (5× am Emulator bewiesen,
+    // Dumps C:/Dev/qa/w4r_*). Deshalb nie vor dem Highlight-Set reseten.
     LaunchedEffect(searchFocusTarget) {
         val target = searchFocusTarget ?: return@LaunchedEffect
-        searchFocusTarget = null
         val idx = conversation.indexOfFirst { it.id == target }
-        if (idx < 0) return@LaunchedEffect
+        if (idx < 0) {
+            // Treffer kam/war nicht im Verlauf (Verlauf zwischendurch neu geladen):
+            // Request konsumieren (Key zurück auf null), sonst schluckt der Alt-Wert
+            // einen Wiedertap auf denselben Treffer stillschweigend (gleicher Wert =
+            // kein Key-Diff = kein Neustart dieses Effekts). Kein Scroll/Ember hier.
+            searchFocusTarget = null
+            return@LaunchedEffect
+        }
         // Anim-Stelle: Sprung-Scroll über die Reduced-Pass-Faser (ChatMotionRules).
         if (reducedMotion) listState.scrollToItem(idx) else listState.animateScrollToItem(idx)
+        // Ember VOR dem Key-Reset setzen — nach diesem Write folgt in DIESEM Job
+        // keine Suspension mehr: das Reset-Write landet, der Job endet; das an
+        // den Key-Diff angesetzte Cancel trifft einen bereits beendeten Job
+        // (no-op), der Ablauf bleibt unangetastet.
         searchHighlightId = target
+        searchFocusTarget = null
+    }
+    // Ember-Expiry EIGENER Effekt am Highlight-State (W4-FIX-JAG3): delay + Clear
+    // dürfen NICHT im Sprung-Effekt hinter dessen Key-Reset liegen — das Reset-
+    // Write ist ein Key-Diff am eigenen Effekt, der schlafende Job stirbt an der
+    // delay-Suspension und highlight=null lief NIE (Ember bliebe dauerhaft an).
+    // Hier schläft der Timeout-Job unter unverändertem Key und löscht nach ~1,6 s
+    // zuverlässig; Sprung auf Treffer 2 innerhalb des Fensters setzt den Wert
+    // neu → Fenster startet neu (Ember wandert mit, kein Alt-Rest).
+    LaunchedEffect(searchHighlightId) {
+        if (searchHighlightId == null) return@LaunchedEffect
         delay(1_600L)
         searchHighlightId = null
     }
