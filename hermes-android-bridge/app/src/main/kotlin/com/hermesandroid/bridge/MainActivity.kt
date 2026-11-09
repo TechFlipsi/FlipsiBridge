@@ -4,7 +4,10 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.LocalActivityResultRegistryOwner
+import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -73,7 +76,25 @@ class MainActivity : ComponentActivity() {
         com.hermesandroid.bridge.i18n.AppLanguage.init(applicationContext)
         requestCameraIfNeeded()
         setContent {
-            FlipsiTheme {
+            // Root-Cause-Fix (L8-Crash „IllegalStateException … No ActivityResult
+            // RegistryOwner“ beim Sprachwechsel): activity-compose 1.9.2 resolved
+            // die Activity-Owner NICHT über einen CompositionLocal-Provide am
+            // setContent, sondern via findOwner(LocalContext.current) — und
+            // findOwner läuft NUR ContextWrapper-Ketten. Der AppLanguageGate-Wrap
+            // (createConfigurationContext = ContextImpl, kein Wrapper, keine
+            // Owner-Interfaces) machte nach dem Live-Rewrap den
+            // ActivityResultRegistryOwner-Local null → rememberLauncherForActivity
+            // Result (screenRecordLauncher, BridgeScreen:240) warf beim Re-Compose.
+            // Explizite Provide-Zone an der Wurzel (LocalComposition gewinnt vor
+            // dem Fallback): RegistryOwner + OnBackPressedDispatcherOwner sind
+            // von jedem Context-Wrap unabhängig (BackHandler wirft in 1.9.2
+            // ebenfalls checkNotNull, und setOwners() setzt keinen Dispatcher-
+            // Owner am decorView — derselbe Crashpfad ohne diesen Provide).
+            CompositionLocalProvider(
+                LocalActivityResultRegistryOwner provides this@MainActivity,
+                LocalOnBackPressedDispatcherOwner provides this@MainActivity,
+            ) {
+                FlipsiTheme {
                 // W4 (App-Lane C): Sprache-Verband (Locale-Wrap JE Activity-
                 // Komposition) UMS GANZE Baum-Gerüst — Onboarding UND
                 // BridgeScreen beide drunter; set() re-wrapped live, kein
@@ -101,6 +122,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+                }
                 }
             }
         }

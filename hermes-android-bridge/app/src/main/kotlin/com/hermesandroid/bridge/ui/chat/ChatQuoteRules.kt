@@ -33,6 +33,9 @@ package com.hermesandroid.bridge.ui.chat
  *   RESTORE eigener Bubbles (fromAgent = false) gefaltet — Agenten-Bubbles
  *   bleiben unverändert Echo.
  */
+private val NEWLINE_RUNS = Regex("[\\r\\n]+")
+private val WHITESPACE_RUNS = Regex("\\s+")
+
 object ChatQuoteRules {
 
     /** Draht-Präfix, wenn eine EIGENE Nachricht zitiert wird. */
@@ -42,7 +45,7 @@ object ChatQuoteRules {
     const val WIRE_AGENT_PREFIX = "Antwort auf KI »"
 
     /** Terminator zwischen Zitat und Antwort im Draht-Text. */
-    const val WIRE_SUFFIX = "»: "
+    const val WIRE_SUFFIX = "«: "
 
     /**
      * Länge-Cap des Zitats im Draht-Text (Relay-Cap ist 32 KiB je Text — das
@@ -54,8 +57,18 @@ object ChatQuoteRules {
     const val LABEL_SELF = "Du"
     const val LABEL_KI = "KI"
 
-    /** Zeilenumbrüche/Whitespace zu einem Leerzeichen falten (Draht bleibt einzeilig). */
-    fun flatten(text: String): String = text.replace(Regex("\\s+"), " ").trim()
+    /**
+     * Falten: Newline-Runs zu „ / “ ([flatten] von „a\nb“ = „a / b“), sonstige
+     * Whitespace-Runs zu einem Leerzeichen („ \n\t “ faltet leer — Ränder
+     * getrimmt). Der Draht bleibt einzeilig: eindeutige Grenze zwischen Zitat
+     * und Antwort.
+     */
+    fun flatten(text: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return ""
+        val newlineFolded = NEWLINE_RUNS.replace(trimmed, " / ")
+        return WHITESPACE_RUNS.replace(newlineFolded, " ")
+    }
 
     /** Zitat-Span: gefaltet + gekappt (max [MAX_QUOTE_CHARS], „…“ als Endmarke). */
     fun quoteSpan(quotedText: String): String {

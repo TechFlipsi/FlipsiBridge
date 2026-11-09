@@ -96,7 +96,12 @@ class ChatSearchRulesTest {
         val hitsRare = ChatSearchRules.matches("SONDERSUCHE", list)
         assertTrue(hitsRare.isEmpty())
 
-        val hitsOld = ChatSearchRules.matches("Bubble 1 — Std", list)
+        // ECHTES Enthaltens: „Bubble 1 — Stand“ ist Präfix von
+        // „Bubble 1 — Standardtext" (bei „Std“ wäre der Query NICHT enthalten —
+        // index 13: „d" vs „a“, „std“ ist kein Teil von „stan…"). Nur id=1
+        // beginnt mit „Bubble 1 — Stand“ (id 10–299: „Bubble 1“ folgt eine
+        // Ziffer, nicht das Leerzeichen) → genau 1 Treffer am ältesten Index.
+        val hitsOld = ChatSearchRules.matches("Bubble 1 — Stand", list)
         assertEquals("Ältester Eintrag (Index 0) wird getroffen", 1, hitsOld.size)
         assertEquals(0, hitsOld[0].index)
 

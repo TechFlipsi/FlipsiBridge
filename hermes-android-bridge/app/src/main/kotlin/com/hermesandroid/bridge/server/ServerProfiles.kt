@@ -78,7 +78,9 @@ object ServerProfileRules {
         var s = url.trim()
         s = s.substringAfter("://", s)
         s = s.substringBefore('/')
-        s = s.substringBefore('@')
+        // Userinfo ABSTREIFEN: der Host folgt NACH dem @
+        // („https://user@foo.example:9/pfad“ → „foo.example“).
+        s = s.substringAfter('@', s)
         return s.substringBefore(':').trim()
     }
 
@@ -157,7 +159,16 @@ object ServerProfiles {
     fun init(context: Context) {
         appContext = context.applicationContext
         load()
-        if (_profiles.value.isEmpty()) {
+        // GELADENEN dto-Stand lesen, NICHT die (noch leeren) StateFlows —
+        // publish() läuft erst am Ende von init. Mit dem Flow-Read blieb die
+        // frisch geladene Datei unsichtbar: `_profiles.value.isEmpty()` war je
+        // Kaltstart true → Migration lief JE Start neu (je Start neue Profil-
+        // IDs, persistierte relay_profiles.v1-Flag im Persist-Verband
+        // überschrieben, onboardingDone=false) und
+        // shouldResetOnboardingFlag(0, true) setzte den Wizard-Kaltstart zurück
+        // (A6-Fall 7 verletzt). load() ist OK (keine 'nicht lesbar'-Warn) —
+        // das Lesen des FALSCHEN Zustands war der Defekt.
+        if (dto.profiles.isEmpty()) {
             // Upgrade-Migration (QA J2): bestehende Kopplung (URL im
             // RelayClient-Prefs/Vault-Rettung, Code in der SSOT) → EIN Profil.
             val url = RelayClient.serverUrl ?: PairingManager.restoreUrlIfPrefsLost()
@@ -166,7 +177,7 @@ object ServerProfiles {
                 migrateExistingPairing(url!!, code)
             }
         }
-        if (ServerProfileRules.shouldResetOnboardingFlag(_profiles.value.size, dto.onboardingDone)) {
+        if (ServerProfileRules.shouldResetOnboardingFlag(dto.profiles.size, dto.onboardingDone)) {
             // Er-Start-Detect: Flag true, aber kein Profil mehr → wieder Wizard.
             dto.onboardingDone = false
             persist()

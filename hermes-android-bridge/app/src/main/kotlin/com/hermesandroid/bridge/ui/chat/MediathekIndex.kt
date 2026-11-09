@@ -68,7 +68,10 @@ object MediathekIndex {
     fun fromEntries(entries: List<ChatHistoryStore.Entry>, exists: (String) -> Boolean): List<Item> =
         entries.mapNotNull { entry ->
             val kind = (entry.mediaKind ?: "").trim().ifEmpty { "file" }
-            if (entry.mediaKind.isNullOrBlank()) return@mapNotNull null
+            // Text-Bubbles (mediaKind = null) bleiben draußen; BLANK-Kind
+            // (""/„ “) BLEIBT — der file-Fallback oben deckt es (Kind-Blank-
+            // Kontrakt: 3 Entries → 2 Items, das „“→„file“-Item ist dabei).
+            if (entry.mediaKind == null) return@mapNotNull null
             val (path, stale) = resolvePath(entry.mediaPath, exists)
             Item(
                 mediaId = entry.mediaId.orEmpty(),
