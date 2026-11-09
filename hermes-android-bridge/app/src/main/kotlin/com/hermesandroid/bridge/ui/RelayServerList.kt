@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.PinSource
 import com.hermesandroid.bridge.server.RelayProfile
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.server.ServerProfileRules
@@ -132,13 +133,31 @@ fun RelayServerListCard() {
             onDismissRequest = { switchTarget = null },
             title = { Text(stringResource(R.string.ms_switch_title)) },
             text = {
-                Text(
-                    stringResource(
-                        R.string.ms_switch_text,
-                        profiles.firstOrNull { it.id == activeId }?.label ?: "—",
-                        targetLabel,
-                    ),
-                )
+                Column {
+                    Text(
+                        stringResource(
+                            R.string.ms_switch_text,
+                            profiles.firstOrNull { it.id == activeId }?.label ?: "—",
+                            targetLabel,
+                        ),
+                    )
+                    // W4-FIX-JAG2 (S7): Profilwechsel auf einen Host OHNE Pin-
+                    // Verband → sichtbare Warn im Bestätigungs-Dialog (kein
+                    // Verband-Mute, kein Zusatz-Dialogschritt — der Wechsel selbst
+                    // bleibt die eine Bestätigungs-Aktion). dashboard.lan (NSC-
+                    // Klartext-Ausnahme) ist ebensowenig gepinnt → Warn trifft zu.
+                    // hostOf statt URI-Parsing: scheme-los gespeicherte URLs
+                    // ("relay.example:8766") wären sonst false-negative Warn.
+                    val targetHost = ServerProfileRules.hostOf(target.url).trim().lowercase()
+                    if (targetHost.isNotBlank() && PinSource.pinsFor(targetHost) == null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            stringResource(R.string.ms_switch_nopin_warn),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.SignalAmber,
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(

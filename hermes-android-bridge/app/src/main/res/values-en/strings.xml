@@ -78,4 +78,7 @@
     <string name="chat_search_clear_a11y">Clear search input</string>
     <string name="chat_search_empty">No matches</string>
     <string name="chat_search_hit_a11y">Search hit</string>
+
+    <!-- W4-FIX-JAG2 (S7): pin warning on profile switch to an unpinned host -->
+    <string name="ms_switch_nopin_warn">Note: this relay host has no certificate pin — connections rely on system trust only. Pinning covers the own relay only.</string>
 </resources>
