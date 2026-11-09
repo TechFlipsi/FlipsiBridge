@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.core.content.FileProvider
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.client.PinSource
+import com.hermesandroid.bridge.server.ServerProfileRules
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -25,7 +27,9 @@ import java.util.concurrent.TimeUnit
  *     Authentifizierung wie jede andere geroutete Verbindung — der Token
  *     verlässt das Gerät ausschließlich Richtung eigener Relay-Host).
  *  2. Server liefert APK + X-APK-SHA256-Header (Hex, vom Server gesetzt,
- *     NICHT vom Aufrufer kontrollierbar).
+ *     NICHT vom Aufrufer kontrollierbar). W4-FIX-JAG2 (S2): die Quelle ist
+ *     https-Zwangspflichtig (S1-Verband) — der Header ist damit
+ *     transportgeschützt und kein Klartext-MITM kann ihn mitschreiben.
  *  3. App lädt herunter, prüft SHA-256 gegen den Header — bei Abweichung
  *     wird die Datei verworfen.
  *  4. Installiert wird NICHT still: Android zeigt den Installationsdialog,
@@ -58,8 +62,13 @@ object UpdateInstaller {
             ?: return Result(false, 400, "Kein Relay-Server konfiguriert — zuerst verbinden")
 
         val base = baseUrl.trim().trimEnd('/')
-        if (!base.startsWith("https://") && !base.startsWith("http://")) {
-            return Result(false, 400, "Relay-URL hat kein gültiges Schema")
+        // W4-FIX-JAG2 (S2): https-Zwang analog S1 — der Update-Download trug
+        // Bearer-Pairing-Code + APK über den Transport; http:// war zugelassen
+        // (Klartext = Hash-Header fälschbar). Verband = dieselbe Regel wie
+        // Connect (ServerProfileRules.relayUrlValidForConnect): https/wss immer,
+        // Klartext nur dashboard.lan im Dev-Kontext (NSC-Ausnahme).
+        if (!ServerProfileRules.relayUrlValidForConnect(base, BuildConfig.DEBUG)) {
+            return Result(false, 400, "Update-Quelle nicht zulässig — https:// Relay-URL nötig (Klartext nur dashboard.lan im Dev-Build)")
         }
         // Upgrade-Pfad: apk/latest ist fest, kein Aufrufer-Einfluss möglich.
         val downloadUrl = "$base/apk/latest"
