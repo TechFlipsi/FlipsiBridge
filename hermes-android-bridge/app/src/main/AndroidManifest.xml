@@ -73,9 +73,28 @@
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.HermesBridge">
 
+        <!-- W4-01 (App-Lane A, W4-01a Tastatur/Header-Fix): windowSoftInputMode
+             fehlte (Befund 12:38-Peek, EXECUTIONSTATE §343) → Standard-Pan schob
+             die GESAMTE Compose-Struktur (inkl. Conversation-Header) unter die
+             Tastatur. adjustResize drückt ab sofort NUR den nachgeordneten
+             Inhalt: Header/Divider/Banner bleiben fix OBEN (sie leben außerhalb
+             jeder ime-gepolsterten Streckung, ChatScreen.ConversationBody), die
+             Liste wird über weight(1f) geschweigt und NUR die ChatInputBar
+             trägt imePadding()+navigationBarsPadding().
+             edge-to-edge-Grundstand (Befund 09.11., verbatim geprüft):
+             enableEdgeToEdge/WindowCompat.setDecorFitsSystemWindows = 0 Treffer
+             im ganzen App-Tree → klassischer Decor-fits-Pfad; die Insets-
+             Schienen (ime/navigationBars) addieren heute 0 dp und bleiben
+             wirksam, sobald edge-to-edge später aktiviert wird. targetSdk 34:
+             adjustResize bleibt wirksam (R6-Risiko → UX-Beweis NUR über den
+             Emulator-Drill, Stand-PC-Re-Drill = spätere Build-Welle).
+             Drill-Vertrag (Reduced-Pass RP3): Tastatur auf → Header + Agent-
+             Name sichtbar, Liste scrollt ans Ende, InputBar über Tastatur;
+             Rotation + Darkmode-Mini-Check. -->
         <activity
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
