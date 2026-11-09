@@ -325,7 +325,16 @@ fun OnboardingScreens(
                 OnboardingInfoBox(stringResource(R.string.onb_fp_hint))
                 WizardButton(
                     label = stringResource(R.string.onb_confirm),
-                    enabled = true,
+                    // W4-FIX-JAG2 (S8): Bestätigen nur MIT bestehender E2E-
+                    // Session — davor war der Knopf immer enabled und der
+                    // Erststart-Flag (completeOnboarding) setzte sich auch ohne
+                    // gelieferten Fingerprint-Abgleich (Karte blieb im Warten-
+                    // Stand "onb_fp_waiting"). Gate: session != null = beide
+                    // Fingerprints liegen vor, der Nutzer kann abgleichen; ohne
+                    // Session bleibt der Knopf deaktiviert (Warten-Box leitet).
+                    // Rotation-bewusst KEIN extra saveable — session kommt ohnehin
+                    // aus dem RelayClient-StateFlow.
+                    enabled = session != null,
                 ) {
                     // Erststart-Flag (A6-Verband): ab hier NIE wieder Wizard,
                     // außer alle Profile werden gelöscht (Er-Start-Detect).
