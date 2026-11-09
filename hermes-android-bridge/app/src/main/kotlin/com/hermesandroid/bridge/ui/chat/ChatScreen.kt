@@ -205,7 +205,15 @@ fun ChatScreen(padding: PaddingValues) {
     // AppLock-Gate (ChatScreen rendert nur nach Unlock).
     val historyContext = LocalContext.current
     var historyRestored by rememberSaveable { mutableStateOf(false) }
-    var restoredStatusById by remember { mutableStateOf<Map<Long, String>>(emptyMap()) }
+    // W4-FIX-JAG2 (C1): auch der Status-Snapshot der restaurierten Einträge
+    // ist saveable — der Saver-Verband der anderen Maps (B8/B7/J1). Vorher
+    // nur `remember`: die Rotation zerstörte die Map, während
+    // `historyRestored` (saveable) TRUE blieb → kein erneuter Disk-Load →
+    // die restaurierten Bubbles downgradeten auf den Leer-Chip (✓✓ → ✓),
+    // obwohl die Disk-Zwillinge in `messages` (saveable) übrig blieben.
+    var restoredStatusById by rememberSaveable(stateSaver = RestoredStatusSaver) {
+        mutableStateOf<Map<Long, String>>(emptyMap())
+    }
     LaunchedEffect(historyRestored) {
         if (historyRestored) return@LaunchedEffect
         val entries = withContext(Dispatchers.IO) {
@@ -1368,6 +1376,19 @@ val ElapsedMsByMsgIdSaver = listSaver<Map<Long, Long>, Any>(
     save = { map -> map.entries.sortedBy { it.key }.flatMap { listOf(it.key, it.value) } },
     restore = { flat ->
         flat.chunked(2).associate { (id, ms) -> (id as Long) to (ms as Long) }
+    },
+)
+
+/**
+ * W4-FIX-JAG2 (C1): Saver für den Chip-Snapshot der restaurierten
+ * Disk-Einträge (restored_id → status) — flache Pair-Liste wie bei
+ * MsgIdByLocalIdSaver, damit die restaurierten Chips eine Rotation
+ * überleben (vorher: `remember` → Map leer beim Drehen, Chip downgraded).
+ */
+val RestoredStatusSaver = listSaver<Map<Long, String>, Any>(
+    save = { map -> map.entries.sortedBy { it.key }.flatMap { listOf(it.key, it.value) } },
+    restore = { flat ->
+        flat.chunked(2).associate { (id, status) -> (id as Long) to (status as String) }
     },
 )
 
