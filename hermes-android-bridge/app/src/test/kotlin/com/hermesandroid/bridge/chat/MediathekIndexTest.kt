@@ -64,7 +64,7 @@ class MediathekIndexTest {
     }
 
     @Test
-    fun `stale-regel: path ohne datei → platzhalter (stale true), mit datei → nutzbar`() {
+    fun `stale-regel - path ohne datei ergibt platzhalter (stale true), mit datei nutzbar`() {
         val (temp, exists) = tempFile()
         try {
             // Datei DA → Pfad bleibt, nicht stale.
@@ -93,7 +93,7 @@ class MediathekIndexTest {
     }
 
     @Test
-    fun `resolvePath: leer → verweis, weg → stale, da → pfad`() {
+    fun `resolvePath - leer ergibt verweis, weg ergibt stale, da ergibt pfad`() {
         val (temp, exists) = tempFile()
         try {
             assertEquals("" to false, MediathekIndex.resolvePath(null, exists))
@@ -107,7 +107,7 @@ class MediathekIndexTest {
     }
 
     @Test
-    fun `merge: media_id dedupt store gegen live, live-füllen hinten, meta-fallback`() {
+    fun `merge - media_id dedupt store gegen live, live-fuellen hinten, meta-fallback`() {
         val (temp, exists) = tempFile()
         try {
             val store = MediathekIndex.fromEntries(
@@ -157,7 +157,7 @@ class MediathekIndexTest {
     }
 
     @Test
-    fun `dedupeKeys: id-premiert, meta deckt id-lose Einträge`() {
+    fun `dedupeKeys - id-premiert, meta deckt id-lose Eintraege`() {
         val withId = MediathekIndex.Item("med-0123456789", "image", "a.jpg", "", 1L, "10:00", "", false, true)
         val keys = MediathekIndex.dedupeKeys(withId)
         assertTrue(keys.contains("id:med-0123456789"))

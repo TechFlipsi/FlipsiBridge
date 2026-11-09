@@ -44,13 +44,13 @@
         <domain includeSubdomains="false">REDACTED-RELAY</domain>
         <pin-set expiration="2027-05-11">
             <!-- Leaf REDACTED-RELAY (Positiv-Pin) -->
-            <pin digest="sha256/qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=" />
+            <pin digest="SHA-256">qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=</pin>
             <!-- Backup: Intermediate YE1 (O=Let's Encrypt, bis 2028-09-02) -->
-            <pin digest="sha256/brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=" />
+            <pin digest="SHA-256">brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=</pin>
             <!-- Backup: Root YE (O=ISRG, bis 2032-09-02) -->
-            <pin digest="sha256/sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=" />
+            <pin digest="SHA-256">sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=</pin>
             <!-- Backup: ISRG Root X2 (Cross-Sign X1, bis 2032-09-02) -->
-            <pin digest="sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=" />
+            <pin digest="SHA-256">diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=</pin>
         </pin-set>
     </domain-config>
     <domain-config cleartextTrafficPermitted="true">
