@@ -147,6 +147,34 @@ object RelayClient {
             // Relays laufen hostname-only. Debug-Kill-Switch für Drills: siehe
             // PinSource.setPinningDisabledForDrill (nimmt NUR die PIN-Schicht).
             .apply { PinSource.pinner()?.let { certificatePinner(it) } }
+            // W4-FIX-JAG2 Drill-Hatch (Debug-BAUTEN ONLY): trust-all-Socket, wenn
+            // Settings.Global `fb_debug_trust_drill` = 1 — der Emulator-Drill
+            // braucht ein TLS-Testrelay mit eigener CA, das der App-Trust-Store
+            // (conscrypt-APEX, SELinux-gesperrt) nicht aufnehmen kann. DOPPELT
+            // verriegelt (BuildConfig.DEBUG + Settings-Knopf, OFF by default), im
+            // Release-Zweig compilert der Zweig zu false → NIE aktiv. Release-TLS
+            // bleibt unverändert (System-Trust + Pin-Verband); dies deckt NUR die
+            // Zertifikats-VALIDATION des Drill-Sockets, NIEMALS NSC-Regeln und
+            // NIEMALS den Pin-Verband eines https-Users. Vorbild-Muster:
+            // PinSource.setPinningDisabledForDrill (Kill-Switch-Philosophie).
+            .apply(fun okhttp3.OkHttpClient.Builder.() {
+                if (!BuildConfig.DEBUG) return
+                val appCtx = BridgeApplication.instance ?: return
+                val drillTrust = runCatching {
+                    android.provider.Settings.Global.getInt(
+                        appCtx.contentResolver, "fb_debug_trust_drill", 0) == 1
+                }.getOrDefault(false)
+                if (!drillTrust) return
+                val tm = arrayOf<javax.net.ssl.TrustManager>(object : javax.net.ssl.X509TrustManager {
+                    override fun checkClientTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+                    override fun checkServerTrusted(chain: Array<java.security.cert.X509Certificate>?, authType: String?) {}
+                    override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = arrayOf()
+                })
+                val sf = javax.net.ssl.SSLContext.getInstance("TLS").apply { init(null, tm, java.security.SecureRandom()) }.socketFactory
+                sslSocketFactory(sf, tm[0] as javax.net.ssl.X509TrustManager)
+                hostnameVerifier { _, _ -> true }
+                Log.w(TAG, "DRILL-TRUST-ALL aktiv (Debug + Settings-Knopf) — NUR Drill-Socket")
+            })
             .build()
     )
 
