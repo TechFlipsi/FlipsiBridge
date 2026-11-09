@@ -1139,7 +1139,15 @@ object RelayClient {
 
     private fun buildWsUrl(serverUrl: String): String {
         val trimmed = serverUrl.trim().trimEnd('/')
-        val useTls = trimmed.startsWith("https://") || trimmed.startsWith("wss://")
+        var useTls = trimmed.startsWith("https://") || trimmed.startsWith("wss://")
+        // W4-FIX-JAG2 (S1, Deep-Defense): ein Release-Bau baut Klartext-URLs
+        // auf TLS — Klartext-Transport gehört NUR dashboard.lan (NSC-Ausnahme)
+        // im Dev-Kontext (siehe ServerProfileRules.relayUrlValidForConnect);
+        // die Validierung (Onboarding/Store) fängt das früher, das bleibt die
+        // Backstop-Schiene am Socket-Bau.
+        if (!useTls && !BuildConfig.DEBUG && !ServerProfileRules.isCleartextExceptionHost(trimmed)) {
+            useTls = true
+        }
         var base = trimmed
             .removePrefix("http://").removePrefix("https://")
             .removePrefix("ws://").removePrefix("wss://")

@@ -78,16 +78,27 @@ class OnboardingRulesTest {
 
     @Test
     fun `url problem for blank or hostless input`() {
-        assertTrue(OnboardingRules.relayUrlProblem(""))
-        assertTrue(OnboardingRules.relayUrlProblem("   "))
-        assertTrue(OnboardingRules.relayUrlProblem("/"))
-        assertTrue(OnboardingRules.relayUrlProblem(":///x"))
+        assertTrue(OnboardingRules.relayUrlProblem("", debugBuild = false))
+        assertTrue(OnboardingRules.relayUrlProblem("   ", debugBuild = true))
+        assertTrue(OnboardingRules.relayUrlProblem("/", debugBuild = true))
+        assertTrue(OnboardingRules.relayUrlProblem(":///x", debugBuild = true))
     }
 
     @Test
-    fun `url acceptable with or without scheme`() {
-        assertFalse(OnboardingRules.relayUrlProblem("https://relay.example"))
-        assertFalse(OnboardingRules.relayUrlProblem(" relay.example:8766/ "))
+    fun `https url acceptable in any build`() {
+        assertFalse(OnboardingRules.relayUrlProblem("https://relay.example", debugBuild = false))
+        assertFalse(OnboardingRules.relayUrlProblem("https://relay.example", debugBuild = true))
+    }
+
+    @Test
+    fun `scheme-less url is plaintext transport and release rejects it (S1)`() {
+        // „ relay.example:8766/ " bestand vorher jeden Verband (hostOf-only) —
+        // buildWsUrl behandelt scheme-los weiterhin als Klartext (ws://…:8766).
+        // W4-FIX-JAG2 (S1): Release lehnt ab, dashboard.lan bleibt im DEV-
+        // Kontext die einzige Klartext-Relay-URL.
+        assertTrue(OnboardingRules.relayUrlProblem(" relay.example:8766/ ", debugBuild = false))
+        assertFalse(OnboardingRules.relayUrlProblem("http://dashboard.lan", debugBuild = true))
+        assertTrue(OnboardingRules.relayUrlProblem("http://dashboard.lan", debugBuild = false))
     }
 
     @Test

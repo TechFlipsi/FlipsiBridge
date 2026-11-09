@@ -35,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.server.RelayProfile
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.server.ServerProfileRules
@@ -407,7 +408,7 @@ private fun RelayProfileEditDialog(
         confirmButton = {
             TextButton(
                 onClick = {
-                    val urlOk = !OnboardingRules.relayUrlProblem(urlText)
+                    val urlOk = !OnboardingRules.relayUrlProblem(urlText, BuildConfig.DEBUG)
                     if (!urlOk) {
                         urlError = true
                         return@TextButton

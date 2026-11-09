@@ -140,4 +140,42 @@ class ServerProfileRulesTest {
         assertTrue(ServerProfileRules.showWizard(false))
         assertFalse(ServerProfileRules.showWizard(true))
     }
+
+    // ── W4-FIX-JAG2 (S1): Relay-URL-Transport-Verband ──
+
+    @Test
+    fun `tls urls valid in any build`() {
+        assertTrue(ServerProfileRules.relayUrlValidForConnect("https://relay.example", false))
+        assertTrue(ServerProfileRules.relayUrlValidForConnect("wss://relay.example:443/ws", false))
+        assertTrue(ServerProfileRules.relayUrlValidForConnect("https://relay.example", true))
+    }
+
+    @Test
+    fun `plaintext urls only for dashboard-lan in debug build`() {
+        // Release: jeder Klartext-Transport verboten — auch dashboard.lan als
+        // Relay-URL (NSC-Pin-Umgehung: Klartext-WS mit Bearer-Kopplungscode).
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("http://dashboard.lan", false))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("http://dashboard.lan/", false))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("dashboard.lan", false))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("mein-relay.example.com:8766", false))
+        // Dev-Kontext: NUR die NSC-Ausnahme bleibt.
+        assertTrue(ServerProfileRules.relayUrlValidForConnect("http://dashboard.lan", true))
+        assertTrue(ServerProfileRules.relayUrlValidForConnect("dashboard.lan", true))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("http://PRIVAT-LAN-5:8766", true))
+    }
+
+    @Test
+    fun `hostless urls always invalid`() {
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("", false))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect("  ", true))
+        assertFalse(ServerProfileRules.relayUrlValidForConnect(":///x", true))
+    }
+
+    @Test
+    fun `cleartext exception host is exactly dashboard-lan`() {
+        assertTrue(ServerProfileRules.isCleartextExceptionHost("http://dashboard.lan/"))
+        assertTrue(ServerProfileRules.isCleartextExceptionHost("DASHBOARD.LAN"))
+        assertFalse(ServerProfileRules.isCleartextExceptionHost("sub.dashboard.lan"))
+        assertFalse(ServerProfileRules.isCleartextExceptionHost("REDACTED-RELAY"))
+    }
 }

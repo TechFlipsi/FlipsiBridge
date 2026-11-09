@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.ui.onboarding
 
 import androidx.activity.compose.BackHandler
+import com.hermesandroid.bridge.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -98,10 +99,15 @@ object OnboardingRules {
             }
         }
 
-    /** URL-Feld: nichtleer + Host erkennbar (gleiche Regeln wie der Store). */
-    fun relayUrlProblem(input: String): Boolean {
+    /** URL-Feld: nichtleer + Host erkennbar + Transport-Verband (S1). */
+    fun relayUrlProblem(input: String, debugBuild: Boolean): Boolean {
         val t = input.trim().trimEnd('/')
-        return t.isBlank() || ServerProfileRules.hostOf(t).isBlank()
+        if (t.isBlank() || ServerProfileRules.hostOf(t).isBlank()) return true
+        // W4-FIX-JAG2 (S1): dashboard.lan als Relay-URL umging den NSC-Pin
+        // (Klartext-WS mit dem Bearer-Kopplungscode). Die Validierung spiegelt
+        // jetzt die Plattform-Wahrheit: https für Nicht-Ausnahme-Hosts,
+        // Klartext nur dashboard.lan im Dev-Kontext ([debugBuild]).
+        return !ServerProfileRules.relayUrlValidForConnect(t, debugBuild)
     }
 
     /** Code-Feld: nichtleer (Form wird vom Relay bewertet, nicht hier geraten). */
@@ -210,7 +216,7 @@ fun OnboardingScreens(
                     label = stringResource(R.string.onb_next),
                     enabled = true,
                 ) {
-                    if (OnboardingRules.relayUrlProblem(urlText)) {
+                    if (OnboardingRules.relayUrlProblem(urlText, BuildConfig.DEBUG)) {
                         urlError = true
                     } else {
                         urlText = urlText.trim().trimEnd('/')

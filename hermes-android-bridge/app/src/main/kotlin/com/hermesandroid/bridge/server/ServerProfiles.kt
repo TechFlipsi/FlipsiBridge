@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.google.gson.Gson
 import com.hermesandroid.bridge.auth.PairingManager
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -87,6 +88,39 @@ object ServerProfileRules {
     /** Leer-Label fällt auf den Host zurück (sichtbare Zeile, nie leer). */
     fun labelOrHost(label: String, url: String): String =
         label.trim().ifBlank { hostOf(url).ifBlank { "Relay-Server" } }
+
+    // ── W4-FIX-JAG2 (S1): Relay-URL-Transport-Verband ────────────────────────
+
+    /**
+     * Die EINE Klartext-Ausnahme der NSC (network_security_config.xml):
+     * GENAU `dashboard.lan` (statischer Heim-DNS/hosts-Name, HTTP-Direktmodus
+     * des lokalen Dashboards). JEDER andere Host ist plattformseitig
+     * cleartext-blockiert — und `dashboard.lan` selbst trägt im Release KEINE
+     * Bearer-Codes mehr über ws:// (die URL-Validierung hält es im
+     * Dashboard-Kontext, siehe [relayUrlValidForConnect]).
+     */
+    const val CLEARTEXT_EXCEPTION_HOST = "dashboard.lan"
+
+    /** Klartext-Ausnahme-HOST? (hostOf-basiert, Scheme/Port egal, case-sensitiv toleriert). */
+    fun isCleartextExceptionHost(url: String): Boolean =
+        hostOf(url).equals(CLEARTEXT_EXCEPTION_HOST, ignoreCase = true)
+
+    /**
+     * Relay-URL-Verband für Connect/Persist (S1, JVM-testbar):
+     *  - https:// bzw. wss:// → immer zulässig (NSC-Pin-/System-Verband trägt).
+     *  - http://, ws:// oder scheme-los (buildWsUrl baut darauf `ws://`) →
+     *    NUR für die Cleartext-Ausnahme `dashboard.lan` und nur im DEV-Kontext
+     *    ([debugBuild] = BuildConfig.DEBUG). Release erzwingt https für ALLE
+     *    Nicht-Ausnahme-Hosts — die NSC-Schanze bleibt dahinter Wahrheit,
+     *    aber das Scheitern wird sichtbar (Feld-/Status-Fehler) statt stiller
+     *    Sockel-Sperre (Schnüffler-F5-Falle).
+     */
+    fun relayUrlValidForConnect(url: String, debugBuild: Boolean): Boolean {
+        val t = url.trim().trimEnd('/')
+        if (hostOf(t).isBlank()) return false
+        if (t.startsWith("https://") || t.startsWith("wss://")) return true
+        return debugBuild && isCleartextExceptionHost(t)
+    }
 
     /** Letzt-Verbunden-Bucket — die UI beschriftet, die Regel rechnet. */
     enum class LastConnectedBucket { NEVER, NOW, MINUTES, HOURS, HISTORY }
@@ -313,6 +347,15 @@ object ServerProfiles {
      */
     fun connectViaProfile(context: Context, profileId: String) {
         val p = profile(profileId) ?: return
+        // W4-FIX-JAG2 (S1): Transport-Verband am Connect-Pfad — auch LEGACY
+        // gespeicherte Profile tragen den Verband danach nach (Klartext nur
+        // dashboard.lan im Dev-Kontext, sonst https). Kein Connect-Versuch auf
+        // verbotene Transporte — die Stille-Sockel-Sperre der NSC wird damit
+        // vorgezogen und sichtbar.
+        if (!ServerProfileRules.relayUrlValidForConnect(p.url, BuildConfig.DEBUG)) {
+            Log.w(TAG, "Profil ${p.id} (${p.label}): URL verletzt den Transport-Verband (S1) — kein Connect")
+            return
+        }
         val code = readCodeVault(p.id)
         if (code.isNullOrBlank()) {
             Log.w(TAG, "Profil $p.label ohne Code im Vault — kein Connect-Versuch")
