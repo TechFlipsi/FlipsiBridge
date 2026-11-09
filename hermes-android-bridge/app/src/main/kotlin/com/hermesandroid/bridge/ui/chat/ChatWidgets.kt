@@ -2,6 +2,7 @@ package com.hermesandroid.bridge.ui.chat
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
+import kotlinx.coroutines.Job
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -357,6 +358,10 @@ fun MessageBubble(
         // (Geste-Lauf bleibt stabil, kein stale Closure je Recomposition).
         var swipeTravel by remember(message.id) { mutableStateOf(0f) }
         val settleAnim = remember(message.id) { Animatable(0f) }
+        // W4-FIX-JAG2 (C3): Handover-/Job-Regeln der Settle-Faser (siehe
+        // settleSwipe) — je Geste-Sequenz genau EIN lebender Anim-Job.
+        var settleHandover by remember(message.id) { mutableStateOf(false) }
+        var settleJob by remember(message.id) { mutableStateOf<Job?>(null) }
         val swipeScope = rememberCoroutineScope()
         val replyCallback = rememberUpdatedState(onReply)
         val reducedState = rememberUpdatedState(chatReducedMotion)
@@ -366,17 +371,37 @@ fun MessageBubble(
         fun settleSwipe() {
             // Settle-Faser: aktuelle Fahrt in die Anim übergeben, Ziel 0.
             val from = swipeTravel
-            swipeTravel = 0f
             if (reducedState.value) {
-                // Reduced-Pass: OHNE Tween — Ziel ist schon erreicht.
+                // Reduced-Pass: OHNE Tween — Ziel ist schon erreicht (Sync-
+                // Nullsetzen bleibt, kein Animations-Zweig zu übergeben).
+                swipeTravel = 0f
                 return
             }
-            swipeScope.launch {
+            // W4-FIX-JAG2 (C3): der Handover an die Anim erzeugt KEIN sichtbares
+            // Zwischen-Bild mit translationX = 0. Vorher stand der Sync-Nullsetzer
+            // VOR dem suspend-Handover (snapTo lief im Coroutine-Lauf, der
+            // Layer blendete 0 ein und sprang zur Übergabe-Fahrt zurück = Blip).
+            // Jetzt: Handover-Flag + snapTo im selben Lauf — der Layer liest
+            // während der Übergabe NUR die Anim (fortlaufend from → 0), sonst
+            // nur die Sync-Fahrt; der Nullsetzer passiert nach dem snapTo.
+            settleJob?.cancel()
+            settleJob = swipeScope.launch {
                 settleAnim.snapTo(from)
+                settleHandover = true
+                swipeTravel = 0f
                 settleAnim.animateTo(0f, tween(ChatMotionRules.settleTweenMs(false)))
             }
         }
         fun cancelSettle() {
+            // W4-FIX-JAG2 (C3): laufende Settle-Faser STOPPEN (Job-Cancel) statt
+            // der Anim nur einen zweiten Snap hinterherzuschicken — der alte
+            // animateTo lief gegen den neuen Snap (Ruck) und Jobs häuften sich
+            // je Geste. Nach dem Cancel liest der Layer sofort wieder die Sync-
+            // Fahrt (beim Drag-Start 0 = sichtbarer Abriss, wie im Drill-Verband
+            // „Abriss ohne Doppelauslösen“); der Snap räumt nur den Anim-Stand.
+            settleJob?.cancel()
+            settleJob = null
+            settleHandover = false
             swipeScope.launch { settleAnim.snapTo(0f) }
         }
         Row(
@@ -443,7 +468,14 @@ fun MessageBubble(
                         // W4-B (Swipe-to-Reply): Finger-Folge über graphicsLayer
                         // (Layer-Redraw, keine Recomposition je Drag-Puls) +
                         // Geste-Sensor NACH der Click-Verkabelung.
-                        .graphicsLayer { translationX = swipeTravel + settleAnim.value }
+                        // W4-FIX-JAG2 (C3): Handover-Quelle — während der Settle-
+                        // Übergabe liest der Layer NUR die Anim (fortlaufend, kein
+                        // Blip), im Drag nur die Sync-Fahrt. Die alte Summe
+                        // (swipeTravel + settleAnim.value) verzählte beim Handover
+                        // zwangsweise (0+f oder f+f je Ausspiel-Reihenfolge).
+                        .graphicsLayer {
+                            translationX = if (settleHandover) settleAnim.value else swipeTravel
+                        }
                         .pointerInput(Unit) {
                             var fired = false
                             detectHorizontalDragGestures(
