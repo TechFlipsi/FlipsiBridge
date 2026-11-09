@@ -764,6 +764,7 @@ fun ChatScreen(padding: PaddingValues) {
             // W4-B (Zitieren): Antwort-Overlay (Strip über der Eingabe-Leiste)
             // + Zitat-Block über der gesendeten Bubble; onReply = Longpress.
             replyQuote = replyQuote,
+            onSetReply = { replyQuote = it },
             onDismissReply = { replyQuote = null },
             onBack = {
                 // PH2-FIX (Jäger B6): Banner des Agenten beim Verlassen clearen.
@@ -882,6 +883,7 @@ private fun ConversationBody(
     // W4-B (Zitieren): aktiver Antwort-Verweis (null = kein Zitier-Modus) +
     // Abwahl-Binding für das Overlay-Strip.
     replyQuote: ChatQuote? = null,
+    onSetReply: (ChatQuote?) -> Unit = {},
     onDismissReply: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
@@ -1035,10 +1037,12 @@ private fun ConversationBody(
                             // Snapshot (ChatQuote). senderName nur beim echten Agenten
                             // (Demo-Eintrag blank agentId → Label „KI“ im Strip).
                             onReply = {
-                                replyQuote = ChatQuote(
-                                    fromAgent = message.fromAgent,
-                                    senderName = if (message.fromAgent && agent.agentId.isNotBlank()) agent.name else "",
-                                    text = message.text,
+                                onSetReply(
+                                    ChatQuote(
+                                        fromAgent = message.fromAgent,
+                                        senderName = if (message.fromAgent && agent.agentId.isNotBlank()) agent.name else "",
+                                        text = message.text,
+                                    )
                                 )
                             },
                             // W4-B (Swipe-to-Reply): Reduced-Pass-Faser der

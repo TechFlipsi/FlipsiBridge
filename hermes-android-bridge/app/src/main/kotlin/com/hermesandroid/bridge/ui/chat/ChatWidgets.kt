@@ -373,7 +373,7 @@ fun MessageBubble(
             }
             swipeScope.launch {
                 settleAnim.snapTo(from)
-                settleAnim.animateTo(0f, tween(ChatSwipeRules.settleTweenMs(false)))
+                settleAnim.animateTo(0f, tween(ChatMotionRules.settleTweenMs(false)))
             }
         }
         fun cancelSettle() {
