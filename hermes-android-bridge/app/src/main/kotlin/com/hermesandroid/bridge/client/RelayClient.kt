@@ -206,6 +206,18 @@ object RelayClient {
     var currentPhase: Phase = Phase.IDLE
         private set
 
+    /**
+     * W4-D (Onboarding-Fehler-Taxonomie, je Verband: Wizard-Schritt 2):
+     * HTTP-Code des LETZTEN WS-Upgrade-Fehlers —
+     *   401/403 = „Code falsch“, 429 = „Relay kurz gesperrt“, 0 = Timeout/Netz
+     *   („Relay nicht erreichbar“), -1 = kein Fehler (Reset je onOpen/connect).
+     * Strukturiertes Signal statt Text-Grep (PH1-T3-Muster); gesetzt in
+     * onFailure, geräumt in onOpen und connect(). Nur-Lesen für die UI.
+     */
+    @Volatile
+    var lastFailureHttpCode: Int = -1
+        private set
+
     @Volatile
     var isConnected: Boolean = false
         private set
@@ -497,6 +509,18 @@ object RelayClient {
     fun connect(serverUrl: String, pairingCode: String) {
         disconnect()
 
+        // W4-D (Multi-Server-Profil-Wechsel + Onboarding-Wizard): ein abweichend
+        // mitgelieferter Code wird BEWUSST in die EINE SSOT adoptiert
+        // (PairingManager.adoptActiveCode) — der Singleton-Pärchen-Verband
+        // (PairingManager/RelayClient/MtlsSupport) folgt dem AKTIVEN Profil,
+        // doConnect liest weiter frisch aus der SSOT. Bestehende Aufrufer
+        // übergeben PairingManager.getCode() → Adoption ist ein No-op-Write.
+        if (pairingCode.isNotBlank() && pairingCode.trim() != PairingManager.getCode()) {
+            PairingManager.adoptActiveCode(pairingCode, "relay_connect")
+        }
+        // Fehler-Taxonomie des VORHERIGEN connect-Zyklus räumen (Wizard-Hilfe).
+        lastFailureHttpCode = -1
+
         // v0.10.8 (Review-Blocking-3-Fix): Merker für die Capability-Migration —
         // wer je eine Relay-Verbindung einrichtet, hat "vor dem Gating" genutzt.
         prefs?.edit()?.putBoolean("legacy_had_relay", true)?.apply()
@@ -713,6 +737,9 @@ object RelayClient {
                 }
                 Log.i(TAG, "WebSocket connected to ${safeUrlForLog(serverUrl)}")
                 isConnected = true
+                // W4-D: Fehler-Taxonomie-Räumer — der Connect steht, der alte
+                // HTTP-Fehler darf die Wizard-Hilfe nicht mehr triggern.
+                lastFailureHttpCode = -1
                 // success resets the revival watchdog + Auth-Fehlserie
                 prefs?.edit()?.putInt(KEY_FAILURES, 0)?.apply()
                 clearAuthFailureStreak()
@@ -771,6 +798,10 @@ object RelayClient {
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 if (myGeneration != generation) return
                 val httpCode = response?.code ?: 0
+                // W4-D (Onboarding-Fehler-Taxonomie): strukturierter Code für die
+                // Wizard-Fehlerhilfe (401/403 → Code falsch, 429 → Sperre,
+                // 0 → Timeout/Netz) — kein Text-Grep über Statusmeldungen.
+                lastFailureHttpCode = httpCode
                 val errorDetail = "Verbindungsfehler: ${t.javaClass.simpleName} (HTTP $httpCode)"
                 Log.e(TAG, "WebSocket failure: $errorDetail")
                 isConnected = false

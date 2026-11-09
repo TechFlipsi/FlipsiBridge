@@ -119,8 +119,11 @@ import com.hermesandroid.bridge.ui.components.PermissionRow
 import com.hermesandroid.bridge.ui.components.ResourceIcon
 import com.hermesandroid.bridge.ui.components.SectionTitle
 import com.hermesandroid.bridge.ui.components.SettingsIcons
+import com.hermesandroid.bridge.ui.components.LanguageSettingsCard
 import com.hermesandroid.bridge.ui.components.StateBanner
 import com.hermesandroid.bridge.ui.components.capabilityGroups
+import androidx.compose.ui.res.stringResource
+import com.hermesandroid.bridge.R
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -148,6 +151,14 @@ import kotlinx.coroutines.withContext
  * Banner-Ursachen-Texte (PH1-T4), aufklappbare Fähigkeiten-Gruppen
  * (PH1-T5), Impressum-Inhaltsrahmen (PH1-T6) + 29 geshiftete Haus-
  * Drawables (Icons-Fix — Details im CHANGELOG).
+ *
+ * W4-D (A6/A7-Verband): Route 0–3 bleibt; [initialRoute] erlaubt den
+ * Onboarding-Verband, NACH der Fingerprint-Bestätigung DIREKT IM CHAT
+ * (Route 2) zu starten. Die Multi-Server-Liste (RelayServerListCard) lebt
+ * in der Server-Gruppe der Einstellungen; die Home-Schnellverbindung folgt
+ * dem aktiven Profil (ServerProfiles.syncActiveUrl), Umschalten zwischen
+ * Profilen läuft bewusst über Bestätigung + disconnect/connect
+ * (Singletons-Faser — genau ein WebSocket, OkHttpClient-Fabrik unangetastet).
  */
 
 private enum class HealthDialogCause { NOT_INSTALLED, NEEDS_UPDATE, DENIED_OR_SILENT }
@@ -168,9 +179,13 @@ private fun startFirstResolvable(context: Context, activity: Activity?, intents:
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun BridgeScreen() {
+fun BridgeScreen(initialRoute: Int = 0) {
     val context = LocalContext.current
-    val activity = context as? Activity
+    // W4 (App-Lane C): Activity-Quelle über die CompositionLocal — der
+    // AppLanguageGate-Wrapped-Context ist KEIN Activity-Context (context as?
+    // Activity wäre bei DE/EN-Wahl null und würde ALLE Berechtigungs-Sprünge
+    // killen). Der Gate liefert die ORIGINAL Activity (AppLanguage.LocalAppActivity).
+    val activity = com.hermesandroid.bridge.i18n.AppLanguage.LocalAppActivity.current
     val status by BridgeStatus.state.collectAsState()
     val statusMessage by BridgeStatus.message.collectAsState()
     val serverUrl by BridgeStatus.serverUrl.collectAsState()
@@ -192,7 +207,9 @@ fun BridgeScreen() {
     // Einfache Int-Route per rememberSaveable (KEINE androidx.navigation-
     // Dependency): 0=Home, 1=Einstellungen, 2=Chat, 3=Impressum/Datenschutz.
     // Back-Taste = Route zurück auf Home.
-    var route by rememberSaveable { mutableStateOf(0) }
+    // W4-D (A6): initialRoute=2 nach der Wizard-Fingerprint-Bestätigung —
+    // „danach direkt im Chat“; normale Starts starten auf 0 (Home).
+    var route by rememberSaveable { mutableStateOf(initialRoute) }
     BackHandler(enabled = route != 0) { route = 0 }
 
     // ── PH1-T2: Einstellungen-Accordion — je Gruppe ein EIGENER Klappe-
@@ -205,6 +222,8 @@ fun BridgeScreen() {
     var settingsSecurityOpen by rememberSaveable { mutableStateOf(false) }
     // PH-3 Welle 2: Gruppe 5 „Verschlüsselung“ (Fingerprints) — append-only.
     var settingsCryptoOpen by rememberSaveable { mutableStateOf(false) }
+    // W4 (App-Lane C): Gruppe „Sprache“ (DE/EN) — append-only, startet zu.
+    var settingsLanguageOpen by rememberSaveable { mutableStateOf(false) }
     // ── PH1-T5: je Fähigkeiten-Gruppe ein eigener Klappe-Zustand (innerhalb
     // der Agenten-Einstellungen); die invasive Gruppe startet bewusst zu.
     var capGroupAnsehenOpen by rememberSaveable { mutableStateOf(true) }
@@ -338,6 +357,11 @@ fun BridgeScreen() {
                         if (url.isBlank()) {
                             snack("Server-Adresse eintragen")
                         } else {
+                            // W4-D (A7): die Schnellverbindung folgt dem AKTIVEN
+                            // Profil — die Liste bleibt wahr (URL+Vault-Spiegel
+                            // wandern mit), verbindet wird wie bisher über
+                            // RelayClient.connect + SSOT-Code.
+                            ServerProfiles.syncActiveUrl(url)
                             BridgeConnectionService.start(context)
                             RelayClient.connect(url, PairingManager.getCode())
                         }
@@ -391,7 +415,7 @@ fun BridgeScreen() {
                 )
             }
 
-            // ── Gruppe 1: Server (Relay-URL, Kopplungscode, mTLS) ──────────
+            // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode, mTLS) ──
             item(key = "setServer") {
                 AccordionCard(
                     title = "Server",
@@ -399,6 +423,11 @@ fun BridgeScreen() {
                     expanded = settingsServerOpen,
                     onExpandedChange = { settingsServerOpen = it },
                 ) {
+                    // W4-D (A7): Multi-Server-Liste — je Relay-Server URL+Code
+                    // (verborgen, Reduced-Pass)+Status+Letzt-Verbunden;
+                    // Umschalten bewusst mit Trenn-/Wechsel-Bestätigung
+                    // (disconnect/connect im Profil-Store, Singletons-Faser).
+                    RelayServerListCard()
                     // Relay-URL: GLEICHE SSOT wie das Home-Feld (serverUrlText)
                     // — beide Felder zeigen und schreiben denselben Wert.
                     OutlinedTextField(
@@ -572,6 +601,21 @@ fun BridgeScreen() {
                     CryptoSettingsCard()
                 }
             }
+
+            // ── Gruppe Sprache (W4, App-Lane C) — Einstellungen-Zeile
+            // DE/EN: AppLanguage (Prefs „app_language") + AppLanguageGate am
+            // Activity-Kompositions-Punkt re-wrapped die App live (kein
+            // Activity-Recreate), alle stringResource-Auflösungen wechseln.
+            item(key = "setLanguage") {
+                AccordionCard(
+                    title = stringResource(R.string.settings_language_title),
+                    iconRes = SettingsIcons.language,
+                    expanded = settingsLanguageOpen,
+                    onExpandedChange = { settingsLanguageOpen = it },
+                ) {
+                    LanguageSettingsCard()
+                }
+            }
         }
     }
 
@@ -660,6 +704,10 @@ fun BridgeScreen() {
                     onClick = {
                         showRegenDialog = false
                         PairingManager.regenerateCode()
+                        // W4-D (A7): Regenerate folgt dem AKTIVEN Profil — der
+                        // neue Code wandert in den Profile-Vault (ein späterer
+                        // Profil-Wechsel darf den alten Code nicht beleben).
+                        ServerProfiles.writeActiveCode(PairingManager.getCode())
                         BridgeStatus.refreshConfig()
                         snack("Neuer Code erzeugt — am Server eintragen")
                     }

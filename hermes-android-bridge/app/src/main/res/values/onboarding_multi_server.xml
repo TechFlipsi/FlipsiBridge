@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Welle 4 / App-Lane D — Onboarding (Erststart) + Multi-Server-Liste.
+         Keys sauber getrennt: onb_* = Erststart-Wizard, ms_* = Multi-Server.
+         EN-Spiegel: res/values-en/onboarding_multi_server.xml (werte-de/en). -->
+
+    <!-- ── Onboarding-Wizard (3 Screens: URL → Code → Fingerprint) ──────────── -->
+    <string name="onb_title">FlipsiBridge koppeln</string>
+    <string name="onb_step_header_url">Schritt 1 von 3 — Relay-Adresse</string>
+    <string name="onb_step_text_url">Trage die Adresse des Relays ein, das auf deinem Server läuft. Danach fragt die App den Kopplungscode ab.</string>
+    <string name="onb_url_label">Relay-URL</string>
+    <string name="onb_url_hint">https://dein-relay.example</string>
+    <string name="onb_url_blank_error">Adresse fehlt — Format: https://dein-relay.example</string>
+    <string name="onb_next">Weiter</string>
+    <string name="onb_step_header_code">Schritt 2 von 3 — Bridge-Code</string>
+    <string name="onb_step_text_code">Tippe den Kopplungscode ein, den dein Relay verlangt — das Relay-Setup zeigt ihn an (Token am Server).</string>
+    <string name="onb_code_label">Bridge-Code</string>
+    <string name="onb_code_blank_error">Code fehlt — das Relay-Setup zeigt ihn an</string>
+    <string name="onb_connect">Verbinden</string>
+    <string name="onb_connecting">Verbinde mit dem Relay …</string>
+    <string name="onb_back">Zurück</string>
+    <string name="onb_reveal">Code einblenden</string>
+    <string name="onb_hide">Code verbergen</string>
+
+    <!-- Fehlerhilfe je Schritt (401 / Timeout / Netz / Relay-Sperre) -->
+    <string name="onb_help_code_title">Code ist falsch (401)</string>
+    <string name="onb_help_code_text">Das Relay hat den Code abgelehnt. Tippe ihn erneut ein — der Code steht im Relay-Setup am Server.</string>
+    <string name="onb_help_unreachable_title">Relay nicht erreichbar</string>
+    <string name="onb_help_unreachable_text">Zeitüberschreitung oder Netz weg. Prüfe Adresse und Netz und ob das Relay läuft — der Versuch kehrt automatisch zurück.</string>
+    <string name="onb_help_blocked_title">Relay kurzzeitig gesperrt</string>
+    <string name="onb_help_blocked_text">Zu viele Fehlversuche: das Relay sperrt die Adresse für einige Minuten. Warte kurz, dann mit dem richtigen Code erneut verbinden.</string>
+
+    <!-- Schritt 3: Fingerprint-Karte -->
+    <string name="onb_step_header_fp">Schritt 3 von 3 — Fingerprint bestätigen</string>
+    <string name="onb_step_text_fp">Vergleiche den Sitzungs-Fingerprint deines Telefons mit dem Agent-Fingerprint. Gleich = Ende-zu-Ende gesichert.</string>
+    <string name="onb_fp_phone_label">Telefon-Fingerprint (Sitzung)</string>
+    <string name="onb_fp_agent_label">Agent-Identity-Fingerprint</string>
+    <string name="onb_fp_waiting">Warte auf den E2E-Handshake — der Fingerprint erscheint beim ersten Agent-Kontakt.</string>
+    <string name="onb_fp_hint">Die Bestätigung hat den Erststart abgeschlossen — der Abgleich bleibt im Chat möglich.</string>
+    <string name="onb_confirm">Bestätigen — in den Chat</string>
+
+    <!-- ── Multi-Server: Relay-Liste in den Einstellungen ────────────────────── -->
+    <string name="ms_title">Relay-Server</string>
+    <string name="ms_hint">Gespeicherte Relays. Ein Eintrag ist aktiv — das Umschalten trennt die alte Verbindung bewusst.</string>
+    <string name="ms_add">+ Server hinzufügen</string>
+    <string name="ms_active_chip">Aktiv</string>
+    <string name="ms_inactive_chip">Getrennt</string>
+    <string name="ms_last_connected">Letzter Verbindungsaufbau</string>
+    <string name="ms_last_never">Noch nie verbunden</string>
+    <string name="ms_last_now">Gerade eben</string>
+    <string name="ms_last_minutes">vor %1$d Min.</string>
+    <string name="ms_last_hours">vor %1$d Std.</string>
+    <string name="ms_switch">Wechseln</string>
+    <string name="ms_edit">Bearbeiten</string>
+    <string name="ms_remove">Löschen</string>
+    <string name="ms_switch_title">Verbindung wechseln?</string>
+    <string name="ms_switch_text">Die Verbindung zu „%1$s“ wird getrennt, danach verbindet „%2$s“. Der Chat ist bis zum Neuaufbau nicht erreichbar.</string>
+    <string name="ms_switch_confirm">Trennen und wechseln</string>
+    <string name="ms_cancel">Abbrechen</string>
+    <string name="ms_remove_title">Serverprofil löschen?</string>
+    <string name="ms_remove_text">„%1$s“ samt hinterlegtem Code entfernen?</string>
+    <string name="ms_remove_confirm">Entfernen</string>
+    <string name="ms_add_title">Server hinzufügen</string>
+    <string name="ms_edit_title">Server bearbeiten</string>
+    <string name="ms_label_label">Name (freiwillig)</string>
+    <string name="ms_url_label">Relay-URL</string>
+    <string name="ms_code_label">Bridge-Code</string>
+    <string name="ms_code_note">Der Code liegt je Profil im App-Vault — er ist hier bewusst verborgen.</string>
+    <string name="ms_save">Speichern</string>
+    <string name="ms_url_blank_error">URL-Format: https://dein-relay.example</string>
+</resources>

@@ -5,10 +5,18 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.hermesandroid.bridge.i18n.AppLanguageGate
 import com.hermesandroid.bridge.security.AppLockGate
 import com.hermesandroid.bridge.security.AppLockManager
+import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.BridgeScreen
 import com.hermesandroid.bridge.ui.FlipsiTheme
+import com.hermesandroid.bridge.ui.onboarding.OnboardingScreens
 
 /**
  * FlipsiBridge v0.11.0 — Komplett-Redesign: die ganze UI lebt jetzt in
@@ -22,6 +30,15 @@ import com.hermesandroid.bridge.ui.FlipsiTheme
  * und nicht entsperrt ist, wird BridgeScreen GAR NICHT komponiert (Chat-
  * Inhalte sind hinter dem Gate nicht renderbar, auch kein Preview-Leak).
  * onPause stempelt die Hintergrund-Zeit für die Auto-Sperre (30 s/3 min/Nie).
+ *
+ * W4-D (A6-Verband, Er-Start-Detect): GATE nach dem AppLockGate — solange
+ * ServerProfiles.onboardingDone=false („kein Paarung“: weder Migration aus
+ * der bestehenden Kopplung noch Wizard-Abschluss), komponiert die Activity
+ * den Onboarding-Wizard (ui/onboarding/OnboardingScreens) statt BridgeScreen.
+ * AppLockGate bleibt bewusst AUSSEN (PIN-Schranke gilt auch am Erststart —
+ * beim echten Erststart existiert keine PIN, das Gate ist dann pass-through).
+ * Nach der Fingerprint-Bestätigung: onComplete → App mit initialRoute=2
+ * („danach direkt im Chat“).
  */
 class MainActivity : ComponentActivity() {
 
@@ -51,12 +68,39 @@ class MainActivity : ComponentActivity() {
         // idempotent) — VOR setContent, damit das Gate sofort weiß, ob eine
         // PIN existiert (App-Restart sperrt immer).
         AppLockManager.init(applicationContext)
+        // W4 (App-Lane C): App-Sprache VOR setContent laden (idempotent) — der
+        // AppLanguageGate-Leser bekommt den persistierten Tag (SYSTEM/DE/EN).
+        com.hermesandroid.bridge.i18n.AppLanguage.init(applicationContext)
         requestCameraIfNeeded()
         setContent {
             FlipsiTheme {
-                // X-1: Gate VOR dem Nav-Host-Inhalt — Chat-Route NIE umgehbar.
-                AppLockGate {
-                    BridgeScreen()
+                // W4 (App-Lane C): Sprache-Verband (Locale-Wrap JE Activity-
+                // Komposition) UMS GANZE Baum-Gerüst — Onboarding UND
+                // BridgeScreen beide drunter; set() re-wrapped live, kein
+                // Activity-Recreate. Die ORIGINAL Activity läuft über
+                // AppLanguage.LocalAppActivity mit (der wrapped Context ist
+                // kein Activity-Context — context as? Activity wäre null).
+                AppLanguageGate {
+                    // X-1: Gate VOR dem Nav-Host-Inhalt — Chat-Route NIE umgehbar.
+                    AppLockGate {
+                        // W4-D (A6): Er-Start-Verband — kein Paarung = Wizard.
+                        val onboarded by ServerProfiles.onboardingDone.collectAsState()
+                        // Merker „gerade erst den Wizard bestanden“ → BridgeScreen
+                        // startet DANN bewusst auf Route 2 (Chat). Nach Prozess-
+                        // Restore gilt 0 (Home) — der Merker ist frischer Zustand.
+                        var onboardingJustDone by remember { mutableStateOf(false) }
+                        if (!onboarded) {
+                            OnboardingScreens(
+                                onComplete = {
+                                    onboardingJustDone = true
+                                },
+                            )
+                        } else {
+                            BridgeScreen(
+                                initialRoute = if (onboardingJustDone) 2 else 0,
+                            )
+                        }
+                    }
                 }
             }
         }

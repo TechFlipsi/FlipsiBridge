@@ -171,6 +171,30 @@ object PairingManager {
         return code
     }
 
+    /**
+     * W4-D (Multi-Server/Onboarding, Verband je Profil-Wechsel): übernimmt den
+     * Code eines Relay-Profils BEWUSST in die EINE SSOT (Prefs + Vault + Cache)
+     * — der Singleton PairingManager folgt damit dem AKTIVEN Profil; es gibt
+     * weiterhin keinen zweiten Code-Speicher (Vorfall-Wurzel bleibt verbannt).
+     *
+     * Kein CodeEvent/Notification BEWUSST: ein Profil-Wechsel ist ein
+     * Nutzereingang, kein Storage-Vorfall — REGENERATED/RESTORED bleiben
+     * Vorfall-Meldungen (die UI-Regenerate-Kette bleibt unverändert).
+     *
+     * Validierung: trim + nichtleer; die 12-Zeichen-Form von generateRandomCode
+     * wird NICHT erzwungen — Relay-Tokens sind je Server eigen gewählt
+     * (Literal-Preserve, kein stillschweigendes „Reparieren“ des Tokens).
+     */
+    @Synchronized
+    fun adoptActiveCode(code: String, source: String) {
+        val adopted = code.trim()
+        if (adopted.isBlank()) return
+        prefs?.edit()?.putString(KEY_PAIRING_CODE, adopted)?.apply()
+        writeVault(adopted)
+        cachedCode = adopted
+        Log.i(TAG, "Code adoptiert (Quelle: $source) — SSOT folgt dem aktiven Profil")
+    }
+
     private fun generateRandomCode(): String {
         val chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // kein 0/O/1/I (Verwechslung)
         val sb = StringBuilder(CODE_LENGTH)

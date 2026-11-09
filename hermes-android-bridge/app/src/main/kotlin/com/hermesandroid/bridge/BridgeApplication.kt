@@ -6,6 +6,7 @@ import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.power.WakeLockManager
 import com.hermesandroid.bridge.server.BridgeServer
+import com.hermesandroid.bridge.server.ServerProfiles
 
 class BridgeApplication : Application() {
     companion object {
@@ -27,6 +28,10 @@ class BridgeApplication : Application() {
 
         // Initialize relay client and auto-connect if previously configured
         RelayClient.init(applicationContext)
+        // W4-D (Lane D): Profil-Store NACH RelayClient.init (Migration liest
+        // serverUrl) und VOR autoConnect (Letzt-Verbunden-Tracker braucht die
+        // Anmeldung vor dem ersten onOpen) — A6 legt ihn an, A7 verwaltet.
+        ServerProfiles.init(applicationContext)
         // v0.11.0: UI-Status-Quelle (StateFlows) nach RelayClient-Init anmelden;
         // hält KEINE Activity-Referenz (Leak-Fix R11).
         com.hermesandroid.bridge.ui.BridgeStatus.init()
