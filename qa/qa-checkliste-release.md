@@ -57,6 +57,9 @@
 - [ ] Play: Datenschutz-Richtlinie-URL gesetzt, Datensicherheit-Formular passend zu den tatsächlichen Datenflüssen, Zielgruppenfragen beantwortet.
 - [ ] Keine Server-/Setup-Pflichten, die normale Nutzer nicht erfüllen können, ohne dass die App es erklärt.
 
+- [ ] Lesebestätigung als Häkchen-Grammatik neben dem Zeitstempel (gesendet ✓ / zugestellt ✓✓ / gelesen ✓✓ in Akzentfarbe / failed ✕), TalkBack liest die Worte (contentDescription) — Anmutung WhatsApp gemessen, Farben = Flipsi.
+- [ ] Tages-Chips relativ („Heute“/Wochentag, sonst langes Datum), mittige kleine Pill.
+
 ## I. Technische Routine (je Build — Beweiszeilen in den Bericht)
 - [ ] Compile beider Editions grün (compilePlayReleaseKotlin + compileGithubReleaseKotlin EXECUTED).
 - [ ] Unit-Tests: beide Suiten 348/348 grün (NUR die 2 bekannten Windows-Symlink-Baseline-Fails erlaubt; jede andere = FAIL).
