@@ -108,4 +108,7 @@
     <string name="onb_perm_title_location">—</string>
     <string name="onb_perm_title_mic">Mikrofon</string>
     <string name="onb_perm_title_notifications">—</string>
+    <string name="onb_step_header_perm">Berechtigungen</string>
+    <string name="onb_step_text_perm">Prüfe die Zugriffsrechte der App — je Berechtigung steht dort, wofür sie gebraucht wird.</string>
+    <string name="onb_finish">Fertigstellen</string>
 </resources>

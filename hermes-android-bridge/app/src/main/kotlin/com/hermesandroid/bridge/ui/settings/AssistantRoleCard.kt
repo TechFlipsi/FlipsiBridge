@@ -1,7 +1,7 @@
 package com.hermesandroid.bridge.ui.settings
 
 import android.app.Activity
-import android.app.RoleManager
+import android.app.role.RoleManager
 import android.os.Build
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
