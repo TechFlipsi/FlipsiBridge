@@ -15,6 +15,7 @@ import android.telephony.SmsManager
 import android.util.Base64
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.model.ActionResult
 import com.hermesandroid.bridge.model.ScreenNode
 import com.hermesandroid.bridge.model.computeHash
