@@ -80,10 +80,10 @@ def main():
                 "track": TRACK,
                 "releases": [
                     {
-                        "name": f"0.15.1 Komposer ({version})",
+                        "name": f"0.15.2 Komposer und Überspringen ({version})",
                         "versionCodes": [str(version)],
                         "status": "completed",
-                        "releaseNotes": [{"language": "de-DE", "text": "Neuer Komposer im Referenz-Look mit Modell- und Denken-Auswahl pro Chat."}],
+                        "releaseNotes": [{"language": "de-DE", "text": "Komposer mit Modell- und Denken-Auswahl; Einrichtungsassistent jetzt überspringbar."}],
                     }
                 ],
             },
