@@ -92,3 +92,8 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - LISTE: Hintergrund #0A0F15 (fast schwarz-blau); Such-Kapsel/Chips/Zeilen-Zones #23282E (charcoal); Texte weiß/#B3B7BA; FAB = kräftige Akzentfarbe (grün bei WA).
 - FENSTER: Kopf #090909; eigene Bubble #04488F (WA-blau); Agenten-Bubble #3C3D38 (warm-grau); Composer-Zone #524636-Family (Wallpaper-Schein).
 - FLIPSI-SPIEGELUNG (Beschluss): Liste-BG = Void(#0E1013), Kapseln/Zeilen-Karten = PanelElev(#21262E), eigene Bubble = EmberDim(#3A2A1F) (Akzent-warm statt WA-blau), Agent-Bubble = Panel(#1A1D23), FAB/Chips-aktiv = Ember(#ED7931), Texte = TextPrimary/TextSecondary. Radien/Dauern: Bubble ~14 dp, Kapseln 28+ dp, Liste-Zeilen ~72 dp.
+
+### P11-ANHANG 2: Emulator-RE-Abgratung WhatsApp (11.11. spät, Sir-Auftrag)
+- APK installiert am Emulator (adb install --no-streaming, push 180 MB/s, „Success") ✓
+- Start: Onboarding lädt, aber WhatsApp WEIGERT sich am Emulator (Custom-ROM-Alarm, 2 Warnseiten, Weiter = verweigert) — tiefere Screens ohne ECHTE Nummer + auf nicht-geprüften ROMs NICHT erreichbar. Ehrliche Grenze dokumentiert.
+- Deshalb: Design-Quellen = (a) Sirs eigene Screenshots (Pixelproben — P11-ANHANG 1) und (b) die Struktur-Analyse. APK-Assets/Code werden NICHT kopiert (Sir-Regel).
