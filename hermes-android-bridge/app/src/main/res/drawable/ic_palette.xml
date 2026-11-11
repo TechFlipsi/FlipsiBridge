@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Welle 13 / P12: Haus-eigenes Darstellungs-Icon (Farb-Palette: Ring mit
+     drei Farb-Tupfen). Wie ic_language bewusst ohne Material-Symbols-Download
+     gezeichnet — einfache positive Koordinaten auf dem 24-dp-Haus-Raster. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <!-- Ring (äußerer Kreis minus innerer Kreis, fillType evenOdd) -->
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M12,1.5 C6.201,1.5 1.5,6.201 1.5,12 C1.5,17.799 6.201,22.5 12,22.5 C17.799,22.5 22.5,17.799 22.5,12 C22.5,6.201 17.799,1.5 12,1.5Z M12,3.7 C16.589,3.7 20.3,7.411 20.3,12 C20.3,16.589 16.589,20.3 12,20.3 C7.411,20.3 3.7,16.589 3.7,12 C3.7,7.411 7.411,3.7 12,3.7Z"/>
+    <!-- Drei Farb-Tupfen (oben-links, oben-rechts, unten-mitte) -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M8.2,7.4 m-1.6,0 a1.6,1.6 0 1,1 3.2,0 a1.6,1.6 0 1,1 -3.2,0"/>
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M15.8,7.4 m-1.6,0 a1.6,1.6 0 1,1 3.2,0 a1.6,1.6 0 1,1 -3.2,0"/>
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M12,15.2 m-1.6,0 a1.6,1.6 0 1,1 3.2,0 a1.6,1.6 0 1,1 -3.2,0"/>
+</vector>

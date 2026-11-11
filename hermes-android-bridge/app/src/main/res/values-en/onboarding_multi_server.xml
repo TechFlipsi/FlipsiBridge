@@ -1,70 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Welle 4 / App-Lane D — English mirror of onboarding/multi-server strings.
-         Keys must stay in sync with res/values/onboarding_multi_server.xml. -->
+         Keys must stay in sync with res/values/onboarding_multi_server.xml.
+         Welle 13 (P3/P4/P7): complete EN set incl. language step, legal gate,
+         permissions step and the previously missing skip/resume keys. -->
 
-    <!-- Onboarding wizard (3 screens: URL -> code -> fingerprint) -->
-    <string name="onb_title">Couple FlipsiBridge</string>
-    <string name="onb_step_header_url">Step 1 of 3 — relay address</string>
-    <string name="onb_step_text_url">Enter the address of the relay running on your server. The app then asks for the pairing code.</string>
-    <string name="onb_url_label">Relay URL</string>
-    <string name="onb_url_hint">https://your-relay.example</string>
-    <string name="onb_url_blank_error">Address missing — format: https://your-relay.example</string>
-    <string name="onb_next">Next</string>
-    <string name="onb_step_header_code">Step 2 of 3 — bridge code</string>
-    <string name="onb_step_text_code">Type the pairing code your relay requires — the relay setup displays it (token on the server).</string>
-    <string name="onb_code_label">Bridge code</string>
-    <string name="onb_code_blank_error">Code missing — the relay setup displays it</string>
-    <string name="onb_connect">Connect</string>
-    <string name="onb_connecting">Connecting to the relay …</string>
-    <string name="onb_back">Back</string>
-    <string name="onb_reveal">Show code</string>
-    <string name="onb_hide">Hide code</string>
+    <!-- Step 0: language (Welle 13, P3 — language = first step) -->
+    <!-- Deliberate double title: before the choice we cannot know what the user reads. -->
+    <string name="onb_lang_title">Sprache / Language</string>
+    <string name="onb_lang_text">Wähle deine Sprache — sie gilt sofort für die gesamte App. / Choose your language — it applies to the whole app immediately.</string>
+    <string name="onb_lang_de">Deutsch</string>
+    <string name="onb_lang_en">English</string>
+    <string name="onb_lang_system">Use system language</string>
 
-    <!-- Step-by-step help (401 / timeout / network / relay block) -->
-    <string name="onb_help_code_title">Code is wrong (401)</string>
-    <string name="onb_help_code_text">The relay rejected the code. Type it again — the code is shown in the relay setup on the server.</string>
-    <string name="onb_help_unreachable_title">Relay not reachable</string>
-    <string name="onb_help_unreachable_text">Timeout or no network. Check the address and network and whether the relay is running — the attempt returns automatically.</string>
-    <string name="onb_help_blocked_title">Relay temporarily locked</string>
-    <string name="onb_help_blocked_text">Too many failed attempts: the relay blocks the address for a few minutes. Wait briefly, then reconnect with the correct code.</string>
-
-    <!-- Step 3: fingerprint card -->
-    <string name="onb_step_header_fp">Step 3 of 3 — confirm fingerprint</string>
-    <string name="onb_step_text_fp">Compare your phone\'s session fingerprint with the agent fingerprint. Equal = end-to-end secured.</string>
-    <string name="onb_fp_phone_label">Phone fingerprint (session)</string>
-    <string name="onb_fp_agent_label">Agent identity fingerprint</string>
-    <string name="onb_fp_waiting">Waiting for the E2E handshake — the fingerprint appears on first agent contact.</string>
-    <string name="onb_fp_hint">Confirming has finished the first-run setup — comparison remains available in chat.</string>
-    <string name="onb_confirm">Confirm — go to chat</string>
-
-    <!-- Multi-server: relay list in settings -->
-    <string name="ms_title">Relay servers</string>
-    <string name="ms_hint">Stored relays. One entry is active — switching consciously disconnects the old connection.</string>
-    <string name="ms_add">+ Add server</string>
-    <string name="ms_active_chip">Active</string>
-    <string name="ms_inactive_chip">Disconnected</string>
-    <string name="ms_last_connected">Last connection</string>
-    <string name="ms_last_never">Never connected</string>
-    <string name="ms_last_now">Just now</string>
-    <string name="ms_last_minutes">%1$d min. ago</string>
-    <string name="ms_last_hours">%1$d hr. ago</string>
-    <string name="ms_switch">Switch</string>
-    <string name="ms_edit">Edit</string>
-    <string name="ms_remove">Delete</string>
-    <string name="ms_switch_title">Switch connection?</string>
-    <string name="ms_switch_text">The connection to “%1$s” is disconnected, afterwards “%2$s” connects. Chat is unreachable until rebuilt.</string>
-    <string name="ms_switch_confirm">Disconnect and switch</string>
-    <string name="ms_cancel">Cancel</string>
-    <string name="ms_remove_title">Delete server profile?</string>
-    <string name="ms_remove_text">Remove “%1$s” including its stored code?</string>
-    <string name="ms_remove_confirm">Remove</string>
-    <string name="ms_add_title">Add server</string>
-    <string name="ms_edit_title">Edit server</string>
-    <string name="ms_label_label">Name (optional)</string>
-    <string name="ms_url_label">Relay URL</string>
-    <string name="ms_code_label">Bridge code</string>
-    <string name="ms_code_note">Each profile stores its code in the app vault — hidden here by design.</string>
-    <string name="ms_save">Save</string>
-    <string name="ms_url_blank_error">URL format: https://your-relay.example</string>
+    <!-- Step 1: legal gate (Welle 13, P7) -->
+    <string name="onb_step_header_legal">Step 1 of 5 — legal</string>
+    <string name="onb_step_text_legal">Expand the documents and read them briefly. Setup only continues once you accept — no data is transmitted before that.</string>
 </resources>

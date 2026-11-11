@@ -71,4 +71,68 @@
 
     <!-- W4-FIX-JAG2 (S7): Pin-Warn beim Profilwechsel auf unpinned Host -->
     <string name="ms_switch_nopin_warn">Hinweis: Dieser Relay-Host hat keinen Zertifikats-Pin — die Verbindung läuft nur mit System-Vertrauen. Der Pin-Verband deckt ausschließlich das eigene Relay.</string>
+
+    <!-- ── Welle 13 / Settings-Lane: Settings-Redesign (P2) ─────────────────── -->
+    <string name="settings_home_title">Einstellungen</string>
+    <string name="settings_home_subtitle">Abschnitte antippen zum Auf- und Zuklappen.</string>
+    <string name="settings_info_a11y">Über FlipsiBridge öffnen</string>
+    <string name="about_sheet_title">Über FlipsiBridge</string>
+    <string name="about_version_label">Version</string>
+
+    <!-- Welle 13 / P12: Darstellung (Color-Customizer) -->
+    <string name="settings_appearance_title">Darstellung</string>
+    <string name="settings_appearance_desc">Akzent, Chat-Bubbles und Hintergrund. Textfarben stellt die App automatisch lesbar ein.</string>
+    <string name="appearance_slot_accent">Akzentfarbe</string>
+    <string name="appearance_slot_bubble_own">Eigene Bubble</string>
+    <string name="appearance_slot_bubble_agent">Agenten-Bubble</string>
+    <string name="appearance_slot_background">Hintergrund</string>
+    <string name="appearance_preview_label">Vorschau (Textfarben automatisch)</string>
+    <string name="appearance_preview_agent">Verbindung steht — was kann ich für dich tun?</string>
+    <string name="appearance_preview_own">Bereit für den Einsatz.</string>
+    <string name="appearance_preview_hint">Nachricht schreiben</string>
+    <string name="appearance_reset">Auf Flipsi-Standard zurücksetzen</string>
+
+    <!-- Welle 13 / P4: Berechtigungen mit Zweck + Status + System-Sprung -->
+    <string name="settings_permissions_title">Berechtigungen</string>
+    <string name="settings_permissions_desc">Jede Berechtigung mit Zweck und Status — Änderungen laufen über die Android-Systemeinstellungen.</string>
+    <string name="perm_status_granted">Erteilt</string>
+    <string name="perm_status_missing">Nicht erteilt</string>
+    <string name="perm_open_system_settings">Systemeinstellungen</string>
+    <string name="perm_notifications_title">Benachrichtigungen</string>
+    <string name="perm_notifications_desc">Zeigt Status und Nachrichten als Android-Benachrichtigung an, solange die Brücke läuft.</string>
+    <string name="perm_mic_title">Mikrofon</string>
+    <string name="perm_mic_desc">Für Sprachnachrichten — Aufnahme nur, solange du aufnimmst.</string>
+    <string name="perm_camera_title">Kamera</string>
+    <string name="perm_camera_desc">Für Fotos, die du im Chat sendest oder vom Agent aufnehmen lässt.</string>
+    <string name="perm_location_title">Standort</string>
+    <string name="perm_location_desc">Wenn du den Agent nach deinem Standort fragst.</string>
+    <string name="perm_allfiles_title">Alle Dateien</string>
+    <string name="perm_allfiles_desc">Dateizugriff für Aufträge, die du dem Agent selbst gibst (z. B. Downloads suchen).</string>
+    <string name="perm_sms_title">SMS</string>
+    <string name="perm_sms_desc">Nur für SMS-Aufträge, die du dem Agent ausdrücklich gibst (nur GitHub-Edition).</string>
+    <string name="perm_calls_title">Anrufe</string>
+    <string name="perm_calls_desc">Anrufe tätigen, die du dem Agent befiehlst.</string>
+    <string name="perm_contacts_title">Kontakte</string>
+    <string name="perm_contacts_desc">Kontakte lesen, wenn du den Agent danach fragst.</string>
+    <string name="perm_battery_title">Akku-Optimierung</string>
+    <string name="perm_battery_desc">Ausnahme von der Akku-Optimierung, damit die Brücke erreichbar bleibt.</string>
+
+    <!-- Welle 13 / P10: Standard-Assistent (RoleManager) -->
+    <string name="settings_assistant_title">Standard-Assistent</string>
+    <string name="settings_assistant_desc">FlipsiBridge statt eines anderen Assistenten beim Assistenten-Button öffnen.</string>
+    <string name="assistant_action">Als Standard-Assistent einrichten</string>
+    <string name="assistant_status_held">FlipsiBridge ist als Standard-Assistent eingerichtet.</string>
+    <string name="assistant_status_other">Derzeit ist ein anderer Assistent eingerichtet — Android zeigt dir die Auswahl.</string>
+    <string name="assistant_unavailable">Auf diesem Android (unter 10) ist kein Standard-Assistent einrichtbar.</string>
+
+    <!-- Welle 13 / P7b: Rechtliches (österreichische Kurztexte, ausklappbar) -->
+    <string name="settings_legal_title">Rechtliches</string>
+    <string name="settings_legal_desc">Impressum, Datenschutz und Nutzungsbedingungen.</string>
+    <string name="legal_imprint_title">Impressum</string>
+    <string name="legal_imprint_body">Anbieter: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Österreich.\n\nGegenstand: Entwicklung und Bereitstellung der App FlipsiBridge — ein Werkzeug zur Fernsteuerung deines eigenen Android-Geräts über einen selbst betriebenen Relay-Server.\n\nVertretungsberechtigt: Fabian Kirchweger.</string>
+    <string name="legal_privacy_title">Datenschutz</string>
+    <string name="legal_privacy_body">Verantwortlicher: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Österreich.\n\nVerarbeitete Daten: Die App verarbeitet nur die für den Brückenbetrieb nötigen Daten — Server-Adresse, Kopplungscode, Verbindungs- und Gerätestatus sowie die von dir verfassten Nachrichten und beauftragten Aktionen. Chatinhalte und Verlauf bleiben am Gerät.\n\nServerbetreiber: FlipsiBridge verbindet sich ausschließlich mit dem Relay-Server, den du selbst einrichtest. Für die Verarbeitung auf diesem Server ist der jeweilige Betreiber verantwortlich; die App sendet keine Daten an Server von TechFlipsi.\n\nVerschlüsselung: Ende-zu-Ende-Verschlüsselung ist in der App eingebaut (Einstellungen → Verschlüsselung); ob sie aktiv ist, hängt von deiner Server- und Client-Konfiguration ab.\n\nDeine Rechte (Art 15–21 DSGVO): Auskunft, Berichtigung, Löschung, Einschränkung, Datenübertragbarkeit und Widerspruch — schriftlich an die oben genannte Adresse. Du kannst dich zudem bei der Österreichischen Datenschutzbehörde beschweren.\n\nRechtsgrundlage: Vertragserfüllung bzw. dein ausdrückliches Einverständnis (Art 6 Abs 1 lit b und lit a DSGVO). Profilierung oder automatisierte Entscheidungen finden nicht statt.</string>
+    <string name="legal_terms_title">Nutzungsbedingungen</string>
+    <string name="legal_terms_body">Nutzung: FlipsiBridge wird unentgeltlich für private Nutzung zur Verfügung gestellt.\n\nGewährleistung: Die App wird im vorhandenen Zustand bereitgestellt; die gesetzliche Gewährleistung ist soweit gesetzlich zulässig ausgeschlossen.\n\nHaftung: Die Haftung von TechFlipsi ist auf Vorsatz und grobe Fahrlässigkeit sowie Personenschäden beschränkt. Keine Haftung für Schäden durch unsachgemäßen Einsatz, Drittsysteme oder Datenverlust.\n\nPflichten: Du nutzt die App nur auf Geräten, die dir gehören oder für deren Nutzung du berechtigt bist, und im Rahmen der anwendbaren Gesetze.\n\nÄnderungen: Diese Bedingungen können sich ändern; die jeweils aktuelle Fassung steht in der App unter Einstellungen → Info.</string>
+    <string name="legal_accept">Ich akzeptiere</string>
 </resources>

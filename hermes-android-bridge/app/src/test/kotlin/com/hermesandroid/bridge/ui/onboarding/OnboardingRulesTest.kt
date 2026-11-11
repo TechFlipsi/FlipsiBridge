@@ -116,17 +116,34 @@ class OnboardingRulesTest {
             OnboardingRules.advancesOnConnected(OnboardingStep.BRIDGE_CODE.ordinal),
         )
         assertFalse(
+            OnboardingRules.advancesOnConnected(OnboardingStep.SPRACHE.ordinal),
+        )
+        assertFalse(
+            OnboardingRules.advancesOnConnected(OnboardingStep.RECHTLICHES.ordinal),
+        )
+        assertFalse(
             OnboardingRules.advancesOnConnected(OnboardingStep.RELAY_URL.ordinal),
         )
         assertFalse(
             OnboardingRules.advancesOnConnected(OnboardingStep.FINGERPRINT.ordinal),
         )
+        assertFalse(
+            OnboardingRules.advancesOnConnected(OnboardingStep.BERECHTIGUNGEN.ordinal),
+        )
     }
 
+    // ── Welle 13 (P3/P4/P7): Schritt-Reihenfolge des Assistenten ──
+    // 0 Sprache → 1 Rechtliches (Accept-Gate VOR der Kopplung = vor jeder
+    // Datenübermittlung) → 2 Relay-URL → 3 Bridge-Code → 4 Fingerprint →
+    // 5 Berechtigungen (freiwillig, deshalb bewusst LETZT + Fertigstellen).
+
     @Test
-    fun `step order is url code fingerprint`() {
-        assertEquals(0, OnboardingStep.RELAY_URL.ordinal)
-        assertEquals(1, OnboardingStep.BRIDGE_CODE.ordinal)
-        assertEquals(2, OnboardingStep.FINGERPRINT.ordinal)
+    fun `step order is sprache rechtliches url code fingerprint berechtigungen`() {
+        assertEquals(0, OnboardingStep.SPRACHE.ordinal)
+        assertEquals(1, OnboardingStep.RECHTLICHES.ordinal)
+        assertEquals(2, OnboardingStep.RELAY_URL.ordinal)
+        assertEquals(3, OnboardingStep.BRIDGE_CODE.ordinal)
+        assertEquals(4, OnboardingStep.FINGERPRINT.ordinal)
+        assertEquals(5, OnboardingStep.BERECHTIGUNGEN.ordinal)
     }
 }

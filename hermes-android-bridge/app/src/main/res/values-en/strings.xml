@@ -81,4 +81,68 @@
 
     <!-- W4-FIX-JAG2 (S7): pin warning on profile switch to an unpinned host -->
     <string name="ms_switch_nopin_warn">Note: this relay host has no certificate pin — connections rely on system trust only. Pinning covers the own relay only.</string>
+
+    <!-- ── Wave 13 / Settings lane: settings redesign (P2) — EN ─────────────── -->
+    <string name="settings_home_title">Settings</string>
+    <string name="settings_home_subtitle">Tap a section to expand or collapse it.</string>
+    <string name="settings_info_a11y">Open about FlipsiBridge</string>
+    <string name="about_sheet_title">About FlipsiBridge</string>
+    <string name="about_version_label">Version</string>
+
+    <!-- Wave 13 / P12: appearance (color customizer) -->
+    <string name="settings_appearance_title">Appearance</string>
+    <string name="settings_appearance_desc">Accent, chat bubbles and background. The app keeps text colors readable automatically.</string>
+    <string name="appearance_slot_accent">Accent color</string>
+    <string name="appearance_slot_bubble_own">Own bubble</string>
+    <string name="appearance_slot_bubble_agent">Agent bubble</string>
+    <string name="appearance_slot_background">Background</string>
+    <string name="appearance_preview_label">Preview (text colors automatic)</string>
+    <string name="appearance_preview_agent">Connection is up — what can I do for you?</string>
+    <string name="appearance_preview_own">Ready for duty.</string>
+    <string name="appearance_preview_hint">Write a message</string>
+    <string name="appearance_reset">Reset to Flipsi standard</string>
+
+    <!-- Wave 13 / P4: permissions with purpose + status + system jump -->
+    <string name="settings_permissions_title">Permissions</string>
+    <string name="settings_permissions_desc">Every permission with purpose and status — changes happen in the Android system settings.</string>
+    <string name="perm_status_granted">Granted</string>
+    <string name="perm_status_missing">Not granted</string>
+    <string name="perm_open_system_settings">System settings</string>
+    <string name="perm_notifications_title">Notifications</string>
+    <string name="perm_notifications_desc">Shows status and messages as an Android notification while the bridge runs.</string>
+    <string name="perm_mic_title">Microphone</string>
+    <string name="perm_mic_desc">For voice messages — recording only while you record.</string>
+    <string name="perm_camera_title">Camera</string>
+    <string name="perm_camera_desc">For photos you send in chat or let the agent take.</string>
+    <string name="perm_location_title">Location</string>
+    <string name="perm_location_desc">When you ask the agent about your location.</string>
+    <string name="perm_allfiles_title">All files</string>
+    <string name="perm_allfiles_desc">File access for tasks you give the agent yourself (e.g. searching downloads).</string>
+    <string name="perm_sms_title">SMS</string>
+    <string name="perm_sms_desc">Only for SMS tasks you explicitly give the agent (GitHub edition only).</string>
+    <string name="perm_calls_title">Calls</string>
+    <string name="perm_calls_desc">Place calls that you order the agent to make.</string>
+    <string name="perm_contacts_title">Contacts</string>
+    <string name="perm_contacts_desc">Read contacts when you ask the agent for them.</string>
+    <string name="perm_battery_title">Battery optimization</string>
+    <string name="perm_battery_desc">Exemption from battery optimization so the bridge stays reachable.</string>
+
+    <!-- Wave 13 / P10: default assistant (RoleManager) -->
+    <string name="settings_assistant_title">Default assistant</string>
+    <string name="settings_assistant_desc">Open FlipsiBridge instead of another assistant via the assistant button.</string>
+    <string name="assistant_action">Set as default assistant</string>
+    <string name="assistant_status_held">FlipsiBridge is set as the default assistant.</string>
+    <string name="assistant_status_other">Another assistant is currently set — Android shows you the choice.</string>
+    <string name="assistant_unavailable">On this Android (below 10) no default assistant can be set.</string>
+
+    <!-- Wave 13 / P7b: legal (short texts, collapsible) -->
+    <string name="settings_legal_title">Legal</string>
+    <string name="settings_legal_desc">Imprint, privacy and terms of use.</string>
+    <string name="legal_imprint_title">Imprint</string>
+    <string name="legal_imprint_body">Provider: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Austria.\n\nScope: development and provision of the FlipsiBridge app — a tool for remote-controlling your own Android device via a relay server you run yourself.\n\nAuthorized representative: Fabian Kirchweger.</string>
+    <string name="legal_privacy_title">Privacy</string>
+    <string name="legal_privacy_body">Controller: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Austria.\n\nData processed: the app only handles the data the bridge needs — server address, pairing code, connection and device status, plus the messages you write and actions you order. Chat content and history stay on the device.\n\nServer operator: FlipsiBridge connects only to the relay server you set up yourself. Whoever operates that server is responsible for processing on it; the app sends no data to any TechFlipsi server.\n\nEncryption: end-to-end encryption is built into the app (Settings → Encryption); whether it is active depends on your server and client configuration.\n\nYour rights (Art 15–21 GDPR): access, rectification, erasure, restriction, data portability and objection — in writing to the address above. You may also lodge a complaint with the Austrian Data Protection Authority.\n\nLegal basis: contract performance or your explicit consent (Art 6 (1) (b) and (a) GDPR). No profiling or automated decision-making takes place.</string>
+    <string name="legal_terms_title">Terms of use</string>
+    <string name="legal_terms_body">Use: FlipsiBridge is provided free of charge for private use.\n\nWarranty: the app is provided as is; statutory warranty is excluded to the extent legally permissible.\n\nLiability: TechFlipsi is liable only for intent and gross negligence and for personal injury. No liability for damage caused by improper use, third-party systems or data loss.\n\nYour duties: use the app only on devices you own or are authorized to use, and within applicable law.\n\nChanges: these terms may change; the current version lives in the app under Settings → About.</string>
+    <string name="legal_accept">I accept</string>
 </resources>

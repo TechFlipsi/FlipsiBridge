@@ -8,6 +8,7 @@ import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,14 +60,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // SEC-W3 (W3-1): FLAG_SECURE — Task-Switcher/Recents + Screenshots zeigen
-        // NIEMALS App-Inhalt (Chat-Verlauf/Fingerprint-Hex). Ohne dieses Flag
-        // bliebe der Recents-Snapshot am System-Switcher hängen, auch wenn die
-        // App-Lock-Sperre aktiv ist.
-        window.setFlags(
-            android.view.WindowManager.LayoutParams.FLAG_SECURE,
-            android.view.WindowManager.LayoutParams.FLAG_SECURE
-        )
+        // WELLE 13 P1 (Sir: „Screenshots nerven mega"): FLAG_SECURE nicht mehr
+        // ACTIVITY-WEIT — der ganze Chat war damit unfähig, einen Screenshot
+        // zu machen. Neu: das Flag wird DYNAMISCH gesetzt, NUR solange das
+        // PIN-Verriegelungs-Gate sichtbar ist (recents/snapshot dort bleibt
+        // geschwärzt); jeder andere Screen (Chat, Settings) ist screenshotbar.
         // X-1: App-Sperre initialisieren (Prefs + AndroidKeyStore-Engine,
         // idempotent) — VOR setContent, damit das Gate sofort weiß, ob eine
         // PIN existiert (App-Restart sperrt immer).
@@ -95,6 +93,23 @@ class MainActivity : ComponentActivity() {
                 LocalOnBackPressedDispatcherOwner provides this@MainActivity,
             ) {
                 FlipsiTheme {
+                // WELLE 13 P1: FLAG_SECURE dynamisch — NUR am PIN-Gate gesetzt
+                // (Recents/Screenshot dort geschwärzt), sonst frei: Chat- und
+                // Settings-Screenshots sind ab jetzt möglich (Sir-Befund).
+                val lockGateVisible by com.hermesandroid.bridge.security.AppLockManager
+                    .get().gateVisible.collectAsState()
+                LaunchedEffect(lockGateVisible) {
+                    runCatching {
+                        if (lockGateVisible) {
+                            window.setFlags(
+                                android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                                android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                            )
+                        } else {
+                            window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
+                        }
+                    }
+                }
                 // W4 (App-Lane C): Sprache-Verband (Locale-Wrap JE Activity-
                 // Komposition) UMS GANZE Baum-Gerüst — Onboarding UND
                 // BridgeScreen beide drunter; set() re-wrapped live, kein

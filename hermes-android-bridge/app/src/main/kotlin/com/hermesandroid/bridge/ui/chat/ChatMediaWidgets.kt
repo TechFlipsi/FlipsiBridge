@@ -51,6 +51,21 @@ import com.hermesandroid.bridge.ui.FlipsiColors
 import java.io.File
 
 /**
+ * WELLE-13 P8 (UI-Verband): Holen-Hook für eingehende Medien. Die eigentliche
+ * Download-Implementierung (Relay GET /media/{id}, E2E, Chunk-Frame) wird vom
+ * KOORDINATOR angebunden — die Chat-UI ruft nur [handler] mit
+ * (agentId, mediaId, onDone) auf. Vertrag für die Implementierung:
+ * onDone(path) mit lokal gecachtem Datei-Pfad bei Erfolg, onDone(null) bei
+ * Fehlschlag; Callback-Auslieferung auf dem Main-Thread (die Bubble-Zeile
+ * setzt nach dem Resultat direkt den UI-Zustand zurück). handler = null =
+ * Dienst (noch) nicht angebunden → ehrlicher Hinweis statt totem Button.
+ */
+object ChatMediaDownload {
+    @Volatile
+    var handler: ((agentId: String, mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null
+}
+
+/**
  * MEDIA-T1: Media-Bubble-Inhalt je Art (in der MessageBubble-Surface).
  *
  * - image: Thumbnail (downgesampelte Dekodierung, app-private Datei) +
@@ -66,6 +81,9 @@ internal fun MediaBubbleContent(
     media: ChatMediaInfo,
     fromAgent: Boolean,
     text: String,
+    // WELLE-13 P8: Holen-Verband — null = kein Download-Dienst (ehrlicher
+    // Hinweis in der Voice-Zeile statt totem Button).
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
 ) {
     var viewerOpen by remember { mutableStateOf(false) }
     val contentColor = if (fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC)
@@ -106,7 +124,12 @@ internal fun MediaBubbleContent(
                 )
             }
             "voice" -> {
-                VoiceBubbleRow(media = media, contentColor = contentColor, subColor = subColor)
+                VoiceBubbleRow(
+                    media = media,
+                    contentColor = contentColor,
+                    subColor = subColor,
+                    onDownloadMedia = onDownloadMedia,
+                )
             }
             else -> {
                 // file / video: Name + Größe prominent, Speichern-Zeile darunter.
@@ -174,12 +197,30 @@ private fun MediaMetaLine(media: ChatMediaInfo, contentColor: Color, subColor: C
     }
 }
 
-/** MEDIA-T1: Sprachnachricht — Play/Stopp + Dauer (MediaPlayer, je Bubble 1). */
+/**
+ * MEDIA-T1: Sprachnachricht — Play/Stopp + Dauer (MediaPlayer, je Bubble 1).
+ *
+ * WELLE-13 P8 (Sir-Befund 11.11. spät, UI-Teil): eingehende Sprachnachrichten
+ * liegen nur als Meta (mediaId) vor — ohne lokale Datei gab es NICHTS zu
+ * spielen. Der UI-Verband: localPath leer + mediaId vorhanden → „Holen“-
+ * Button mit [onDownloadMedia]-Callback (Implementierung = Koordinator über
+ * [ChatMediaDownload]); ohne Dienst oder ohne mediaId → ehrlicher Hinweis,
+ * nie ein toter Play-Button. Nach onDone(path) refüllt ChatScreen die
+ * Bubble (media.copy(localPath = path)) — dieselbe Zeile spielt dann wie
+ * eine eigene Sprachnachricht (Play/Pause/Fortschritt).
+ */
 @Composable
-private fun VoiceBubbleRow(media: ChatMediaInfo, contentColor: Color, subColor: Color) {
+private fun VoiceBubbleRow(
+    media: ChatMediaInfo,
+    contentColor: Color,
+    subColor: Color,
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
+) {
     val context = LocalContext.current
     var playing by remember { mutableStateOf(false) }
     var durationMs by remember(media.localPath) { mutableStateOf(voiceDurationMs(media.localPath)) }
+    // WELLE-13 P8: Holen-Lauf dieser Zeile (Button → „Holen …“ bis onDone).
+    var fetching by remember(media.mediaId) { mutableStateOf(false) }
     // Player je Bubble-Instanz; beim Verlassen IMMER freigeben (Leak-Schutz).
     val player = remember(media.localPath) { runCatching { MediaPlayer() }.getOrNull() }
     DisposableEffect(media.localPath) {
@@ -191,6 +232,73 @@ private fun VoiceBubbleRow(media: ChatMediaInfo, contentColor: Color, subColor: 
             playing = false
         }
     }
+
+    // ── WELLE-13 P8: eingehende Medien ohne lokale Datei → Holen-Verband ──────
+    if (media.localPath.isBlank()) {
+        Row(
+            modifier = Modifier.heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (media.mediaId.isNotBlank() && onDownloadMedia != null) {
+                // Holen-Button: Tippen startet den Download des Mediums über
+                // den Koordinator-Hook; nach onDone(path) übernimmt ChatScreen
+                // die Bubble-Refill (Zeile wird zum normalen Player).
+                Text(
+                    if (fetching) "⏳ Holen …" else "⬇ Holen",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (fetching) FlipsiColors.TextSecondary else FlipsiColors.Ember,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (fetching) FlipsiColors.PanelElev else FlipsiColors.EmberDim,
+                        )
+                        .clickable(enabled = !fetching) {
+                            fetching = true
+                            onDownloadMedia(media.mediaId) { path ->
+                                fetching = false
+                                if (path.isNullOrBlank()) {
+                                    // Ehrlicher Fehlschlag: Zeile bleibt mit
+                                    // Retry-Hinweis stehen (kein Fake-Player).
+                                    durationMs = -1L
+                                }
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .semantics {
+                            contentDescription = if (fetching) "Sprachnachricht wird geholt"
+                            else "Sprachnachricht auf das Gerät holen"
+                        },
+                )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        "Sprachnachricht",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = contentColor,
+                    )
+                    Text(
+                        if (durationMs < 0) "Nicht abrufbar — erneut holen"
+                        else "Noch nicht auf dem Gerät gespeichert",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = subColor,
+                    )
+                }
+            } else {
+                // Kein Dienst / keine mediaId: ehrlicher Hinweis statt
+                // totem Play-Button (Checkliste K: kein stiller Fehler).
+                Text(
+                    if (media.mediaId.isBlank()) "Sprachnachricht — Datei fehlt"
+                    else "Sprachnachricht — Hol-Dienst nicht verfügbar",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = subColor,
+                )
+            }
+        }
+        return
+    }
+
     Row(verticalAlignment = Alignment.CenterVertically) {
         IconButton(
             onClick = {

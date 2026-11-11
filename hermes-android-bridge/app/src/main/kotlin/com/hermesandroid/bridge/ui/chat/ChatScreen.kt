@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -245,6 +246,10 @@ fun ChatScreen(padding: PaddingValues) {
                         fromAgent = entry.fromAgent,
                         text = restoredWire?.reply ?: entry.text,
                         time = entry.time,
+                        // WELLE-13 P11 (Datum-Chip): die Platte trägt nur HH:mm —
+                        // restaurierte Einträge bleiben OHNE Tages-Schlüssel
+                        // (kein erfundenes Datum; sie bekommen einfach keinen
+                        // Chip, Live- und künftige persistierte Einträge schon).
                         // MEDIA-T1: persistierte Media-Verweise (Pfad kann nach
                         // App-Update/Device-Wechsel weg sein → Text-Label bleibt).
                         media = entry.mediaKind?.let { kind ->
@@ -347,9 +352,22 @@ fun ChatScreen(padding: PaddingValues) {
                     fromAgent = true,
                     text = event.text,
                     time = formatTimestamp(event.ts),
+                    // WELLE-13 P11 (Datum-Chip): Tages-Schlüssel der Antwort.
+                    date = ChatDateRules.dayKey(event.ts),
                 )
             }
             messages = messages + appended
+            // WELLE-13 P9 (Vorlesen): je Agent-Pref vorlesen_<agentId> —
+            // angeschaltet = jede frisch übernommene Agenten-Antwort wird vom
+            // GERÄT vorgelesen (Android-TTS-Singleton, Queue statt Überlappung). Der Prefs-Stand
+            // wird bewusst ZUR LAUFZEIT gelesen (nicht gecached): der Regler im
+            // ChatModelSheet wirkt sofort auf die nächste Antwort. Medien-Bubbles
+            // kommen über den chatMedia-Verband und werden nicht vorgelesen.
+            unseen.zip(appended).forEach { (event, msg) ->
+                if (ChatSpeechPrefs.enabled(context, event.agentId)) {
+                    ChatSpeechSpeaker.enqueue(context, msg.id, event.text)
+                }
+            }
             // elapsed_ms an die msg_id binden — 'Antwort nach X s' bleibt
             // auch nach dem 200er-Cap von chatEvents richtig zugeordnet.
             elapsedMsByMsgId = elapsedMsByMsgId +
@@ -411,6 +429,9 @@ fun ChatScreen(padding: PaddingValues) {
             text = text,
             time = formatTimestamp(sentAtMs),
             quoted = quoteSnapshot,
+            // WELLE-13 P11 (Datum-Chip): Tages-Schlüssel der eigenen Nachricht —
+            // Grundlage der Tageswechsel-Gruppierung im Verlauf.
+            date = ChatDateRules.dayKey(sentAtMs),
         )
         // PH-FIX-CHAT-A (F1, Restore-Race): ab jetzt darf der Disk-Restore die
         // Liste nicht mehr komplett ersetzen (s. Restore-Merge oben).
@@ -474,6 +495,7 @@ fun ChatScreen(padding: PaddingValues) {
      * anstoßen (RelayClient.sendMedia, fail-closed ohne E2E-Session).
      */
     fun submitMedia(agent: ChatAgent, kind: String, name: String, mime: String, bytes: ByteArray) {
+        val sentAtMs = System.currentTimeMillis()
         val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
         val label = MediaProtocol.kindLabel(kind)
         val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
@@ -484,6 +506,8 @@ fun ChatScreen(padding: PaddingValues) {
             fromAgent = false,
             text = bubbleText,
             time = nowTime(),
+            // WELLE-13 P11 (Datum-Chip): Tages-Schlüssel der eigenen Medien-Nachricht.
+            date = ChatDateRules.dayKey(sentAtMs),
             media = ChatMediaInfo(
                 mediaId = "",
                 kind = kind,
@@ -648,6 +672,8 @@ fun ChatScreen(padding: PaddingValues) {
                 fromAgent = true,
                 text = "[$label] ${event.name} (${MediaProtocol.formatBytes(event.size)})",
                 time = formatTimestamp(event.ts),
+                // WELLE-13 P11 (Datum-Chip): Tages-Schlüssel der Medien-Antwort.
+                date = ChatDateRules.dayKey(event.ts),
                 media = ChatMediaInfo(
                     mediaId = event.mediaId,
                     kind = event.kind,
@@ -793,6 +819,33 @@ fun ChatScreen(padding: PaddingValues) {
             uploadOfMedia = { mediaId ->
                 mediaId.takeIf { it.isNotBlank() }?.let { mediaUploads[it] }
             },
+            // WELLE-13 P8 (UI-Verband): Holen eingehender Medien. Die eigentliche
+            // Download-Implementierung (Relay GET /media/{id}, E2E, Chunk-Frame)
+            // bindet der KOORDINATOR an ChatMediaDownload.handler an — die Chat-UI
+            // ruft hier nur den Hook und refüllt nach onDone(path) die Bubble
+            // (media.localPath → normale Voice-Zeile mit Play/Pause/Fortschritt).
+            // Ohne Hook / bei Fehlschlag: onDone(null) — die Voice-Zeile zeigt
+            // ehrlich „Nicht abrufbar — erneut holen“ (kein Fake-Player).
+            onDownloadMedia = { mediaId, onDone ->
+                val handler = ChatMediaDownload.handler
+                if (handler == null) {
+                    onDone(null)
+                } else {
+                    handler(agent.agentId, mediaId) { path ->
+                        if (!path.isNullOrBlank()) {
+                            messages = messages.map { m ->
+                                val media = m.media
+                                if (media != null && media.mediaId == mediaId && media.localPath.isBlank()) {
+                                    m.copy(media = media.copy(localPath = path))
+                                } else {
+                                    m
+                                }
+                            }
+                        }
+                        onDone(path)
+                    }
+                }
+            },
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
@@ -920,6 +973,10 @@ private fun ConversationBody(
     replyQuote: ChatQuote? = null,
     onSetReply: (ChatQuote?) -> Unit = {},
     onDismissReply: () -> Unit = {},
+    // WELLE-13 P8 (UI-Verband): Holen-Callback für eingehende Medien ohne
+    // lokale Datei — null = kein Download-Dienst (Voice-Zeile zeigt einen
+    // ehrlichen Hinweis statt eines toten Buttons).
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
@@ -939,6 +996,15 @@ private fun ConversationBody(
         mutableStateOf(ChatComposerPrefs.effort(compositionContext, agent.agentId))
     }
     var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }
+    // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
+    // füttert den Regler im ChatModelSheet; das Enqueue in ChatScreen liest
+    // den Prefs-Stand zur Laufzeit, der Regler wirkt also sofort.
+    var composerReadAloud by remember(agent.agentId) {
+        mutableStateOf(ChatSpeechPrefs.enabled(compositionContext, agent.agentId))
+    }
+    // WELLE-13 P9: Speaking-Chips je Bubble — zustandsgesteuert vom TTS-Singleton
+    // (IDs der gerade/nächst vorgelesenen Antworten; Tap auf den Chip stoppt).
+    val speakingIds by ChatSpeechSpeaker.speakingIds.collectAsState()
     // ── W4-B (Chat-Suche): Magnifier-Verband ─────────────────────────────────
     // Suchleiste + Treffer-Liste über dem VOLLSTÄNDIGEN Verlauf (Disk-Restore
     // via ChatHistoryStore + Live-Ankömmlinge — NIEMALS am chatEvents-200er-
@@ -1077,27 +1143,48 @@ private fun ConversationBody(
                     modifier = Modifier.weight(1f),
                 )
             } else {
-                LazyColumn(
-                    state = listState,
-                    modifier = Modifier.weight(1f),
-                    // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
-                    // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
-                    // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
-                    // zugleich enger Zeilenbreite: „randnah + gequetscht“).
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-                ) {
-                    if (conversation.isEmpty()) {
-                        item {
-                            Text(
-                                "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = FlipsiColors.TextSecondary,
-                                modifier = Modifier.padding(16.dp),
-                            )
+                // WELLE-13 P11a (Chat-Hintergrund): Wallpaper UNTER dem Verlauf —
+                // Standard = dunkles Eigenmuster (Void-Navy), Nutzer-Foto mit
+                // 55-%-Scrim wenn in den Einstellungen gewählt (ChatWallpaperPrefs).
+                // WELLE-13 P11 (Datum-Chip): Heute/Gestern-Schlüssel je Composition
+                // (Composable-Scope, NICHT im LazyListScope — remember wäre dort
+                // unzulässig); Tageswechsel-Regeln rein JVM-getestet (ChatDateRules).
+                val todayKey = remember { ChatDateRules.dayKey(System.currentTimeMillis()) }
+                val yesterdayKey = remember {
+                    ChatDateRules.dayKey(System.currentTimeMillis() - 86_400_000L)
+                }
+                Box(modifier = Modifier.weight(1f)) {
+                    ChatWallpaper(modifier = Modifier.fillMaxSize())
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        // PH-FIX-CHAT-A (F2): horizontaler Außenabstand auf die LISTE
+                        // gelegt — 12 dp hier + 8 dp Zeilen-Padding der MessageBubble
+                        // (ChatWidgets) = 20 dp Text↔Bildschirmrand (vorher 16 dp mit
+                        // zugleich enger Zeilenbreite: „randnah + gequetscht“).
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                    ) {
+                        if (conversation.isEmpty()) {
+                            item {
+                                Text(
+                                    "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = FlipsiColors.TextSecondary,
+                                    modifier = Modifier.padding(16.dp),
+                                )
+                            }
                         }
-                    }
-                    items(conversation, key = { it.id }) { message ->
-                        MessageBubble(
+                        // WELLE-13 P11: je Nachricht EIN Item — der Datum-Chip
+                        // (Tageswechsel) rendert ÜBER der Bubble desselben
+                        // Items (kein separater Lazy-Schlüssel, kein Doppelslot).
+                        itemsIndexed(conversation, key = { _, m -> m.id }) { index, message ->
+                            val prevDate = if (index > 0) conversation[index - 1].date else null
+                            if (ChatDateRules.chipVisible(prevDate, message.date)) {
+                                ChatDateRules.dayLabel(message.date, todayKey, yesterdayKey)?.let { label ->
+                                    ChatDateChip(label = label)
+                                }
+                            }
+                            MessageBubble(
                             message = message,
                             // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
                             // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
@@ -1130,7 +1217,14 @@ private fun ConversationBody(
                             chatReducedMotion = reducedMotion,
                             // W4-B (Chat-Suche): Sprung-Highlight (Ember-Rand ~1,6 s).
                             searchHighlight = searchHighlightId == message.id,
-                        )
+                            // WELLE-13 P9: Speaking-Chip — diese Agenten-Bubble
+                            // wird gerade vorgelesen; Tap = Stopp (ganze Queue).
+                            speaking = message.id in speakingIds,
+                            onStopSpeaking = { ChatSpeechSpeaker.stopAll() },
+                            // WELLE-13 P8: Holen-Verband eingehender Medien.
+                            onDownloadMedia = onDownloadMedia,
+                            )
+                        }
                     }
                 }
             }
@@ -1189,6 +1283,10 @@ private fun ConversationBody(
                         composerEffort = level
                     },
                     onDismiss = { composerPickerOpen = false },
+                    // WELLE-13 P9: Vorlesen-Regler — Persistenz passiert im Sheet
+                    // (ChatSpeechPrefs), der Spiegel hält die Antwort des Chats.
+                    currentReadAloud = composerReadAloud,
+                    onToggleReadAloud = { enabled -> composerReadAloud = enabled },
                 )
             }
         } else {

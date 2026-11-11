@@ -107,5 +107,11 @@ object BridgeStatus {
         _message.value = text
     }
 
-    fun appVersion(): String = "v${BuildConfig.VERSION_NAME}"
+    /**
+     * Versionsanzeige = NUR „vX.Y.Z“ (Welle 13 / P2b + QA A): der Editions-
+     * Suffix (-play/-github) aus versionNameSuffix fällt in der UI weg —
+     * gleiche Reinigung wie im About-Sheet (AboutInfo.versionLabel).
+     */
+    fun appVersion(): String =
+        "v${BuildConfig.VERSION_NAME.substringBefore("-play").substringBefore("-github")}"
 }

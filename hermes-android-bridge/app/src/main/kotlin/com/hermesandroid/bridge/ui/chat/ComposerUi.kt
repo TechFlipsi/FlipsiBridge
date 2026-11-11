@@ -21,9 +21,11 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -121,9 +123,17 @@ object ChatComposerPrefs {
 
 /**
  * Bottom-Sheet (Referenz: das 'Auto'-Chip öffnet die Auswahl): Modell-Liste
- * (Auto + eigene Einträge, ergänz- und entfernbar) und Denk-Schieber
- * (4 Rasten). Jede Änderung wirkt SOFORT (die Chips am Komposer spiegeln
+ * (Auto + eigene Einträge, ergänz- und entfernbar), Denk-Schieber (4 Rasten)
+ * und — WELLE-13 P9 — der Vorlesen-Regler je Agent (Gerät spricht Agenten-
+ * Antworten). Jede Änderung wirkt SOFORT (die Chips am Komposer spiegeln
  * den Stand) und gilt für die NÄCHSTE Nachricht dieses Chats.
+ *
+ * WELLE-13 P6 (Auto-Chip-Bug, Fix-Bein 2): das FRÜHERE `if (agentId.isBlank())
+ * return` war die eigentliche tote Stelle — bei Demo-Agenten (Emu-Kette ohne
+ * Relay) öffnete der Tap auf „Auto“ GAR NICHTS, weil das Composable still
+ * returnete, obwohl onOpenPicker → composerPickerOpen korrekt feuerte. Jetzt
+ * öffnet das Sheet IMMER; bei blank agentId steht ein ehrlicher Hinweis
+ * (Auswahl wirkt nur lokal, Persistenz braucht einen gekoppelten Agenten).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -134,8 +144,10 @@ fun ChatModelSheet(
     onPickModel: (String?) -> Unit,
     onPickEffort: (String?) -> Unit,
     onDismiss: () -> Unit,
+    // WELLE-13 P9: Vorlesen-Regler (pro Agent, Persistenz via ChatSpeechPrefs).
+    currentReadAloud: Boolean = false,
+    onToggleReadAloud: (Boolean) -> Unit = {},
 ) {
-    if (agentId.isBlank()) return
     val context = LocalContext.current
     var customRefresh by remember { mutableIntStateOf(0) }
     var addText by remember { mutableStateOf("") }
@@ -143,8 +155,22 @@ fun ChatModelSheet(
     val stageIndex = THINK_STAGES.indexOfFirst { it.second == currentEffort }
         .takeIf { it >= 0 } ?: 0
 
+    // WELLE-13 P9: Engine-Zustand für den ehrlichen Fail-Hinweis (Checkliste K).
+    val speechState by ChatSpeechSpeaker.state.collectAsState()
+
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = FlipsiColors.Panel) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+            // WELLE-13 P6: Demo-Eintrag — Sheet öffnet trotzdem (kein stiller
+            // No-op), sagt aber ehrlich, dass die Auswahl nicht persistiert.
+            if (agentId.isBlank()) {
+                Text(
+                    "Demo-Eintrag (nicht gekoppelt) — Auswahl wirkt nur lokal, " +
+                        "bis der Agent gekoppelt ist.",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.SignalAmber,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             Text("Modell", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
@@ -215,6 +241,50 @@ fun ChatModelSheet(
                         fontWeight = if (idx == stageIndex) FontWeight.SemiBold else null,
                     )
                 }
+            }
+
+            // ── WELLE-13 P9: Vorlesen-Regler (pro Agent, „wie Denken“) ────────
+            Spacer(Modifier.height(16.dp))
+            Text("Vorlesen", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                 color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "Agenten-Antworten vom Gerät vorlesen",
+                        style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
+                Switch(
+                    checked = currentReadAloud,
+                    onCheckedChange = { enabled ->
+                        // Persistenz sofort (vorlesen_<agentId>); beim Anschalten
+                        // die Engine anlegen, damit der Zustand beim ersten Sprechen
+                        // bekannt ist — Fail-Fall zeigt der Hinweis darunter.
+                        ChatSpeechPrefs.setEnabled(context, agentId, enabled)
+                        if (enabled) ChatSpeechSpeaker.ensure(context)
+                        onToggleReadAloud(enabled)
+                    },
+                    colors = androidx.compose.material3.SwitchDefaults.colors(
+                        checkedThumbColor = FlipsiColors.OnEmber,
+                        checkedTrackColor = FlipsiColors.Ember,
+                        uncheckedTrackColor = FlipsiColors.PanelElev,
+                    ),
+                )
+            }
+            // WELLE-13 P9 / Checkliste K: ehrlicher Engine-Fail-Hinweis — nie
+            // ein stiller Aus (der Regler steht an, aber nichts spricht).
+            if (currentReadAloud && speechState is ChatSpeechState.Failed) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    (speechState as ChatSpeechState.Failed).reason,
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.SignalRedText,
+                )
             }
         }
     }

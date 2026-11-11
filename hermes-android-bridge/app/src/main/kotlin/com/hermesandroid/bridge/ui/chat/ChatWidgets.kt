@@ -115,6 +115,13 @@ data class ChatMessage(
     val time: String,
     val media: ChatMediaInfo? = null,
     val quoted: ChatQuote? = null,
+    /**
+     * WELLE-13 P11 (Datum-Chip): Tages-Schlüssel „yyyy-MM-dd“ der Nachricht —
+     * Grundlage der Tageswechsel-Gruppierung ([ChatDateRules] + mittiger
+     * Datum-Chip im Verlauf). Leer = unbekannter Tag (z. B. alte Disk-Restore-
+     * Einträge ohne Datums-Spalte) → KEIN Chip, ehrlich statt erfunden.
+     */
+    val date: String = "",
 )
 
 /**
@@ -144,10 +151,16 @@ data class ChatAgent(
  * Long-id, die W4-Flachliste mit dem Int-VERSION. Legacy-Bundles (Zwischen-
  * stand vor dieser Welle) werden ohne Zitat unverändert restauriert — kein
  * Gruppen-Verrutschen.
+ *
+ * WELLE-13 P11 (Datum-Chip): VERSION 3 — gleiche Slots wie v2 plus einen
+ * date-Slot je Gruppe (Gruppe = 15). v2-Bundles (14er) und v1-Legacy-Bundles
+ * (11er) werden anhand des Versions-Markers wieder korrekt restauriert;
+ * v2-Einträge bekommen date = "" (kein Datum bekannt → kein Chip, kein Fake).
  */
 private const val MSG_SAVER_LEGACY_GROUP = 11
-private const val MSG_SAVER_GROUP = 14   // 11 Basis + hasQuote + fromAgent + sender + text
-private const val MSG_SAVER_VERSION = 2
+private const val MSG_SAVER_GROUP_V2 = 14  // 11 Basis + hasQuote + fromAgent + sender + text
+private const val MSG_SAVER_GROUP = 15     // v3 = v2 + date (Tageswechsel-Chip)
+private const val MSG_SAVER_VERSION = 3
 
 val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
     save = { list ->
@@ -164,14 +177,21 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 m.quoted?.fromAgent ?: false,
                 m.quoted?.senderName ?: "",
                 m.quoted?.text ?: "",
+                m.date,
             )
         }
         listOf(MSG_SAVER_VERSION) + flat
     },
     restore = { flat ->
-        val versioned = flat.firstOrNull() is Int
+        // Versions-Marker: v1-Legacy beginnt mit der Long-id, v2+ mit Int.
+        val version = (flat.firstOrNull() as? Int) ?: 1
+        val versioned = version >= 2
         val body = if (versioned) flat.drop(1) else flat
-        val group = if (versioned) MSG_SAVER_GROUP else MSG_SAVER_LEGACY_GROUP
+        val group = when {
+            version >= MSG_SAVER_VERSION -> MSG_SAVER_GROUP
+            versioned -> MSG_SAVER_GROUP_V2
+            else -> MSG_SAVER_LEGACY_GROUP
+        }
         body.chunked(group).map { g ->
             val media = if (g[5] as Boolean) {
                 ChatMediaInfo(
@@ -198,6 +218,10 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 time = g[4] as String,
                 media = media,
                 quoted = quoted,
+                // v3-Slot; v2/Legacy-Gruppen haben ihn nicht → "" (kein Chip).
+                date = if (version >= MSG_SAVER_VERSION && g.size > 14) {
+                    (g[14] as? String) ?: ""
+                } else "",
             )
         }
     },
@@ -322,6 +346,17 @@ private fun statusChip(status: String?): StatusChip = when (status) {
  * - Rotation: Zitat-Block überlebt (Saver v2, 14er-Gruppen).
  * - TalkBack: onLongClickLabel „Nachricht zitieren“; Zitat-Block liest
  *   contentDescription „Zitierte Nachricht“ + Text mit.
+ *
+ * WELLE-13 P11 (Sirs Bauvorlage): Radius 14 dp mit kleiner (3 dp) unterer
+ * Ecke zur ABSENDER-Seite (Agent: unten links, eigene: unten rechts),
+ * eigene = EmberDim / Agent = Panel, Zeitstempel + Status-Chip INSIDE
+ * unten-rechts, Bubble max 75 % Breite — Medien-Bubbles erben die gleiche
+ * Silhouette über dieselbe Surface.
+ * WELLE-13 P9: [speaking] = diese Agenten-Bubble wird gerade vorgelesen →
+ * Speaking-Chip (Tap = Stopp) in der Meta-Zeile ([onStopSpeaking]).
+ * WELLE-13 P8: [onDownloadMedia] = Holen-Verband für eingehende Medien ohne
+ * lokale Datei (mediaId vorhanden, localPath leer) — null = kein Download-
+ * Dienst → ehrlicher Hinweis in der Voice-Zeile statt totem Button.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -346,15 +381,23 @@ fun MessageBubble(
     // W4-B (Chat-Suche): Sprung-Highlight (Ember-Rand + Text-Verband, nie
     // nur Farbe) — ~1,6 s je Sprung-Anker der ConversationBody-Suche.
     searchHighlight: Boolean = false,
+    // WELLE-13 P9 (Vorlesen): true = genau DIESE Agenten-Bubble wird gerade
+    // vorgelesen (ChatSpeechSpeaker-Verband) → Speaking-Chip mit Stopp-Tap.
+    speaking: Boolean = false,
+    onStopSpeaking: () -> Unit = {},
+    // WELLE-13 P8 (UI-Verband): Holen-Callback für eingehende Medien OHNE
+    // lokal gecachte Datei (mediaId vorhanden, localPath leer) — null = kein
+    // Download-Dienst angebunden → ehrlicher Hinweis statt totem Button.
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
 ) {
     // W4-B (Chat-Suche): TalkBack-Beschreibung der Suchtreffer-Bubble.
     val searchHitDescription = stringResource(R.string.chat_search_hit_a11y)
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
     // Breite ein (16 dp Außen + 12 dp Text-Padding = „randnah + gequetscht“).
-    // Messenger-Muster: Bubble max ≈ 78 % der Listenbreite.
+    // WELLE-13 P11 (Sirs Bauvorlage): Bubble max ≈ 75 % der Listenbreite.
     BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val maxBubbleWidth = maxWidth * 0.78f
+        val maxBubbleWidth = maxWidth * 0.75f
         // W4-B (Swipe-to-Reply): Geste-Faser — [swipeTravel] ist die SYNC-Wahrheit
         // der Finger-Übersetzung (je Drag-Puls direkt gesetzt, kein Coroutine-
         // Tween bzw. sofort bei Reduced-Motion, ChatMotionRules). Auslöser =
@@ -524,12 +567,18 @@ fun MessageBubble(
                                 Modifier
                             }
                         ),
+                    // WELLE-13 P11 (Sirs Bauvorlage): Radius 14 dp überall,
+                    // nur die untere Ecke zur ABSENDER-Seite bleibt klein
+                    // (3 dp, flach-modern — kein Tail-Bau) → Silhouette liest
+                    // sich als Sprechblase ohne Kopierte Grafik. Farben: eigene
+                    // = EmberDim (warm), Agent = Panel — Medien-Bubbles laufen
+                    // durch dieselbe Surface automatisch mit (gleiche Silhouette).
                     shape = if (message.fromAgent) {
-                        RoundedCornerShape(topStart = 4.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
+                        RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 3.dp, bottomEnd = 14.dp)
                     } else {
-                        RoundedCornerShape(topStart = 16.dp, topEnd = 4.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
+                        RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 14.dp, bottomEnd = 3.dp)
                     },
-                    color = if (message.fromAgent) FlipsiColors.PanelElev else FlipsiColors.EmberDim,
+                    color = if (message.fromAgent) FlipsiColors.Panel else FlipsiColors.EmberDim,
                     // W4-B (Chat-Suche): Sprung-Highlight der Suche — Ember-Rand
                     // (A11y: zusätzlich contentDescription „Suchtreffer“, nie
                     // nur Farbe; Verkabelung in der Modifier-Kette oben).
@@ -542,10 +591,13 @@ fun MessageBubble(
                     message.quoted?.let { quote -> ChatQuoteBlock(quote = quote) }
                     if (message.media != null) {
                         // MEDIA-T1: Media-Bubble je Art (Bild/Voice/Datei/Video).
+                        // WELLE-13 P8: Holen-Verband für eingehende Medien
+                        // durchgereicht (localPath leer + mediaId vorhanden).
                         MediaBubbleContent(
                             media = message.media,
                             fromAgent = message.fromAgent,
                             text = message.text,
+                            onDownloadMedia = onDownloadMedia,
                         )
                     } else {
                         Text(
@@ -554,71 +606,165 @@ fun MessageBubble(
                             color = if (message.fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC),
                             // PH-FIX-CHAT-A (F2): 14/10 dp Text-Padding (vorher 12/8) —
                             // Luft zwischen Text und Bildschirmrand, Messenger-Muster.
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp),
                         )
                     }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // PH2-T10: Zustell-/Lese-Chip je EIGENER Nachricht (neben der Zeit).
-                    // PH2-FIX (Jäger B7): Demo-Eintrag → gar kein Chip (kein Backend).
-                    if (!message.fromAgent && showStatusChip) {
-                        val chip = statusChip(status)
-                        Text(
-                            chip.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = chip.color,
-                            modifier = Modifier
-                                .padding(top = 2.dp)
-                                .semantics { contentDescription = chip.description },
-                        )
-                        Spacer(Modifier.width(6.dp))
-                    }
-                    Text(
-                        message.time,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = FlipsiColors.TextSecondary,
-                        modifier = Modifier.padding(top = 2.dp, start = 4.dp, end = 4.dp),
-                    )
-                    // MEDIA-T1: Upload-Fortschritt eigener Medien (neben der Zeit,
-                    // nie nur Farbe — Text-Chip, TalkBack-lesbar).
-                    if (!message.fromAgent && message.media != null && mediaUpload != null) {
-                        val progress = when {
-                            mediaUpload.failed != null ->
-                                "✕ ${mediaUpload.failed!!.take(40)}" to FlipsiColors.SignalRedText
-                            mediaUpload.done ->
-                                "✓ Übertragen (${mediaUpload.totalChunks} Chunks)" to FlipsiColors.SignalGreen
-                            else -> "⏳ Upload ${mediaUpload.ackedChunks}/${mediaUpload.totalChunks} Chunks" to
-                                FlipsiColors.TextSecondary
+                    // ── WELLE-13 P11: Meta-Zeile INSIDE der Bubble (unten-rechts) ──
+                    // Sirs Bauvorlage: Zeitstempel labelSmall/TextSecondary steht
+                    // IN der Bubble, der Status-Chip direkt daneben — gleiches
+                    // Silhouette-Bild für Text- UND Medien-Bubbles (die Zeile
+                    // liegt in der Surface, nicht mehr unter der Bubble).
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        // WELLE-13 P9: Speaking-Chip — diese Agenten-Antwort wird
+                        // gerade vorgelesen; Tap auf den Chip = Stopp (Queue leer).
+                        if (message.fromAgent && speaking) {
+                            Row(
+                                Modifier
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(FlipsiColors.EmberDim)
+                                    .clickable(onClick = onStopSpeaking)
+                                    .padding(horizontal = 8.dp, vertical = 2.dp)
+                                    .semantics { contentDescription = "Vorlesen stoppen" },
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "🔊 Liest vor · Stopp",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = FlipsiColors.Ember,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                            Spacer(Modifier.width(6.dp))
                         }
-                        Spacer(Modifier.width(6.dp))
+                        // PH2-T11: Agenten-Antwort mit Antwort-Latenz ('Antwort nach X s').
+                        // SIRS-04: unter 100 ms bleibt die Zeile WEG — 'Antwort nach
+                        // 0.0 s' war eine Anzeige unter der Messauflösung (kein echtes
+                        // Timing), darüber steht die echte Zeit.
+                        val replyLine = replyAfterLabel(replyAfterMs)
+                        if (message.fromAgent && replyLine != null) {
+                            Text(
+                                replyLine,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = FlipsiColors.TextSecondary,
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .semantics {
+                                        contentDescription = replyAfterDescription(replyAfterMs!!)
+                                    },
+                            )
+                        }
+                        // PH2-T10: Zustell-/Lese-Chip je EIGENER Nachricht (rechts
+                        // neben der Zeit). PH2-FIX (Jäger B7): Demo-Eintrag → gar
+                        // kein Chip (kein Backend).
+                        if (!message.fromAgent && showStatusChip) {
+                            val chip = statusChip(status)
+                            Text(
+                                chip.label,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = chip.color,
+                                modifier = Modifier
+                                    .padding(end = 4.dp)
+                                    .semantics { contentDescription = chip.description },
+                            )
+                        }
                         Text(
-                            progress.first,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = progress.second,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
-                    // PH2-T11: Agenten-Antwort mit Antwort-Latenz ('Antwort nach X s').
-                    // SIRS-04: unter 100 ms bleibt die Zeile WEG — 'Antwort nach
-                    // 0.0 s' war eine Anzeige unter der Messauflösung (kein echtes
-                    // Timing), darüber steht die echte Zeit.
-                    val replyLine = replyAfterLabel(replyAfterMs)
-                    if (message.fromAgent && replyLine != null) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            replyLine,
+                            message.time,
                             style = MaterialTheme.typography.labelSmall,
                             color = FlipsiColors.TextSecondary,
-                            modifier = Modifier
-                                .padding(top = 2.dp)
-                                .semantics {
-                                    contentDescription = replyAfterDescription(replyAfterMs!!)
-                                },
                         )
+                        // MEDIA-T1: Upload-Fortschritt eigener Medien (neben der Zeit,
+                        // nie nur Farbe — Text-Chip, TalkBack-lesbar).
+                        if (!message.fromAgent && message.media != null && mediaUpload != null) {
+                            val progress = when {
+                                mediaUpload.failed != null ->
+                                    "✕ ${mediaUpload.failed!!.take(40)}" to FlipsiColors.SignalRedText
+                                mediaUpload.done ->
+                                    "✓ Übertragen (${mediaUpload.totalChunks} Chunks)" to FlipsiColors.SignalGreen
+                                else -> "⏳ Upload ${mediaUpload.ackedChunks}/${mediaUpload.totalChunks} Chunks" to
+                                    FlipsiColors.TextSecondary
+                            }
+                            Spacer(Modifier.width(6.dp))
+                            Text(
+                                progress.first,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = progress.second,
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+// ── WELLE-13 P11: Datum-Chip (Tageswechsel-Gruppierung) ──────────────────────
+
+/**
+ * WELLE-13 P11 (Datum-Chip): Regeln der Tageswechsel-Gruppierung — reine
+ * Funktionen, JVM-getestet (ChatDateRulesTest). Der Verlauf zeigt bei jedem
+ * Tageswechsel (und über der ersten Nachricht) einen mittigen Datum-Chip
+ * (PanelElev-Pill). Nachrichten ohne Tages-Schlüssel (alte Disk-Restore-
+ * Einträge, Demo-Zeilen) bekommen BEWUSST keinen Chip — ein erfundenes
+ * Datum wäre gelogen, „kein Chip“ ist ehrlich.
+ */
+object ChatDateRules {
+
+    /** Tages-Schlüssel aus Unix-Millisekunden: „yyyy-MM-dd“ (stabil sortierbar). */
+    fun dayKey(ts: Long): String =
+        java.time.LocalDate.ofInstant(
+            java.time.Instant.ofEpochMilli(ts),
+            java.time.ZoneId.systemDefault(),
+        ).toString()
+
+    /**
+     * true = vor dieser Nachricht gehört ein Datum-Chip in den Verlauf:
+     * Datum bekannt UND verschieden vom Vorgänger (null = erste Nachricht
+     * der Liste → Chip, wenn das Datum bekannt ist).
+     */
+    fun chipVisible(prevDate: String?, date: String): Boolean =
+        date.isNotBlank() && date != prevDate
+
+    /**
+     * Anzeige-Label des Tages: „Heute“ / „Gestern“ / sonst ausgeschrieben
+     * („Mittwoch, 11. November“). Unbraubares Datum → null (kein Chip).
+     */
+    fun dayLabel(date: String, todayKey: String, yesterdayKey: String): String? {
+        if (date.isBlank()) return null
+        return when (date) {
+            todayKey -> "Heute"
+            yesterdayKey -> "Gestern"
+            else -> runCatching {
+                java.time.LocalDate.parse(date).format(
+                    java.time.format.DateTimeFormatter.ofPattern("EEEE, d. MMMM", java.util.Locale.GERMANY),
+                )
+            }.getOrNull()
+        }
+    }
+}
+
+/**
+ * WELLE-13 P11: mittiger Datum-Chip des Tageswechsels — kleine PanelElev-
+ * Pill (labelSmall, TextSecondary), volle Breite zentriert darüber im
+ * Verlauf. A11y: reiner Text-Chip, kein Farb-Einzelkriterium.
+ */
+@Composable
+internal fun ChatDateChip(label: String, modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = FlipsiColors.TextSecondary,
+            modifier = Modifier
+                .background(color = FlipsiColors.PanelElev, shape = RoundedCornerShape(12.dp))
+                .padding(horizontal = 12.dp, vertical = 4.dp)
+                .semantics { contentDescription = "Datum $label" },
+        )
     }
 }
 
@@ -877,13 +1023,20 @@ fun ChatInputBar(
                 }
                 // Modell-Chip (Referenz: 'Auto'/Kurzname am Komposer — Tippen
                 // öffnet die Auswahl-Sheet).
+                // WELLE-13 P6 (Auto-Chip-Bug, Fix): Hitbox auf ≥ 48 dp gehoben
+                // (vorher heightIn(min = 32 dp) — unter der Touchhöhen-Pflicht
+                // der Checkliste F; der Chip war schwer treffbar). Der Tap-Pfad
+                // ChatInputBar → onOpenPicker → composerPickerOpen war korrekt
+                // verdrahtet; das Sheet blieb trotzdem weg, weil ChatModelSheet
+                // bei blank agentId still returnete — das zweite Bein des Fixes
+                // liegt in ComposerUi.kt.
                 Row(
                     Modifier
-                        .heightIn(min = 32.dp)
-                        .clip(RoundedCornerShape(16.dp))
+                        .heightIn(min = 48.dp)
+                        .clip(RoundedCornerShape(24.dp))
                         .background(FlipsiColors.PanelElev)
                         .clickable(onClick = onOpenPicker)
-                        .padding(horizontal = 10.dp)
+                        .padding(horizontal = 12.dp)
                         .semantics { contentDescription = "Modell wählen: $modelLabel" },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
@@ -897,13 +1050,14 @@ fun ChatInputBar(
                 }
                 if (effortLabel != null) {
                     Spacer(Modifier.width(6.dp))
+                    // WELLE-13 P6: gleiche 48-dp-Hitbox-Regel für den Denk-Chip.
                     Row(
                         Modifier
-                            .heightIn(min = 32.dp)
-                            .clip(RoundedCornerShape(16.dp))
+                            .heightIn(min = 48.dp)
+                            .clip(RoundedCornerShape(24.dp))
                             .background(FlipsiColors.EmberDim)
                             .clickable(onClick = onOpenPicker)
-                            .padding(horizontal = 10.dp)
+                            .padding(horizontal = 12.dp)
                             .semantics { contentDescription = "Denkstufe: $effortLabel" },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {

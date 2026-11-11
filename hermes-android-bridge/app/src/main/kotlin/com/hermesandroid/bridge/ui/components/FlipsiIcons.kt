@@ -73,6 +73,14 @@ object SettingsIcons {
     @DrawableRes val crypto: Int = R.drawable.ic_key
     // W4 App-Lane C: Gruppe „Sprache“ (Erde/Kugel-Drawable, haus-eigen).
     @DrawableRes val language: Int = R.drawable.ic_language
+    // Welle 13 (Settings-Redesign): Darstellung (Palette, haus-eigen) — P12.
+    @DrawableRes val appearance: Int = R.drawable.ic_palette
+    // Welle 13 (P4): Berechtigungen mit System-Settings-Sprung.
+    @DrawableRes val permissions: Int = R.drawable.ic_build
+    // Welle 13 (P10): Standard-Assistent (RoleManager-Karte).
+    @DrawableRes val assistant: Int = R.drawable.ic_mic
+    // Welle 13 (P7b): Rechtliches (Impressum/Datenschutz/Nutzung).
+    @DrawableRes val legal: Int = R.drawable.ic_privacy
 }
 
 /** Berechtigungs-Icons (OS-Freigaben-Zeilen). */
