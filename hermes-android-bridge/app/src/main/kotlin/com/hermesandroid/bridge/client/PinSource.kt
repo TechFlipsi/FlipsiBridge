@@ -55,7 +55,8 @@ object PinSource {
     private const val TAG = "FBPinSource"
 
     /** Hostname des EIGENEN Relays (einziger vor-geseeder Pin-Host, SF5). */
-    const val OWN_RELAY_HOST = "" // PRIVATSPHÄREN-FIX: kein Default-Host im Build (G-Scan)
+    @Volatile
+    var OWN_RELAY_HOST = "" // PRIVATSPHÄREN-FIX: kein Default-Host im Build (G-Scan) — Runtime-Set via Konfiguration
 
     /** Prefs-Key (Info-Merker): konfigurierte Relay-URL = gepinnter Host. */
     const val PREF_PINS_INSTALLED = "pins_installed"
@@ -65,7 +66,8 @@ object PinSource {
      * Intermediate YE1 → Root YE → ISRG Root X2 (Backup-Kette, siehe KDoc).
      * Format `sha256/<Base64-(SPKI)>` — wortgetreu aus dem Beweis-Dump.
      */
-    val OWN_RELAY_PINS: List<String> = emptyList() // leer im Release — Pins nur via Nutzer-Konfiguration
+    @Volatile
+    var OWN_RELAY_PINS: List<String> = emptyList() // leer im Release — Pins nur via Nutzer-Konfiguration (Runtime-Verband)
 
     /** FAILED-Anzeigetext DE (Konvention: aktive App-Sprache, W4-05 zieht um). */
     const val PIN_FAILED_DE: String =
