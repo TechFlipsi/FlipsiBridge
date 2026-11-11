@@ -12,7 +12,7 @@ import javax.net.ssl.SSLPeerUnverifiedException
  * CertificatePinner-Verband für das EIGENE Relay, fail-closed bei Fremd-Kette.
  *
  * Sirs Entscheidung (SF5, verbatim übernommen): NUR das eigene Relay
- * (`REDACTED-RELAY`) wird vor-seedeet. JEDEN von Sir hinzugefügten
+ * (`<relay-host>`) wird vor-seedeet. JEDEN von Sir hinzugefügten
  * Nutzer-Relay-Host lässt dieses Verband OHNE Pin-Set laufen (hostname-only,
  * System-Trust) — kein Nutzer-Relay kann durch falsche/abgelaufene Pins
  * unverbunden bleiben. Die NSC-Schiene (res/xml/network_security_config.xml,
@@ -20,10 +20,10 @@ import javax.net.ssl.SSLPeerUnverifiedException
  * erfasst auch Clients, die [pinner] nie sehen; beide Schienen decken genau
  * denselben Host ab und NIEMALS die Cleartext-Ausnahme `dashboard.lan`.
  *
- * Pin-Kette (Beweis: `openssl s_client -connect REDACTED-RELAY:443
- * -servername REDACTED-RELAY -showcerts`, Verify return code: 0 (ok),
+ * Pin-Kette (Beweis: `openssl s_client -connect <relay-host>:443
+ * -servername <relay-host> -showcerts`, Verify return code: 0 (ok),
  * gezogen 09.11.2026 am kibot; SPKI-SHA256 je Kettenglied):
- *  - Leaf: SAN-DNS `REDACTED-RELAY`, ECDSA-P384, LE-Short-Lived-Profil
+ *  - Leaf: SAN-DNS `<relay-host>`, ECDSA-P384, LE-Short-Lived-Profil
  *    (7-Tage-Zertifikat, 2026-11-08 … 2026-11-15) — der Leaf-Schlüssel KANN
  *    bei jedem Renewal wechseln; sein Pin ist bewusst NUR der Positiv-Pin.
  *  - Backup-Pins tragen die Rotation: Intermediate `CN=YE1,O=Let's Encrypt`
@@ -55,7 +55,7 @@ object PinSource {
     private const val TAG = "FBPinSource"
 
     /** Hostname des EIGENEN Relays (einziger vor-geseeder Pin-Host, SF5). */
-    const val OWN_RELAY_HOST = "REDACTED-RELAY"
+    const val OWN_RELAY_HOST = "" // PRIVATSPHÄREN-FIX: kein Default-Host im Build (G-Scan)
 
     /** Prefs-Key (Info-Merker): konfigurierte Relay-URL = gepinnter Host. */
     const val PREF_PINS_INSTALLED = "pins_installed"
@@ -65,8 +65,7 @@ object PinSource {
      * Intermediate YE1 → Root YE → ISRG Root X2 (Backup-Kette, siehe KDoc).
      * Format `sha256/<Base64-(SPKI)>` — wortgetreu aus dem Beweis-Dump.
      */
-    val OWN_RELAY_PINS: List<String> = listOf(
-        // Leaf `REDACTED-RELAY` (LE, EC-384, 7-Tage-Zert, 2026-11-08..15)
+    val OWN_RELAY_PINS: List<String> = emptyList() // leer im Release — Pins nur via Nutzer-Konfiguration
         "sha256/qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=",
         // Intermediate CN=YE1,O=Let's Encrypt,C=US (stabil bis 2028-09-02)
         "sha256/brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",

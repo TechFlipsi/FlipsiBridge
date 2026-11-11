@@ -75,7 +75,7 @@ object UpdateInstaller {
 
         // W4-01b (W3-03, App-Lane A): eigener Client = PINNING-VERBAND
         // mitversorgen — /apk/latest (Self-Update-Loop) lädt über den gepinnten
-        // Relay-Host. Nur REDACTED-RELAY ist gepinnt (PinSource/SF5):
+        // Relay-Host. Der Pinner kommt aus PinSource (kein Default-Host im Build):
         // Nutzer-Relay-URLs laden unverändert hostname-only. Bemerkung
         // (Bestands-Lücke, W4-12/13-Lane): der Client hat noch KEIN
         // MtlsSupport.decorate() — mTLS-Verband folgt in der mTLS-Welle.
