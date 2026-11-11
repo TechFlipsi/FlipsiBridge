@@ -213,7 +213,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // Back-Taste = Route zurück auf Home.
     // W4-D (A6): initialRoute=2 nach der Wizard-Fingerprint-Bestätigung —
     // „danach direkt im Chat“; normale Starts starten auf 0 (Home).
-    var route by rememberSaveable { mutableStateOf(initialRoute) }
+    var route by rememberSaveable {
+        // WELLE 13 P10: ASSISTENTEN-Start = direkt in den Chat (Voice-Verband
+        // folgt im ChatScreen) — sonst Standart-Start bei Route 0.
+        mutableStateOf(if (com.hermesandroid.bridge.AssistLaunch.pendingVoice) 2 else initialRoute)
+    }
     BackHandler(enabled = route != 0) { route = 0 }
 
     // ── PH1-T2: Einstellungen-Accordion — je Gruppe ein EIGENER Klappe-
@@ -403,24 +407,14 @@ fun BridgeScreen(initialRoute: Int = 0) {
      * KEINE neue Logik.
      */
     @Composable
-    fun SettingsContent(padding: PaddingValues) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp, top = 8.dp,
-                bottom = 40.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
-            ),
+        fun LegacySettingsGroups() {  // WELLE 13 P2: alter Gruppen-Inhalt im neuen SettingsHome-Rahmen
+        Column(
+            modifier = Modifier.fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            item(key = "settingsTitle") {
-                SectionTitle(
-                    "Einstellungen",
-                    sub = "Server, App-Verhalten und Agenten-Fähigkeiten — je Gruppe auf- und zuklappbar.",
-                )
-            }
 
             // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode, mTLS) ──
-            item(key = "setServer") {
+            
                 AccordionCard(
                     title = "Server",
                     iconRes = SettingsIcons.server,
@@ -466,10 +460,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // neue Logik (PH1-T2-Vorgabe).
                     MtlsCard(configVersion = configVersion, activity = activity)
                 }
-            }
+
 
             // ── Gruppe 2: App (Berechtigungen, Termux, Selbst-Update) ──────
-            item(key = "setApp") {
+            
                 AccordionCard(
                     title = "App",
                     iconRes = SettingsIcons.app,
@@ -531,10 +525,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // github = Stub aus src/github/ (gleiche Signatur).
                     SupporterCard(activity)
                 }
-            }
+
 
             // ── Gruppe 3: Agenten (Master + 4 Fähigkeiten-Gruppen, PH1-T5) ─
-            item(key = "setAgent") {
+            
                 AccordionCard(
                     title = "Agenten",
                     iconRes = SettingsIcons.agent,
@@ -595,10 +589,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         )
                     }
                 }
-            }
+
 
             // ── Gruppe 4: App-Sperre (PH-2X X-1) — APPEND-ONLY am Ende ────
-            item(key = "setSecurity") {
+            
                 AccordionCard(
                     title = "App-Sperre",
                     iconRes = SettingsIcons.security,
@@ -607,10 +601,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 ) {
                     AppLockSettingsCard()
                 }
-            }
+
 
             // ── Gruppe 5: Verschlüsselung (PH-3 Welle 2) — APPEND-ONLY ─────
-            item(key = "setCrypto") {
+            
                 AccordionCard(
                     title = "Verschlüsselung",
                     iconRes = SettingsIcons.crypto,
@@ -619,13 +613,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 ) {
                     CryptoSettingsCard()
                 }
-            }
+
 
             // ── Gruppe Sprache (W4, App-Lane C) — Einstellungen-Zeile
             // DE/EN: AppLanguage (Prefs „app_language") + AppLanguageGate am
             // Activity-Kompositions-Punkt re-wrapped die App live (kein
             // Activity-Recreate), alle stringResource-Auflösungen wechseln.
-            item(key = "setLanguage") {
+            
                 AccordionCard(
                     title = stringResource(R.string.settings_language_title),
                     iconRes = SettingsIcons.language,
@@ -634,9 +628,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 ) {
                     LanguageSettingsCard()
                 }
-            }
+
         }
     }
+
 
     Scaffold(
         containerColor = FlipsiColors.Void,
@@ -659,12 +654,8 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         )
                         Spacer(Modifier.width(4.dp))
                     }
-                    Text(
-                        BridgeStatus.appVersion(),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = FlipsiColors.TextSecondary,
-                        modifier = Modifier.padding(end = 12.dp),
-                    )
+                    // WELLE 13 P2 (Sir): Version NICHT dauerhaft sichtbar —
+                    // sie lebt ausschliesslich im Settings-About-Info-Sheet.
                     // PH1-T1: Nav-Icons — Material-Icons ohne neue Dependency
                     // (Settings/Info aus dem Compose-BOM-Icons-Set; die Chat-
                     // Bubble als eigener Vector-Drawable im res/drawable-Hausstil).
@@ -699,7 +690,16 @@ fun BridgeScreen(initialRoute: Int = 0) {
         // auch für ungültige Route-Werte), 1=Einstellungen, 2=Chat, 3=Impressum.
         // PH-2-T3: Route 2 zeigt jetzt das echte Chat-Gerüst (ui/chat/ChatScreen).
         when (route) {
-            1 -> SettingsContent(padding)
+            1 -> SettingsHome(
+                padding = padding,
+                // WELLE 13 P2: das Redesign-Home (Themen/Accordions/ℹ️) — die
+                // bewährten Server/App/Agenten-Gruppen wandern als legacyGroups
+                // (gleiche Composables, gleiche SSOT, KEINE neue Logik) hinein;
+                // der alte eigene Accordion-Kopf entfällt (SettingsHome ist der
+                // neue Rahmen mit ℹ️-About + Rechtliches + Berechtigungen +
+                // Standard-Assistent).
+                legacyGroups = { LegacySettingsGroups() },
+            )
             2 -> ChatScreen(padding)
             3 -> LegalScreenPlaceholder(padding)
             else -> HomeContent(padding)

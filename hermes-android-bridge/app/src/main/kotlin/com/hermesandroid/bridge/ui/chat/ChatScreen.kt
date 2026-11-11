@@ -477,6 +477,15 @@ fun ChatScreen(padding: PaddingValues) {
     // ── MEDIA-T1: Medien-/Datei-Versand (Picker, Voice, Upload) ───────────
 
     var attachSheetOpen by remember { mutableStateOf(false) }
+    // WELLE 13 P8 (Koordinator): der Holen-Verband für eingehende Medien —
+    // die bytes liegen bereits app-privat (chat.media.enc-Reassembly);
+    // resolveChatMediaPath findet die Datei am media_id-Präfix. null = die
+    // Voice-Zeile zeigt ehrlich „Nicht abrufbar — erneut holen“.
+    LaunchedEffect(Unit) {
+        ChatMediaDownload.handler = { _agentId, mediaId, onDone ->
+            onDone(RelayClient.resolveChatMediaPath(mediaId))
+        }
+    }
     var voiceRecording by remember { mutableStateOf(false) }
     val voiceRecorder = remember { VoiceMemoRecorder(context) }
     // Aufnahme beim Verlassen der Conversation bewusst abbrechen (kein
@@ -500,6 +509,9 @@ fun ChatScreen(padding: PaddingValues) {
         val label = MediaProtocol.kindLabel(kind)
         val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
         val bubbleText = "[$label] $name ($sizeText)"
+        // WELLE-13 P8: EIGENE Medien persistieren — vorher localPath="" und
+        // der Play-Button der eigenen Bubble schlug still fehl (Sir-Befund).
+        val ownLocalPath = RelayClient.persistOutboundMedia(name, bytes) ?: ""
         messages = messages + ChatMessage(
             id = nextId,
             agentId = agent.id,
@@ -514,7 +526,7 @@ fun ChatScreen(padding: PaddingValues) {
                 name = name,
                 mime = mime,
                 size = bytes.size.toLong(),
-                localPath = "",
+                localPath = ownLocalPath,
             ),
         )
         liveMessagesPresent = true
@@ -657,6 +669,18 @@ fun ChatScreen(padding: PaddingValues) {
     // (analog chatEvents: Schlüssel = mediaId, Cap gegen Doppel-Übernahme).
     var consumedMediaKeys by rememberSaveable(stateSaver = ConsumedEventKeysSaver) {
         mutableStateOf(listOf<String>())
+    }
+    // WELLE 13 P10 (Sir): ASSISTENTEN-Start verbrauchen (einmalig) — der
+    // Trampoline (AssistEntryActivity) setzte pendingVoice; BridgeScreen
+    // startet deshalb in Route 2 und hier springt die Sprachaufnahme an:
+    // der Nutzer redet direkt, das Ende sendet die Sprachnachricht.
+    LaunchedEffect(Unit) {
+        if (com.hermesandroid.bridge.AssistLaunch.pendingVoice) {
+            com.hermesandroid.bridge.AssistLaunch.pendingVoice = false
+            if (!voiceRecording) {
+                toggleVoice()
+            }
+        }
     }
     LaunchedEffect(chatMedia, historyRestored) {
         if (!historyRestored) return@LaunchedEffect
@@ -995,8 +1019,7 @@ private fun ConversationBody(
     var composerEffort by remember(agent.agentId) {
         mutableStateOf(ChatComposerPrefs.effort(compositionContext, agent.agentId))
     }
-    var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }
-    // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
+    var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }    // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
     // füttert den Regler im ChatModelSheet; das Enqueue in ChatScreen liest
     // den Prefs-Stand zur Laufzeit, der Regler wirkt also sofort.
     var composerReadAloud by remember(agent.agentId) {

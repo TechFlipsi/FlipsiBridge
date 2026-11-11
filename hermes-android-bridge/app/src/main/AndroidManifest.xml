@@ -101,6 +101,22 @@
             </intent-filter>
         </activity>
 
+        <!-- WELLE 13 P10 (Sir): Standard-Assistenten-Rolle — dieser Einstieg
+             macht FlipsiBridge zum Assistenten-Kandidaten (RoleManager prüft
+             das ASSIST-Intent-Filter-Signat); der Trigger trampolint in die
+             App und startet den Voice-Chat. Keine Permission nötig. -->
+        <activity
+            android:name=".AssistEntryActivity"
+            android:exported="true"
+            android:showWhenLocked="false"
+            android:directBootAware="false"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <!-- Health Rationale (v0.12.2): OHNE diese Activity zeigt Health Connect
              die App NICHT in der Connected-Apps-Liste (Sirs Screenshot-Befund 01.11.).
              Zwei Routen: klassische androidx-Action + Android-14 VIEW_PERMISSION_USAGE-Alias. -->

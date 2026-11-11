@@ -336,6 +336,51 @@ object RelayClient {
     // ── MEDIA-T1: Medien-/Datei-Versand im Chat (chunked, E2E-only) ───────
 
     /**
+     * WELLE-13 P8 (Koordinator): lokale Auflösung eines empfangenen Mediums.
+     * Die bytes kommen bereits vollständig aufs Handy (chat.media.enc-
+     * Reassembly → filesDir/chat_media — saveInboundMedia), der Name-Teil
+     * ist aber am Meta-Frame nicht trivial herleitbar → Verband: Scan nach
+     * dem media_id-Präfix (32 Zeichen, saveInboundMedia-Konvention).
+     * Rückgabe: absolutePath wenn vorhanden, sonst null (UI: „Nicht abrufbar").
+     */
+    fun resolveChatMediaPath(mediaId: String): String? {
+        val ctx = appContext ?: return null
+        if (mediaId.isBlank()) return null
+        val dir = java.io.File(ctx.filesDir, "chat_media")
+        if (!dir.exists()) return null
+        val prefix = mediaId.take(32) + "-"
+        val hit = dir.listFiles { f -> f.isFile && f.name.startsWith(prefix) }
+            ?.maxByOrNull { it.lastModified() } ?: return null
+        return hit.absolutePath
+    }
+
+    /**
+     * WELLE-13 P8 (Koordinator): persistiert ein EIGENES Medium (bytes liegen
+     * in-memory vom Rec-Picker/Recorder) app-privat ab — vorher hatte die
+     * eigene Bubble localPath="" und Play schlug still fehl. Dateien landen
+     * wie eingehende Medien unter filesDir/chat_media (hinter dem AppLock-Gate).
+     * Rückgabe: absolutePath (null = Speichern gescheitert → Bubble ohne localPath).
+     */
+    fun persistOutboundMedia(name: String, blob: ByteArray): String? {
+        val ctx = appContext ?: return null
+        val dir = java.io.File(ctx.filesDir, "chat_media")
+        if (!dir.exists() && !dir.mkdirs()) return null
+        val mediaId = java.util.UUID.randomUUID().toString().replace("-", "").take(24)
+        val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(64).ifEmpty { "datei" }
+        val target = java.io.File(dir, "$mediaId-$safe")
+        val tmp = java.io.File(dir, ".${target.name}.part")
+        return runCatching {
+            tmp.writeBytes(blob)
+            if (tmp.renameTo(target) || runCatching {
+                    target.writeBytes(blob)
+                    tmp.delete()
+                    target
+                }.getOrNull() === target
+            ) target.absolutePath else null
+        }.getOrNull()
+    }
+
+    /**
      * MEDIA-T1: Vollständig empfangenes Medium vom Agenten (chat.media.enc
      * Chunks reassembliert, Datei liegt app-privat unter filesDir/chat_media).
      * Die UI hängt es als Media-Bubble in den Verlauf (kein Text-Ersatz).
