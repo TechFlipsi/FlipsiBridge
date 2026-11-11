@@ -7,6 +7,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -936,15 +940,102 @@ private fun AgentListBody(
                 sub = "Direkt-Chat mit den gekoppelten Agenten — live über das Relay.",
             )
         }
-        items(agents, key = { it.id }) { agent ->
-            // Vorschau-Zeile = letzte Nachricht dieses Agenten (oder Hinweis).
-            val preview = messages.lastOrNull { it.agentId == agent.id }?.text
-                ?: "Noch keine Nachrichten"
-            AgentRow(
-                agent = agent,
-                preview = preview,
-                onClick = { onOpen(agent.id) },
-            )
+        // WELLE-13 P11b (Sirs Wunschbild): Such-Kapsel + Filter-Chips. Nur
+        // ehrliche Filter: Alle / Online / Offline (Ungelesen-Leseschalter
+        // existiert datenseitig nicht → der Chip LÜGT, also fehlt er).
+        item {
+            var listQuery by rememberSaveable { mutableStateOf("") }
+            var listFilter by rememberSaveable { mutableStateOf("alle") }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(FlipsiColors.PanelElev)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "🔍",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    BasicTextField(
+                        value = listQuery,
+                        onValueChange = { listQuery = it },
+                        singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = FlipsiColors.TextPrimary,
+                            fontSize = 15.sp,
+                        ),
+                        cursorBrush = SolidColor(FlipsiColors.Ember),
+                        modifier = Modifier.weight(1f),
+                        decorationBox = { inner ->
+                            if (listQuery.isEmpty()) {
+                                Text(
+                                    "Agenten durchsuchen",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = FlipsiColors.TextSecondary,
+                                )
+                            }
+                            inner()
+                        },
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChipFlipsi(
+                        label = "Alle",
+                        active = listFilter == "alle",
+                        onClick = { listFilter = "alle" },
+                    )
+                    FilterChipFlipsi(
+                        label = "Online",
+                        active = listFilter == "online",
+                        onClick = { listFilter = "online" },
+                    )
+                    FilterChipFlipsi(
+                        label = "Offline",
+                        active = listFilter == "offline",
+                        onClick = { listFilter = "offline" },
+                    )
+                }
+                Spacer(Modifier.height(6.dp))
+            }
+            // Filterung: Query-Treffer im Namen ODER der Preview + Statusfilter.
+            val q = listQuery.trim()
+            val filteredAgents = agents.filter { agent ->
+                val matchesQuery =
+                    q.isBlank() ||
+                        agent.name.contains(q, ignoreCase = true) ||
+                        (messages.lastOrNull { it.agentId == agent.id }?.text ?: "")
+                            .contains(q, ignoreCase = true)
+                val matchesFilter = when (listFilter) {
+                    "online" -> agent.online
+                    "offline" -> !agent.online
+                    else -> true
+                }
+                matchesQuery && matchesFilter
+            }
+            if (filteredAgents.isEmpty()) {
+                Text(
+                    "Kein Agent passt zur Suche.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.TextSecondary,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
+            filteredAgents.forEach { agent ->
+                // Vorschau-Zeile = letzte Nachricht dieses Agenten (oder Hinweis).
+                val preview = messages.lastOrNull { it.agentId == agent.id }?.text
+                    ?: "Noch keine Nachrichten"
+                AgentRow(
+                    agent = agent,
+                    preview = preview,
+                    onClick = { onOpen(agent.id) },
+                )
+            }
         }
     }
 }

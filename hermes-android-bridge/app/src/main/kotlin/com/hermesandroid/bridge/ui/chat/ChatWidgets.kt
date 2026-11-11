@@ -956,19 +956,42 @@ fun AgentRow(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // WELLE-13 P11b (Sirs Wunschbild „Chat-Menü mit mehreren Agenten"):
+    // Avatar-Kreis (PanelElev + Ember-Initial) mit Online-Ampel am Fuß,
+    // Name bold, 1-Zeiler-Preview — Zeile ≈ 72 dp Kapsel-Gefühl.
     Row(
         modifier = modifier
-            .heightIn(min = 64.dp)
+            .heightIn(min = 72.dp)
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        OnlineDot(online = agent.online)
+        Box(Modifier.size(48.dp)) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(FlipsiColors.PanelElev, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    agent.name.trim().take(1).uppercase().ifBlank { "?" },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = FlipsiColors.Ember,
+                )
+            }
+            OnlineDot(
+                online = agent.online,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(2.dp),
+            )
+        }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
                 agent.name,
                 style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
                 color = FlipsiColors.TextPrimary,
             )
             Text(
@@ -980,6 +1003,42 @@ fun AgentRow(
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
+    }
+}
+
+/**
+ * WELLE-13 P11b: Filter-Chip der Agenten-Liste. Aktiv = Ember-Füllung mit
+ * dunklem Text (Kontrast-Kette), inaktiv = Fläche. Bedeutung NIE nur über
+ * Farbe: aktive Chips bekommen zusätzlich ein ✓-Zeichen.
+ */
+@Composable
+fun FilterChipFlipsi(
+    label: String,
+    active: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(if (active) FlipsiColors.Ember else FlipsiColors.PanelElev)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (active) {
+            Text(
+                "✓",
+                style = MaterialTheme.typography.labelMedium,
+                color = FlipsiColors.OnEmber,
+            )
+            Spacer(Modifier.width(4.dp))
+        }
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (active) FlipsiColors.OnEmber else FlipsiColors.TextSecondary,
+        )
     }
 }
 
