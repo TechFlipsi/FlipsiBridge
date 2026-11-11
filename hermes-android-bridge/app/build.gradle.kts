@@ -143,7 +143,9 @@ dependencies {
     // die GitHub-Edition hat keine Play-Billing-Abhängigkeit (kein APK-Ballast,
     // keine API-Referenz). Produkt = einmaliger „Unterstützer"-Badge (2,99 €,
     // sperrt nichts — perk macht die IAP Play-policy-konform).
-    playImplementation("com.android.billingclient:billing-ktx:7.1.1")
+    // … — Welle-5-Compile-Beweis: create()-Flavors erzeugen KES typed
+    // Accessors in KTS (AGP 8.9.1) → add() ist die korrekte Form.
+    add("playImplementation", "com.android.billingclient:billing-ktx:7.1.1")
     debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.core)
