@@ -324,7 +324,7 @@ private fun VoiceBubbleRow(
             modifier = Modifier.size(44.dp),
         ) {
             Icon(
-                painterResource(if (playing) R.drawable.ic_close else R.drawable.ic_play) // Jaeger-2: echtes Play-Icon statt Mic-Glyph,
+                painterResource(if (playing) R.drawable.ic_close else R.drawable.ic_play),
                 contentDescription = if (playing) "Wiedergabe stoppen" else "Sprachnachricht abspielen",
                 tint = contentColor,
             )
