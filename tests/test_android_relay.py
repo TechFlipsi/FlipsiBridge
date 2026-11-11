@@ -4031,9 +4031,12 @@ class TestW4Jag2ChatStatusCap:
         """Der echte Schreibpfad hält den Deckel (Prune + Cap unter broker_lock)."""
         import asyncio
         from tools import android_relay as relay
-        state = self._state()
+        state = relay._RelayState("code", 8799)
 
         async def run():
+            # Lock-Bindung wie im Live-Lauf (_run_loop, Z. ~968): __init__
+            # erzeugt den Lock bewusst NICHT eager (kein Event-Loop dort).
+            state.broker_lock = asyncio.Lock()
             for i in range(relay._CHAT_STATUS_MAX + 4):
                 await relay._set_chat_status(state, f"m{i}", "c", "a", "queued")
 

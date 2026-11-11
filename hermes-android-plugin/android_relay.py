@@ -517,6 +517,11 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
 _CHAT_TEXT_MAX_CHARS = 32 * 1024    # Chat-Text je Nachricht (413 darüber)
 _CHAT_QUEUE_MAX_BYTES = 8 * 1024 * 1024  # Bytes-Budget je Broker-Queue
 _CHAT_ACTIVITY_MAX = 256           # SEC-W1 D2: Dedup-Map-Cap (war unbounded)
+# W4-FIX-JAG2 (S6): chat_status-Cap — die 24-h-Retention (_prune_chat_status)
+# hilft nicht gegen einen Flood FRISCHER msg_ids binnen der Retention (RAM-
+# Flood-Schwester von SEC-W1 D2, nur je msg_id statt je chat_id). FIFO-Cap
+# Parität zu chat_activity/_cap_chat_owner.
+_CHAT_STATUS_MAX = 256
 # FIN-T1 RED-06: Owner-Isolation überlebt die Spool-Retention — chat_owner
 # wird NICHT mehr ts-geprüft (PoC red06: nach Retention-Ablauf claimte ein
 # fremder Agent die chat_id mit 200 und beliefert sie = Cross-Agent-Injektion
@@ -2475,6 +2480,15 @@ def _cap_chat_activity(state: _RelayState) -> None:
         state.chat_activity.pop(next(iter(state.chat_activity)))
 
 
+def _cap_chat_status(state: _RelayState) -> None:
+    """W4-FIX-JAG2 (S6): chat_status hatte nur die ts-Retention
+    (_prune_chat_status) — ein Flood frischer msg_ids wächst ungebunden
+    binnen der 24 h (RAM-DoS, Schwesterfall von chat_activity/SEC-W1 D2).
+    FIFO-Cap Parität; Aufruf NUR unter broker_lock."""
+    while len(state.chat_status) > _CHAT_STATUS_MAX:
+        state.chat_status.pop(next(iter(state.chat_status)))
+
+
 async def _set_chat_status(
     state: _RelayState, msg_id: str, chat_id: str, agent_id: str, status: str
 ) -> None:
@@ -2498,6 +2512,10 @@ async def _set_chat_status(
             "status": status,
             "ts": now,
         }
+        # W4-FIX-JAG2 (S6): FIFO-RAM-Schutz NACH dem Insert — hält die Map
+        # hart ≤ _CHAT_STATUS_MAX (Cap vor dem Insert ließe einen Überschuss
+        # je Aufruf zurück; Parität zu _cap_chat_activity: Cap nach dem Add).
+        _cap_chat_status(state)
     frame = {
         "type": "chat.status",
         "v": 1,
