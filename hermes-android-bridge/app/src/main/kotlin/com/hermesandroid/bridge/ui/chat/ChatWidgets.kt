@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.ui.chat
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.animation.core.tween
 import kotlinx.coroutines.Job
 import androidx.compose.foundation.ExperimentalFoundationApi
