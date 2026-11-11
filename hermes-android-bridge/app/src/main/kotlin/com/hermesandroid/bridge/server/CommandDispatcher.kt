@@ -695,11 +695,13 @@ object CommandDispatcher {
             }
 
             method == "POST" && path == "/apk_install" -> {
-                // PH-7/PS-A-11 (play-Edition): doppelt verankert — das Gate
-                // filtert die Capability aus userFacing (403 via isEnabled),
-                // das explizite 403 hier fängt Alt-Installationen mit
-                // legacy-true-Prefs + macht den Klarfehler in der Antwort.
-                // Play-Edition: Updates kommen über den Play Store selbst.
+                // PH-7/PS-A-11 (play-Edition): Zwei Schutzebenen. (1) Die
+                // UI-Liste blendet die Capability in play aus (CapabilityUi,
+                // Jäger-Fix J3-F1/F4-Root). (2) isEnabled liest NUR den Prefs-
+                // Toggle — ein Alt-Wert cap_selfupdate=true würde das Gate
+                // NICHT schlagen; dieser Klarfehler-403 fängt das ab und ist
+                // der letzte Block, bevor UpdateInstaller überhaupt Download
+                // anstößt (Doppelt-Verankerung = UI-Filter + Dispatcher-403).
                 if (BuildConfig.EDITION_PLAY) {
                     return mapOf(
                         "ok" to false,

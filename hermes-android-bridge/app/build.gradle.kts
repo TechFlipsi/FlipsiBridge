@@ -45,6 +45,9 @@ android {
             buildConfigField("boolean", "FLAG_FULL_EDITION", "true")
             buildConfigField("boolean", "EDITION_GITHUB", "true")
             buildConfigField("boolean", "EDITION_PLAY", "false")
+            // J4-F4 (DE-2-Konformität): je-Editions-suffix im versionName der
+            // INSTALLIERTEN App (0.15.0-github) — Dateiname unverändert.
+            versionNameSuffix = "-github"
         }
         // Play-Edition: Google-konformes Subset der Funktion (Flags; Feature-Zäune
         // folgen später via BuildConfig-Auswertung, nicht per Code-Fork).

@@ -7,6 +7,7 @@ import android.content.pm.PackageManager
 import android.provider.Settings
 import io.mockk.every
 import io.mockk.mockk
+import com.hermesandroid.bridge.BuildConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -63,7 +64,9 @@ class DeviceIntentResolverTest {
         for (profile in DeviceProfile.entries) {
             for (feature in DeviceFeature.entries) {
                 val list = DeviceIntentResolver.candidates(profile, feature)
-                assertTrue("$profile/$feature hatte nur ${list.size}", list.size >= 4)
+                // PH-7 (play): GENERIC/BATTERY verliert den REQUEST-Kandidaten.
+                val min = if (BuildConfig.EDITION_PLAY && feature == DeviceFeature.BATTERY) 3 else 4
+                assertTrue("$profile/$feature hatte nur ${list.size}", list.size >= min)
             }
         }
     }
@@ -105,9 +108,15 @@ class DeviceIntentResolverTest {
     @Test
     fun generische_kandidaten_entsprechen_den_bekannten_aosp_wegen() {
         // Akku: erster generischer Kandidat = Systemdialog (altes Verhalten).
+        // PH-7 (play): erster Kandidat = Settings-Liste (kein REQUEST-Dialog).
         val battery = DeviceIntentResolver.candidates(DeviceProfile.GENERIC, DeviceFeature.BATTERY)
-        assertEquals(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, battery[0].action)
-        assertEquals("package:$appPackage", battery[0].dataUri?.replace("\$app", appPackage))
+        if (BuildConfig.EDITION_PLAY) {
+            assertEquals(3, battery.size)
+            assertEquals(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS, battery[0].action)
+        } else {
+            assertEquals(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, battery[0].action)
+            assertEquals("package:$appPackage", battery[0].dataUri?.replace("\$app", appPackage))
+        }
         // Overlay: mit-URI → ohne-URI → App-Details → Startseite (v0.12.0-Fix).
         val overlay = DeviceIntentResolver.candidates(DeviceProfile.GENERIC, DeviceFeature.OVERLAY)
         assertEquals(4, overlay.size)
@@ -124,9 +133,13 @@ class DeviceIntentResolverTest {
         assertEquals("com.miui.permcenter.autostart.AutoStartManagementActivity", intent.component?.className)
         assertEquals(appPackage, intent.getStringExtra("extra_pkgname"))
 
-        val generic = DeviceIntentResolver.candidates(DeviceProfile.GENERIC, DeviceFeature.BATTERY)[0]
+        val generic = DeviceIntentResolver.candidates(DeviceProfile.GENERIC, DeviceFeature.BATTERY).first()
         val batteryIntent = generic.toIntent(appPackage)
-        assertEquals("package:$appPackage", batteryIntent.data.toString())
+        if (BuildConfig.EDITION_PLAY) {
+            assertTrue("play: Listen-Kandidat ohne dataUri", batteryIntent.data == null)
+        } else {
+            assertEquals("package:$appPackage", batteryIntent.data.toString())
+        }
     }
 
     // ── Fallback: informative Leit-Zeile je OEM (kein Crash) ───────────────

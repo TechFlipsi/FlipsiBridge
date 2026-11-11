@@ -32,7 +32,7 @@ class BridgeConnectionService : Service() {
     companion object {
         private const val TAG = "BridgeConnService"
         private const val FOREGROUND_ID = 4100
-        private const val CHANNEL = "flipsibridge_connection"
+        internal const val CHANNEL = "flipsibridge_connection"
 
         /** Live-Instanz — der Alarms-Weckpfad startet den Service nur, wenn er verstorben ist (Akku P2-1). */
         @Volatile
@@ -40,15 +40,16 @@ class BridgeConnectionService : Service() {
             private set
 
         @JvmStatic
-        fun start(context: Context) {
-            runCatching {
+        fun start(context: Context): Boolean {
+            return runCatching {
                 val intent = Intent(context, BridgeConnectionService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     context.startForegroundService(intent)
                 } else {
                     context.startService(intent)
                 }
-            }.onFailure { Log.w(TAG, "Service-Start fehlgeschlagen: ${it.message}") }
+                true
+            }.onFailure { Log.w(TAG, "Service-Start fehlgeschlagen: ${it.message}") }.isSuccess
         }
     }
 

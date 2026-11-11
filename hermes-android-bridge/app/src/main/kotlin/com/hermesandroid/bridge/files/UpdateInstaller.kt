@@ -166,6 +166,19 @@ object UpdateInstaller {
             )
         }
 
+        // PH-7/J2-F4 (11.11.2026): Editions-/Paket-Abgleich vor dem Installer —
+        // die gelieferte APK muss DIESE App sein (GitHub-Edition; eine Play-APK
+        // mit anderer applicationId würde als Zweit-App neben der Brücke
+        // installieren statt zu updaten). Defense-in-Depth zum Relay-Filter.
+        val archiveInfo = context.packageManager.getPackageArchiveInfo(tempFile.path, 0)
+        if (archiveInfo?.packageName != context.packageName) {
+            tempFile.delete()
+            return Result(
+                false, 400,
+                "Editions-Fehler: gelieferte APK gehört zu einem anderen Paket (${archiveInfo?.packageName ?: "unbekannt"}) — Update verworfen",
+            )
+        }
+
         // "Apps aus unbekannten Quellen" für diese App gesetzt? Wenn nicht:
         // Einstellungsseite öffnen (einmalige Freigabe, Android-Pflicht).
         val appCtx = context.applicationContext

@@ -15,6 +15,7 @@ import android.telephony.SmsManager
 import android.util.Base64
 import android.view.Display
 import android.view.accessibility.AccessibilityNodeInfo
+import com.hermesandroid.bridge.BridgeApplication
 import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.model.ActionResult
 import com.hermesandroid.bridge.model.ScreenNode
@@ -543,15 +544,30 @@ object ActionExecutor {
         // Standard-SMS-App vorausgefüllt (kein Direktversand, kein Formular
         // machbar: FlipsiBridge wird nie Default-SMS-Handler).
         if (BuildConfig.EDITION_PLAY) {
-            val context = BridgeApplication.instance
+            // PH-7/PS-A-14 (Jäger-Fix J3-F3/F4/F5):
+            // (a) Keine Erfolgserklärung — der Befehl trifft über den in-process
+            //     ktor-Server auf Hintergrund-App ein; Android kann den
+            //     Activity-Start still blockieren (Background-Activity-Launch),
+            //     ohne Exception. Wir melden nur den Start-Auftrag.
+            // (b) Der Empfänger wird kodiert (leer/#/%-Escape/Leerzeichen-Fällen
+            //     im smsto:-URI) und vorher auf Leerheit geprüft.
+            // (c) lateinit-Elvis-Falle: instance-Check über runCatching.
+            val context = runCatching { BridgeApplication.instance }.getOrNull()
                 ?: return ActionResult(false, "App-Kontext nicht bereit")
+            val normalized = to.trim()
+            if (normalized.isEmpty()) {
+                return ActionResult(false, "Empfänger fehlt — SMS-Entwurf nicht geöffnet")
+            }
             return runCatching {
-                val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$to")).apply {
+                val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:" + Uri.encode(normalized))).apply {
                     putExtra("sms_body", body)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 context.startActivity(intent)
-                ActionResult(true, "SMS-Entwurf in der SMS-App geöffnet — Versand dort von Hand bestätigen")
+                ActionResult(
+                    true,
+                    "SMS-Entwurf-Start angefordert — die SMS-App öffnet sich bei sichtbarem Gerät; Versand dort von Hand bestätigen",
+                )
             }.getOrElse { e -> ActionResult(false, "SMS-App nicht erreichbar: ${e.message}") }
         }
         val service = BridgeAccessibilityService.instance

@@ -1183,7 +1183,15 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
             # v0.11.0 (Relay-Review): versionsbewusst wählen ("0.10.10" schlägt
             # "0.10.7"); mtime als Beiwert, bei nicht parsebaren Namen greift er.
             candidates = sorted(
-                (f for f in os.listdir(apk_dir) if f.endswith(".apk")),
+                (
+                    f
+                    for f in os.listdir(apk_dir)
+                    if f.endswith(".apk")
+                    # PH-7/J2-F4+J4-F3 (11.11.2026): Play-APKs gehören nie auf den
+                    # Self-Update-Track (eigene App-ID, Updates via Play Store) —
+                    # ansonsten installiert ein GitHub-Gerät eine Zweit-App.
+                    and not f.endswith("-play.apk")
+                ),
                 key=lambda name: (
                     _apk_version_key(name),
                     os.path.getmtime(os.path.join(apk_dir, name)),
