@@ -70,3 +70,9 @@
 ## J. Abschluss-Gate
 - [ ] Alle Punkte oben abgehakt ODER als offener Befund mit Verantwortung im Bericht.
 - [ ] Sir bekommt: Kurzfassung + Berichtspfad. Kein „fertig" ohne Bericht.
+
+## K. Audio & Sprachfeatures (Welle 13)
+- [ ] Eingehende Sprachnachricht: im Chat ANHÖRBAR (Play/Pause/Fortschritt; eingehende Medien werden heruntergeladen, nicht nur als Meta angezeigt). Eigene Sprachnachrichten ebenfalls abspielbar.
+- [ ] „Vorlesen“: im Komposer-Sheet wählbar (pro Chat) — Agenten-Antworten werden vom GERÄT vorgelesen (Android-TTS, Queue, Stopp-Eingriff), Einstellung persistiert.
+- [ ] Standard-Assistent: „Als Standard-Assistent einrichten“ (RoleManager) funktioniert; ASSIST-Einstieg öffnet Voice-Chat; System-Default wechselbar (Gemini → FlipsiBridge).
+- [ ] Fallback bei fehlender TTS-Engine: ehrlicher Hinweistext statt stiller Fehler.

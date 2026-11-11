@@ -38,3 +38,27 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - Prüfliste: qa/qa-checkliste-release.md = KOMPLETT abzuarbeiten je Prüfung.
 - Berichte: qa/reports/<welle>/ (Build-, Drill-, Checklisten-Kopie).
 - Privatsphären-Scan (G) = hartes Release-Gate.
+
+## P8 — Sprachnachrichten ANHÖRBAR (Sir-Befund 11.11. spät) — STRUKTUR/PROTOKOLL
+- Befund verifiziert: der Voice-Player existiert (VoiceBubbleRow, MediaPlayer), braucht aber media.localPath — den gibt es NUR bei selbst gesendeten Nachrichten. EINGEHENDE Medien liegen nur als Meta (mediaId) vor: **das Handyn-Protokoll hat keinen Media-Download** (nur POST /media senden).
+- Fix a) Relay: GET /media/{media_id} (Chunked-Download, Paaring-Auth, E2E-Media-Schlüssel wie beim Upload umgekehrt).
+- Fix b) Adapter/Protokoll: media-download-Chunk-Frame für die Phone-Seite.
+- Fix c) App: eingehende Medien abholen → lokaler Cache → VoiceBubbleRow mit localPath füttern (Play/Pause/Fortschritt + Fallback „Öffnen mit").
+- Verifikation: eingehende Test-Sprachnachricht ANHÖRBAR am Emulator (Bericht-Screenshot + Notiz Dauer).
+
+## P9 — Agenten-Stimme ÜBER DIE APP (Sir-Wunsch: das Handy spricht) — FEATURE
+- Entscheidung: TTS läuft HANDY-SEITIG (Android TextToSpeech) — kein Server-Zwang, funktioniert auch offline beim Vorlesen, Sprachqualität = Systemstimme des Geräts.
+- Fix: Composer-Sheet bekommt „Vorlesen: aus/an" (pro Chat, wie Denken); angeschaltet = jede AGENTEN-Antwort wird vorgelesen (Text-Stimme, Queue statt Überlappung, Stopp bei Tippen); optional „Auto-Vorlesen bei Eintreffen" im Einstellungen-Vorlesen-Panel. Play-Pause je Bubble zusätzlich in P8s Player.
+- Verifikation: TTS-Ausgabe am Emulator belegt (Drill-Notiz; Screenshots bei Audio = Log-Zeile).
+
+## P10 — FlipsiBridge als Standard-Assistent („Gemini ersetzbar") — FEATURE
+- Fix: ASSIST-Intent-Activity (Kurz-Einstieg: Mikro öffnet Voice-Chat direkt) + Einstellungen-Karte „Als Standard-Assistent einrichten" → RoleManager(ROLE_ASSISTANT)-Anfrage; danach Lang-Drücken/Assistant-Trigger öffnet FlipsiBridge statt Gemini.
+- Verifikation: RoleManager-Übergabe + System-Default-Screen belegt (Drill-Beweis).
+
+## P11 — Chat-Fenster im WhatsApp-Design-Spruch (Sir-Direktive 11.11. spät) — DESIGN-REBUILD
+- Sirs Befund: unser Chat wirkt „zusammen gebastelt". Ziel: die WhatsApp-Anmutung (aufgeräumt, bewährt) — aber mit eigenen Assets (kein 1:1-Kopieren fremder Grafiken/Texte, Sir-Regel): Wallpaper selbst generieren in Flipsi-Farben (sehr dunkel, subtil), Bubbles/Spacing nach dem bewährten Muster neu setzen.
+- Bubbles: Sende-/Empfangsseite mit unterschiedliche Radius-Silhouette (Ecke zur Absenderseite klein), Hintergrund-Töne dezent unterscheidbar, Zeitsempel INSIDE der Bubble unten rechts, Status-Chip daneben, Datumstrenner als kleine mittige Chips, max-Bubble-Breite ~75 %, Tails weglassen (modern flach), einheitliche Padding-Matrix.
+- Chat-Kopf: Avatar + Name + Statusband (Online/arbeitet) + Zurück — Höhe kompakt, wie beim Vorbild-Muster.
+- Wallpaper: eigenes PNG (Tilebar oder Blur-Spot) in Void-Navy mit sehr subtiler Struktur — NICHT WhatsApp-Raster kopieren.
+- Komposer passt schon zum Muster (Single-Pill aus der Referenz) — Feinjustierung: Icons-Einklang, Abstände.
+- Verifikation: Emulator-Screenshots Chat-View (eigene + Agenten-Seite, Datum-Chip, lange Bubbles, Medien-Bubbles) in den Drill-Report.
