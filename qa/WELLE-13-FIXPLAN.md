@@ -68,3 +68,14 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - **Datum-Chip:** mittig, kleine PanelElev-Pill.
 - **Komposer:** bleibt die Single-Pill (passt zum Bild: Kapsel + Anhang-Links + runder Aktionsknopf rechts — unser Send-Kreis = Ember).
 - Verifikation: Emulator-Screencaps (eigene+Agenten-Bubbles mit Zeit/Status, Quote, Datum-Chip, Wallpaper-Default + nutzer-Foto-Fall) in den Drill-Report.
+
+## P11b — AGENTEN-LISTE (Chat-Menü) im WhatsApp-Laufschema (Sirs 2. Wunschbild, tief-gescannt) — DESIGN-REBUILD
+- Vorlage = die WhatsApp-HAUPTLISTE (Struktur, private Inhalte aus dem Scan anonymisiert — G-Gate). Flipsi-Umsetzung für MEHRERE AGENTEN:
+- **App-Bar:** „FlipsiBridge" links groß (white, bold), rechts Kamera-Weglassung → nur Suche-Icon + ⋯. Dunkle Bar (Panel).
+- **Such-Kapsel:** rounded-pill, PanelElev, Lupe links, Platzhalter „Agenten durchsuchen oder fragen" (Anmutung wie Vorbild „Meta AI fragen oder suchen" — aber ehrlich: nur Suchfunktion, kein Fake-AI-Feld).
+- **Filter-Chips:** „Alle" (aktiv = Ember-Füllung, dunkler Text), „Ungelesen", „Offline" (inaktive: dunkle Füllung, dünner Line-Rand, TextPrimary), + klein „+"-Chip für Schnellkopplung.
+- **Zeilen-Schema (je Agent):** [Avatar: Kreis PanelElev mit Ember-Initialen/Icon] — [Spalte 1: Name bold white, darunter Preview „✓✓ Letzte Nachricht …" in TextSecondary, max 1 Zeile ellipsize] — [Spalte 2: Datum/Zeit (labelSmall TextSecondary), darunter Pin-/Ungelesen-Badge (Ember-Pill mit Zahl)]. Aktive Agents = feiner Online-Punkt am Avatare-Rand (SignalGreen).
+- **Preview-Regeln:** eigene letzte Nachricht = Status-Chip + Text; Agenten-aktiv mit „arbeitet …" = animierter Punkt; Medien-Preview = „📄 Name" / „🎤 Sprachnachricht" (Glyph, kein Emoji-Babbling).
+- **FAB unten rechts:** runder-Quadrat Ember-Kreis, weißes Plus/Meldungs-Icon → öffnet die Kopplung (neuer Agent).
+- **Bottom-Nav (wo vorhanden):** aktiver Tab = Ember-Pill-Hintergrund mit dunkler Textfarbe (Anmutung wie Vorbild-Green-Pill, unsere Farben).
+- **Verifikation:** Emulator-Screens der Agenten-Liste (Suche aktiv, Chips, gelesene/ungelesene Zeilen, FAB) in den Drill-Report.
