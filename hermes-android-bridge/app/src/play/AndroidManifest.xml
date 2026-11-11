@@ -45,14 +45,18 @@
          6h/24h-Budget (Service.onTimeout, ohne stopSelf = Crash) — die permanente
          Brücke läuft im play-Bau als specialUse (kein Budget-Timeout); der Subtype
          deckt die Play-Konsole-Deklaration (PH-8/9, Begründung: persistente
-         Nutzer-eigene Gerätebrücke). -->
-    <service
-        android:name=".service.BridgeConnectionService"
-        android:foregroundServiceType="specialUse">
-        <property
-            android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-            android:value="persistent_device_bridge" />
-    </service>
+         Nutzer-eigene Gerätebrücke). SERVICE-Elemente gehören in <application>:
+         Welle-3-Beweis = AAPT-Fail "unexpected element <service> in <manifest>",
+         wenn es direkt unter <manifest> steht. -->
+    <application>
+        <service
+            android:name=".service.BridgeConnectionService"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent_device_bridge" />
+        </service>
+    </application>
 
     <uses-permission
         android:name="android.permission.REQUEST_INSTALL_PACKAGES"

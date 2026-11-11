@@ -745,8 +745,14 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(
-                        "Standort, SMS, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. " +
-                            "Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen.",
+                        if (BuildConfig.EDITION_PLAY) {
+                            "Standort, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. " +
+                                "Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen. " +
+                                "Der SMS-Entwurf öffnet nur die SMS-App — kein Direktversand."
+                        } else {
+                            "Standort, SMS, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. " +
+                                "Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
                     )

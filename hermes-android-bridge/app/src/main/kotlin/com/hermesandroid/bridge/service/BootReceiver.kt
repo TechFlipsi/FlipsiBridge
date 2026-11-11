@@ -36,6 +36,13 @@ class BootReceiver : BroadcastReceiver() {
     private fun postManualOpenNotification(context: Context) {
         runCatching {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager
+            // V-J4-F02 (11.11.2026): ohne POST_NOTIFICATIONS ist notify() ein
+            // stiller No-Op — dann bleibt es beim Log (sichtbarer Hinweis
+            // folgt beim nächsten App-Start über die Status-Karten).
+            if (!androidx.core.app.NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                Log.w("BootReceiver", "POST_NOTIFICATIONS fehlt — Manual-open-Hinweis nicht zustellbar")
+                return
+            }
             if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
                 manager.createNotificationChannel(
                     android.app.NotificationChannel(

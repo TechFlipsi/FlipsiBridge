@@ -128,10 +128,21 @@ class BridgeConnectionService : Service() {
             // Statuswechsel/5-min-Alarm spart der ein System-Neu-Anmeldung.
             if (!isForeground) {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    // PH-7/J4-Rücklick V-J4-S1 (11.11.2026): der startForeground-Typ
+                    // MUSS der Manifest-Deklaration entsprechen — der play-Bau
+                    // deklariert specialUse (dataSync hätte ab targetSdk 35 das
+                    // 6h/24h-Budget, J1-F01); DATA_SYNC würde in play eine
+                    // IllegalArgumentException werfen und über das 5-s-Fenster
+                    // (did-not-call-startForeground) die App killen.
+                    val fgsType = if (com.hermesandroid.bridge.BuildConfig.EDITION_PLAY) {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                    } else {
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    }
                     startForeground(
                         FOREGROUND_ID,
                         builder.build(),
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                        fgsType,
                     )
                 } else {
                     startForeground(FOREGROUND_ID, builder.build())

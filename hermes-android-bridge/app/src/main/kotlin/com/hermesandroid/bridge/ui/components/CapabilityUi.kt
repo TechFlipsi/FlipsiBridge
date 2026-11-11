@@ -17,10 +17,18 @@ data class CapabilityUi(
     val invasive: Boolean = false,
 )
 
-/** Sensible Fähigkeiten — beim Master-„Alle an" mit Bestätigungsdialog. */
-val INVASIVE_CAPS = setOf("location", "sms", "calls", "contacts", "microphone")
+/** Sensible Fähigkeiten — beim Master-„Alle an" mit Bestätigungsdialog.
+ *  N2 (11.11.2026, play): der SMS-Entwurf (Intent-Route ohne Direktversand) ist
+ *  kein invasiver Pfad — play filtert sms aus der Bestätigungsliste raus. */
+val INVASIVE_CAPS: Set<String> by lazy {
+    if (BuildConfig.EDITION_PLAY) {
+        setOf("location", "calls", "contacts", "microphone")
+    } else {
+        setOf("location", "sms", "calls", "contacts", "microphone")
+    }
+}
 
-/** Alle 16 nutzersteuerbaren Fähigkeiten (Zählerbasis des Master-Schalters). */
+/** Alle nutzersteuerbaren Fähigkeiten (GitHub 16, play 15 — Zählerbasis des Master-Schalters). */
 val ALL_CAPABILITY_UIS: List<CapabilityUi> by lazy {
     val base = listOf(
         CapabilityUi("screen", "Bildschirm lesen", "App/Titel/Texte vom Display ablesen"),
@@ -59,10 +67,20 @@ val ALL_CAPABILITY_UIS: List<CapabilityUi> by lazy {
     } else base
 }
 
-/** Vier Gruppen der Fähigkeiten-Zentrale (Reihenfolge = Anzeige-Reihenfolge). */
+/** Vier Gruppen der Fähigkeiten-Zentrale (Reihenfolge = Anzeige-Reihenfolge).
+ *  N1 (11.11.2026, play): der play-SMS-Entwurf ist nicht invasiv — er lebt
+ *  in der Gruppe „Gerät bedienen", damit er EIN schaltbarer Ort bleibt. */
 fun capabilityGroups(): List<Pair<String, List<CapabilityUi>>> = listOf(
     "Ansehen & Zustände" to ALL_CAPABILITY_UIS.filter { it.id in setOf("screen", "screen_capture", "notifications", "clipboard", "files", "health") },
-    "Gerät bedienen" to ALL_CAPABILITY_UIS.filter { it.id in setOf("interaction", "device", "notify_reply") },
+    "Gerät bedienen" to ALL_CAPABILITY_UIS.filter {
+        it.id in (
+            if (BuildConfig.EDITION_PLAY) {
+                setOf("interaction", "device", "notify_reply", "sms")
+            } else {
+                setOf("interaction", "device", "notify_reply")
+            }
+            )
+    },
     "Schreiben & Selbstpflege" to ALL_CAPABILITY_UIS.filter { it.id in setOf("files_write", "selfupdate") },
     "Invasiv — ausdrücklich freischalten" to ALL_CAPABILITY_UIS.filter { it.invasive },
 )
