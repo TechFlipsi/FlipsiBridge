@@ -96,6 +96,9 @@ class PinSourceTest {
     fun `isPinnedHost_brauch_nutzer_host_und_verweigert_defekte_Urls`() {
         try {
             PinSource.OWN_RELAY_HOST = "mein-relay.example.com"
+            PinSource.OWN_RELAY_PINS = listOf(
+                "sha256/qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=",
+            )
             assertTrue(PinSource.isPinnedHost("https://mein-relay.example.com"))
             assertTrue(PinSource.isPinnedHost("https://mein-relay.example.com:8443/apk"))
             assertTrue(PinSource.isPinnedHost("wss://mein-relay.example.com/agent_ws"))
@@ -105,6 +108,7 @@ class PinSourceTest {
             assertFalse(PinSource.isPinnedHost("kein-scheme-kein-host"))
         } finally {
             PinSource.OWN_RELAY_HOST = ""
+            PinSource.OWN_RELAY_PINS = emptyList()
         }
     }
 
