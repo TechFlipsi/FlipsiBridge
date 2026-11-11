@@ -108,11 +108,15 @@ fun SupporterCard(activity: Activity?) {
                     ),
                 )
                 .build(),
-        ) { billingResult, productDetailsList ->
+        ) { response ->
+            // Billing-8.0-KTX: das Callback liefert EIN ProductDetailsResponse-Objekt
+            // (billingResult + productDetailsList) statt zwei Parameter.
+            val billingResult = response.billingResult
+            val list = response.productDetailsList
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK &&
-                productDetailsList.isNotEmpty()
+                !list.isNullOrEmpty()
             ) {
-                productDetails = productDetailsList.firstOrNull()
+                productDetails = list.firstOrNull()
                 billingState = "verfügbar"
             } else {
                 // Solange das Produkt in der Play-Konsole nicht angelegt ist
