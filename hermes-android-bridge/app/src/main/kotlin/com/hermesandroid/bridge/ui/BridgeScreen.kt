@@ -88,6 +88,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.billing.SupporterCard
 import com.hermesandroid.bridge.policy.DisclosureState
 import com.hermesandroid.bridge.policy.DisclosureDialogHost
 import com.hermesandroid.bridge.auth.PairingManager

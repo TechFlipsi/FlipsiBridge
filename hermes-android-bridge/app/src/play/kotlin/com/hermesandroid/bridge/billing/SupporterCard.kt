@@ -30,7 +30,7 @@ import com.android.billingclient.api.PendingPurchasesParams
 import com.android.billingclient.api.ProductDetails
 import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.QueryProductDetailsParams
-import com.android.billingclient.api.QueryPurchasesAsyncParams
+import com.android.billingclient.api.QueryPurchasesParams
 
 /**
  * Supporter-IAP (PH-9-Route, Sir 11.11.2026): einmaliger „Unterstützer"-Badge
@@ -61,6 +61,9 @@ fun SupporterCard(activity: Activity?) {
     var billingState by remember { mutableStateOf("prüfe …") }
 
     val prefs = remember { context.getSharedPreferences(SupporterKeys.PREFS, Context.MODE_PRIVATE) }
+    // clientRef-Muster (Welle-6-Beweis: Self-Reference im remember-Initializer
+    // kompiliert nicht — der Purchase-Listener greift über die Variable zu).
+    var clientRef by remember { mutableStateOf<BillingClient?>(null) }
 
     val client = remember {
         BillingClient.newBuilder(context)
@@ -73,7 +76,7 @@ fun SupporterCard(activity: Activity?) {
                             prefs.edit().putBoolean(SupporterKeys.KEY_BADGE, true).apply()
                             badgeActive = true
                             if (!purchase.isAcknowledged) {
-                                client.acknowledgePurchase(
+                                clientRef?.acknowledgePurchase(
                                     AcknowledgePurchaseParams.newBuilder()
                                         .setPurchaseToken(purchase.purchaseToken)
                                         .build(),
@@ -118,7 +121,7 @@ fun SupporterCard(activity: Activity?) {
             }
         }
         client.queryPurchasesAsync(
-            QueryPurchasesAsyncParams.newBuilder()
+            QueryPurchasesParams.newBuilder()
                 .setProductType(BillingClient.ProductType.INAPP)
                 .build(),
         ) { billingResult, purchases ->
@@ -130,7 +133,7 @@ fun SupporterCard(activity: Activity?) {
                         prefs.edit().putBoolean(SupporterKeys.KEY_BADGE, true).apply()
                         badgeActive = true
                         if (!purchase.isAcknowledged) {
-                            client.acknowledgePurchase(
+                            clientRef?.acknowledgePurchase(
                                 AcknowledgePurchaseParams.newBuilder()
                                     .setPurchaseToken(purchase.purchaseToken)
                                     .build(),
@@ -143,6 +146,7 @@ fun SupporterCard(activity: Activity?) {
     }
 
     LaunchedEffect(Unit) {
+        clientRef = client
         client.startConnection(
             object : BillingClientStateListener {
                 override fun onBillingSetupFinished(billingResult: BillingResult) {
@@ -195,10 +199,12 @@ fun SupporterCard(activity: Activity?) {
                             client.launchBillingFlow(
                                 activity,
                                 BillingFlowParams.newBuilder()
-                                    .setProductDetailsParams(
-                                        BillingFlowParams.ProductDetailsParams.newBuilder()
-                                            .setProductDetails(product)
-                                            .build(),
+                                    .setProductDetailsParamsList(
+                                        listOf(
+                                            BillingFlowParams.ProductDetailsParams.newBuilder()
+                                                .setProductDetails(product)
+                                                .build(),
+                                        ),
                                     )
                                     .build(),
                             )

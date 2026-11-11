@@ -130,7 +130,6 @@ object DisclosureState {
     )
 
     var pending: Pending? by mutableStateOf(null)
-        private set
 
     /** Play: Disclosure vor dem Original-Fluss (einmalig je Konsent).
      *  GitHub: onProceed() DIREKT. */
