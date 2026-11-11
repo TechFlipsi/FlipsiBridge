@@ -88,6 +88,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.policy.DisclosureState
+import com.hermesandroid.bridge.policy.DisclosureDialogHost
 import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.client.HealthDataBridge
 import com.hermesandroid.bridge.client.RelayClient
@@ -524,6 +526,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // Selbst-Update: github-Edition aktiv, play-Edition
                     // bewusst disabled mit Hinweis (FLAG_FULL_EDITION).
                     SelfUpdateCard()
+                    // Supporter-IAP (PH-9-Route): play = echte Billing-Karte,
+                    // github = Stub aus src/github/ (gleiche Signatur).
+                    SupporterCard(activity)
                 }
             }
 
@@ -553,8 +558,17 @@ fun BridgeScreen(initialRoute: Int = 0) {
                                 // v0.12.0 QA-Fix (SK-01, dreifach belegt): die
                                 // Einzeltoggles MÜSSEN ins Gate schreiben — der
                                 // v0.11.0-Write ging beim Redesign verloren.
-                                CapabilityGate.setEnabled(cap.id, on)
-                                BridgeStatus.refreshConfig()
+                                // PH-7/PS-G-2 (play): sensible Toggles bekommen
+                                // VOR dem Einschalten ihre EIGENE Disclosure.
+                                if (BuildConfig.EDITION_PLAY && on && cap.id in com.hermesandroid.bridge.policy.SENSITIVE_TOGGLES) {
+                                    DisclosureState.request(context, cap.id) {
+                                        CapabilityGate.setEnabled(cap.id, true)
+                                        BridgeStatus.refreshConfig()
+                                    }
+                                } else {
+                                    CapabilityGate.setEnabled(cap.id, on)
+                                    BridgeStatus.refreshConfig()
+                                }
                             },
                             iconRes = when (index) {
                                 0 -> GroupIcons.ansehen
@@ -1216,12 +1230,16 @@ private fun PermissionsSections(
                     badge = if (a11yOk) ("aktiv" to BadgeState.OK) else ("fehlt" to BadgeState.ERROR),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
-                    if (!startFirstResolvable(
-                            context, activity,
-                            listOf(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
-                        )
-                    ) {
-                        BridgeStatus.showText("Eingabehilfe-Einstellungen nicht erreichbar")
+                    // PH-7/PS-G-2 (play): prominente A11y-Disclosure + Consent
+                    // VOR dem System-Sprung (GitHub: Direktdurchgriff).
+                    DisclosureState.request(context, "a11y") {
+                        if (!startFirstResolvable(
+                                context, activity,
+                                listOf(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
+                            )
+                        ) {
+                            BridgeStatus.showText("Eingabehilfe-Einstellungen nicht erreichbar")
+                        }
                     }
                 }
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
@@ -1288,28 +1306,32 @@ private fun PermissionsSections(
                     badge = if (allFilesOk) ("aktiv" to BadgeState.OK) else ("fehlt" to BadgeState.ERROR),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
-                    // v0.12.0 Bug 1: Listen-Action + package-URI kann auf AOSP
-                    // NIE auflösen (IntentFilter.matchData) → das war der Crash.
-                    // Reihenfolge: 1) per-App-Action (hat den package-Filter),
-                    // 2) Liste ohne URI, 3) App-Details als letzter Ausweg.
-                    val opened = startFirstResolvable(
-                        context, activity,
-                        listOf(
-                            Intent(
-                                Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-                                Uri.parse("package:${context.packageName}"),
+                    // PH-7/PS-G-2 (play): All-Files-Disclosure VOR dem Special-
+                    // Access-Sprung (Console-Erklärung folgt in PH-8).
+                    DisclosureState.request(context, "files") {
+                        // v0.12.0 Bug 1: Listen-Action + package-URI kann auf AOSP
+                        // NIE auflösen (IntentFilter.matchData) → das war der Crash.
+                        // Reihenfolge: 1) per-App-Action (hat den package-Filter),
+                        // 2) Liste ohne URI, 3) App-Details als letzter Ausweg.
+                        val opened = startFirstResolvable(
+                            context, activity,
+                            listOf(
+                                Intent(
+                                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
+                                Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
+                                Intent(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                    Uri.parse("package:${context.packageName}"),
+                                ),
                             ),
-                            Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION),
-                            Intent(
-                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                                Uri.parse("package:${context.packageName}"),
-                            ),
-                        ),
-                    )
-                    if (!opened) {
-                        BridgeStatus.showText(
-                            "Einstellung nicht erreichbar — bitte manuell: Einstellungen → Apps → FlipsiBridge → Berechtigungen",
                         )
+                        if (!opened) {
+                            BridgeStatus.showText(
+                                "Einstellung nicht erreichbar — bitte manuell: Einstellungen → Apps → FlipsiBridge → Berechtigungen",
+                            )
+                        }
                     }
                 }
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
@@ -1339,7 +1361,11 @@ private fun PermissionsSections(
                     },
                     onAction = PermissionAction.SettingsSprung,
                 ) {
-                    onHealthGrant()
+                    // PH-7/PS-G-2 + R1.1 (play): Health-Disclosure VOR dem
+                    // Health-Connect-Consent-Lauf (Art. 9 = explizite Einwilligung).
+                    DisclosureState.request(context, "health") {
+                        onHealthGrant()
+                    }
                 }
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
@@ -1349,27 +1375,39 @@ private fun PermissionsSections(
                     badge = if (overlayOk) ("möglich" to BadgeState.OK) else ("fehlt" to BadgeState.OFF),
                     onAction = PermissionAction.Toggle(checked = overlayOk),
                     onToggle = { show ->
-                        if (show) {
-                            if (Settings.canDrawOverlays(context)) {
-                                StatusOverlay.show(context)
-                            } else {
-                                // PH-2X X-2: Overlay-Weg über den OEM-Resolver —
-                                // gleiche Kandidaten-Kette wie der v0.12.0-Crash-
-                                // Fix (mit-URI → Liste → App-Details → Startseite),
-                                // je Hersteller vorgelagerte OEM-Schalter.
-                                DeviceIntentResolver.launchFeature(
-                                    context, activity, DeviceFeature.OVERLAY,
-                                ) { hint ->
-                                    BridgeStatus.showText(hint)
+                        // PH-7/PS-G-2 (play): ehrliche HUD-Disclosure VOR dem
+                        // Overlay-Freigabe-Weg (Deceptive-Behavior-policy).
+                        fun showOverlayAfterConsent() {
+                            if (show) {
+                                if (Settings.canDrawOverlays(context)) {
+                                    StatusOverlay.show(context)
+                                } else {
+                                    // PH-2X X-2: Overlay-Weg über den OEM-Resolver —
+                                    // gleiche Kandidaten-Kette wie der v0.12.0-Crash-
+                                    // Fix (mit-URI → Liste → App-Details → Startseite),
+                                    // je Hersteller vorgelagerte OEM-Schalter.
+                                    DeviceIntentResolver.launchFeature(
+                                        context, activity, DeviceFeature.OVERLAY,
+                                    ) { hint ->
+                                        BridgeStatus.showText(hint)
+                                    }
                                 }
-                            }
-                        } else StatusOverlay.hide(context)
-                        BridgeStatus.refreshConfig()
+                            } else StatusOverlay.hide(context)
+                            BridgeStatus.refreshConfig()
+                        }
+                        if (!show) {
+                            showOverlayAfterConsent()
+                        } else {
+                            DisclosureState.request(context, "overlay") { showOverlayAfterConsent() }
+                        }
                     },
                 )
             }
         }
     }
+
+    // PH-7/PS-G-2 (play): EIN Host für alle prominenten Offenlegungs-Dialoge.
+    DisclosureDialogHost()
 }
 
 @Composable

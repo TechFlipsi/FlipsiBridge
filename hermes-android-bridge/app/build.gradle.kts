@@ -138,6 +138,12 @@ dependencies {
     implementation(libs.lifecycle.runtime.ktx)
     // Health Connect (Gesundheitsdaten, read-only; 1.1.0 verlangt compileSdk 36)
     implementation(libs.health.connect.client)
+
+    // Supporter-IAP (PH-9-Route, Sir 11.11.2026): NUR im play-Flavor —
+    // die GitHub-Edition hat keine Play-Billing-Abhängigkeit (kein APK-Ballast,
+    // keine API-Referenz). Produkt = einmaliger „Unterstützer"-Badge (2,99 €,
+    // sperrt nichts — perk macht die IAP Play-policy-konform).
+    playImplementation("com.android.billingclient:billing-ktx:7.1.1")
     debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.core)
