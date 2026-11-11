@@ -81,18 +81,35 @@ object ThemeMath {
         val light = contrastRatio(surface, LIGHT_TEXT_BASE)
         if (dark >= light && dark >= CONTRAST_TARGET) return DARK_TEXT_BASE
         if (light >= dark && light >= CONTRAST_TARGET) return LIGHT_TEXT_BASE
-        // Mittelgrau-Falle: keiner der Haus-Töne reicht — Richtung der
-        // besseren Seite in 5%-Schritten Richtung Reinstufe schieben.
-        val towardBlack = dark >= light
-        val from = if (towardBlack) DARK_TEXT_BASE else LIGHT_TEXT_BASE
-        val to = if (towardBlack) PURE_BLACK else PURE_WHITE
+        // Mittelgrau-Falle: keiner der Haus-Töne reicht. Richtung NACH DER
+        // REINEN ENDSTUFE wählen (Sirs Kontrast-Garantie): mindestens eine der
+        // Reinstufen liegt für jede opake Fläche bei ≥ 4,5:1 (Lückenbeweis:
+        // Weiß scheitert erst ab L>0,183, Schwarz erst unter L=0,175 — Band
+        // leer). Hauston-Vergleich ist hier IRREFÜHREND, weil der bessere
+        // Hauston NICHT die besser nachschärfbare Seite markiert.
+        val whitePure = contrastRatio(surface, PURE_WHITE)
+        val blackPure = contrastRatio(surface, PURE_BLACK)
+        // Schärfpfad: vom Haus-Ton der passenden Seite zur Reinstufe.
+        val (fromAnchor, toPure) = if (whitePure >= CONTRAST_TARGET)
+            LIGHT_TEXT_BASE to PURE_WHITE
+        else
+            DARK_TEXT_BASE to PURE_BLACK
         var step = 0
+        var best = toPure
+        var bestRatio = if (whitePure >= CONTRAST_TARGET) whitePure else blackPure
         while (step < 20) {
             step++
-            val candidate = lerp(from, to, step / 20f)
-            if (contrastRatio(surface, candidate) >= CONTRAST_TARGET) return candidate
+            val candidate = lerp(fromAnchor, toPure, step / 20f)
+            val ratio = contrastRatio(surface, candidate)
+            if (ratio > bestRatio) {
+                best = candidate
+                bestRatio = ratio
+            }
+            if (ratio >= CONTRAST_TARGET) return candidate
         }
-        return to
+        // Guarantee-Netz: Reinstufe selbst messen und zurückgeben.
+        return if (contrastRatio(surface, toPure) >= CONTRAST_TARGET) best
+        else if (whitePure >= blackPure) PURE_WHITE else PURE_BLACK
     }
 
     /**

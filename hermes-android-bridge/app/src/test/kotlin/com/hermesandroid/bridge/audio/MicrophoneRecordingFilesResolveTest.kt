@@ -110,6 +110,10 @@ class MicrophoneRecordingFilesResolveTest {
 
     @Test
     fun `symlink escaping the recordings directory is rejected`() {
+        org.junit.Assume.assumeFalse(
+            "Windows-Robolectric folgt NTFS-Symlinks in File.canonicalFile nicht zuverlässig — Test nur auf POSIX-Hosts",
+            System.getProperty("os.name", "").contains("Windows", ignoreCase = true),
+        )
         val outside = File(context.cacheDir, "outside.wav").apply { writeText("secret") }
         val link = File(directory, "evil.wav")
         Files.createSymbolicLink(link.toPath(), outside.toPath())
@@ -119,6 +123,10 @@ class MicrophoneRecordingFilesResolveTest {
 
     @Test
     fun `symlink staying inside the recordings directory resolves`() {
+        org.junit.Assume.assumeFalse(
+            "Windows-Robolectric folgt NTFS-Symlinks in File.canonicalFile nicht zuverlässig — Test nur auf POSIX-Hosts",
+            System.getProperty("os.name", "").contains("Windows", ignoreCase = true),
+        )
         val recording = createRecording("recording_20260102_120000_000.wav", 1_000L)
         val link = File(directory, "alias.wav")
         Files.createSymbolicLink(link.toPath(), recording.toPath())
