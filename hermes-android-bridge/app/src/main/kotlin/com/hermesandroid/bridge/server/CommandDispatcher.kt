@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import com.google.gson.JsonObject
 import com.hermesandroid.bridge.BridgeApplication
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.audio.MicrophoneRecorderService
 import com.hermesandroid.bridge.audio.MicrophoneRecordingFiles
 import com.hermesandroid.bridge.audio.MicrophoneRecordingState
@@ -694,6 +695,17 @@ object CommandDispatcher {
             }
 
             method == "POST" && path == "/apk_install" -> {
+                // PH-7/PS-A-11 (play-Edition): doppelt verankert — das Gate
+                // filtert die Capability aus userFacing (403 via isEnabled),
+                // das explizite 403 hier fängt Alt-Installationen mit
+                // legacy-true-Prefs + macht den Klarfehler in der Antwort.
+                // Play-Edition: Updates kommen über den Play Store selbst.
+                if (BuildConfig.EDITION_PLAY) {
+                    return mapOf(
+                        "ok" to false,
+                        "error" to "Play-Edition: Updates kommen über den Play Store.",
+                    ) to 403
+                }
                 // v0.10.8 (Review-Blocking-1-Fix): Der Aufrufer kann keine URL mehr
                 // vorgeben — die Update-Quelle ist FIX das konfigurierte Relay.
                 // Ein beliebiger "url"-Parameter wird ignoriert, der Pairing-Token
