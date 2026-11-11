@@ -120,6 +120,30 @@ fun RelayServerListCard() {
             ) {
                 Text(stringResource(R.string.ms_add), fontWeight = FontWeight.Medium)
             }
+            // Welle 12b (Sir): übersprungener Assistent — Wieder-Einstieg
+            // über die Karte (Skip zurücknehmen → Wizard öffnet sofort).
+            if (ServerProfiles.isOnboardingSkipped() && profiles.isEmpty()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = FlipsiColors.PanelElev),
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(
+                            stringResource(R.string.ms_resume_title),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            stringResource(R.string.ms_resume_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.TextSecondary,
+                        )
+                        TextButton(onClick = { ServerProfiles.resumeOnboarding() }) {
+                            Text(stringResource(R.string.ms_resume_cta), color = FlipsiColors.Ember)
+                        }
+                    }
+                }
+            }
         }
     }
 

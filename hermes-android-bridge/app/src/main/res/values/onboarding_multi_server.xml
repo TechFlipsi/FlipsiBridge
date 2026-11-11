@@ -19,6 +19,11 @@
     <string name="onb_connect">Verbinden</string>
     <string name="onb_connecting">Verbinde mit dem Relay …</string>
     <string name="onb_back">Zurück</string>
+    <!-- Welle 12b -->
+    <string name="onb_skip">Einrichtung überspringen</string>
+    <string name="ms_resume_title">Einrichtung übersprungen</string>
+    <string name="ms_resume_hint">Der Einrichtungsassistent wurde übersprungen. Du kannst ihn jederzeit wieder aufrufen.</string>
+    <string name="ms_resume_cta">Assistent später fortsetzen</string>
     <string name="onb_reveal">Code einblenden</string>
     <string name="onb_hide">Code verbergen</string>
 

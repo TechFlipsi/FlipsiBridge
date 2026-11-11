@@ -80,10 +80,10 @@ def main():
                 "track": TRACK,
                 "releases": [
                     {
-                        "name": f"0.15.0-play ({version})",
+                        "name": f"0.15.1 Komposer ({version})",
                         "versionCodes": [str(version)],
                         "status": "completed",
-                        "releaseNotes": [{"language": "de-DE", "text": "Erste interne Testversion — Play-Edition."}],
+                        "releaseNotes": [{"language": "de-DE", "text": "Neuer Komposer im Referenz-Look mit Modell- und Denken-Auswahl pro Chat."}],
                     }
                 ],
             },

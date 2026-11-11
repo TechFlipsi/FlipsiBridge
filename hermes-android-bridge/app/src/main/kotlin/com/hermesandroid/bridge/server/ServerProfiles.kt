@@ -168,6 +168,11 @@ object ServerProfiles {
     private data class ProfileStoreDto(
         val version: Int = 1,
         var onboardingDone: Boolean = false,
+        // Welle 12b: „Einrichtung überspringen“ — Merker überlebt den
+        // Er-Start-Detect (kein Profil = Wizard-Rückkehr) bewusst NICHT:
+        // Übersprungen bleibt übersprungen, bis der Nutzer den Assistenten
+        // aus der Server-Liste bewusst wieder aufruft.
+        var onboardingSkipped: Boolean = false,
         var activeId: String? = null,
         var profiles: List<RelayProfile> = emptyList(),
     )
@@ -189,6 +194,25 @@ object ServerProfiles {
 
     /** Er-Start-Verband: Wizard statt BridgeScreen, solange false. */
     fun isOnboardingDone(): Boolean = _onboardingDone.value
+
+    /** Welle 12b: Wizard-Aufrufer merkt sich das Überspringen dauerhaft. */
+    @Synchronized
+    fun skipOnboarding() {
+        dto.onboardingSkipped = true
+        persist()
+        publish()
+    }
+
+    /** Welle 12b: Assistent später fortsetzen (Skip zurücknehmen). */
+    @Synchronized
+    fun resumeOnboarding() {
+        dto.onboardingSkipped = false
+        persist()
+        publish()
+    }
+
+    /** Welle 12b: true = Wizard wurde bewusst übersprungen (kein Profil nötig). */
+    fun isOnboardingSkipped(): Boolean = dto.onboardingSkipped
 
     fun init(context: Context) {
         appContext = context.applicationContext
@@ -496,6 +520,6 @@ object ServerProfiles {
     private fun publish() {
         _profiles.value = dto.profiles
         _activeId.value = dto.activeId
-        _onboardingDone.value = dto.onboardingDone
+        _onboardingDone.value = dto.onboardingDone || dto.onboardingSkipped
     }
 }

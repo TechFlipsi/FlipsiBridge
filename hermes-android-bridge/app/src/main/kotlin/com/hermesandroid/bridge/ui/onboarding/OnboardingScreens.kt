@@ -5,10 +5,13 @@ import com.hermesandroid.bridge.BuildConfig
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -29,6 +32,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -343,9 +347,30 @@ fun OnboardingScreens(
                 }
             }
         }
-        if (step > OnboardingStep.RELAY_URL.ordinal) {
-            TextButton(onClick = { step = step - 1 }) {
-                Text(stringResource(R.string.onb_back))
+        // Welle 12b (Sir): „Überspringen auf Wunsch" — der Assistent ist in
+        // JEDEM Schritt abortierbar; die Entscheidung wird dauerhaft gemerkt
+        // (kein Zwang-Neustart beim nächsten Kaltstart) und lässt sich über
+        // die Server-Liste (Resume-Karte) rückgängig machen.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (step > OnboardingStep.RELAY_URL.ordinal) {
+                TextButton(onClick = { step = step - 1 }) {
+                    Text(stringResource(R.string.onb_back))
+                }
+            } else {
+                Spacer(Modifier.size(1.dp))
+            }
+            TextButton(onClick = {
+                ServerProfiles.skipOnboarding()
+                onComplete()
+            }) {
+                Text(
+                    stringResource(R.string.onb_skip),
+                    color = FlipsiColors.TextSecondary,
+                )
             }
         }
     }
