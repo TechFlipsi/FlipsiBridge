@@ -95,5 +95,4 @@
     <string name="ms_code_note">Der Code liegt je Profil im App-Vault — er ist hier bewusst verborgen.</string>
     <string name="ms_save">Speichern</string>
     <string name="ms_url_blank_error">URL-Format: https://dein-relay.example</string>
-    <string name="ms_switch_nopin_warn">Warnung: Ohne PIN kann JEDER am Gerät den Agenten benutzen.</string>
 </resources>

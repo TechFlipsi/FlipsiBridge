@@ -76,5 +76,4 @@
     <string name="ms_resume_title">Setup skipped</string>
     <string name="ms_resume_hint">The setup assistant was skipped. You can reopen it anytime.</string>
     <string name="ms_resume_cta">Resume assistant later</string>
-    <string name="ms_switch_nopin_warn">Warning: without a PIN anyone on this device can use the agent.</string>
 </resources>
