@@ -8,6 +8,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Path
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.telephony.SmsManager
@@ -537,6 +538,21 @@ object ActionExecutor {
     }
 
     fun sendSms(to: String, body: String): ActionResult {
+        // PH-7/PS-A-14: play-Edition ohne SEND_SMS — der Entwurf öffnet die
+        // Standard-SMS-App vorausgefüllt (kein Direktversand, kein Formular
+        // machbar: FlipsiBridge wird nie Default-SMS-Handler).
+        if (BuildConfig.EDITION_PLAY) {
+            val context = BridgeApplication.instance
+                ?: return ActionResult(false, "App-Kontext nicht bereit")
+            return runCatching {
+                val intent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$to")).apply {
+                    putExtra("sms_body", body)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(intent)
+                ActionResult(true, "SMS-Entwurf in der SMS-App geöffnet — Versand dort von Hand bestätigen")
+            }.getOrElse { e -> ActionResult(false, "SMS-App nicht erreichbar: ${e.message}") }
+        }
         val service = BridgeAccessibilityService.instance
             ?: return ActionResult(false, "Accessibility service not running")
         if (!service.hasSelfPermission(android.Manifest.permission.SEND_SMS)) {

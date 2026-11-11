@@ -7,6 +7,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import com.hermesandroid.bridge.BuildConfig
 
 /**
  * PH-2X X-2 — OEM-KOMPATIBILITÄTSPROFILE (Play-Store-Vorbereitung).
@@ -234,10 +235,12 @@ object DeviceIntentResolver {
                 "Einstellungen (Startseite)", action = Settings.ACTION_SETTINGS,
             ),
         )
-        DeviceFeature.BATTERY -> listOf(
-            // Erster Kandidat = das bisherige Verhalten (Systemdialog
-            // „Akku-Optimierung ignorieren“) — UX auf AOSP unverändert.
-            DeviceIntentCandidate(
+        DeviceFeature.BATTERY -> listOfNotNull(
+            // PH-7/PS-A-18 (play-Edition): kein REQUEST-Dialog — die Permission
+            // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS ist im play-Manifest entfernt;
+            // der User schaltet in der Liste selbst um (kein Formular-Risiko).
+            // GitHub-Edition behält den Systemdialog als ersten Kandidaten.
+            if (BuildConfig.EDITION_PLAY) null else DeviceIntentCandidate(
                 "Akku-Optimierung je App (Systemdialog)",
                 action = Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, dataUri = "package:\$app",
             ),

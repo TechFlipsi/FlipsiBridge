@@ -2,6 +2,7 @@ package com.hermesandroid.bridge.security
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.hermesandroid.bridge.BuildConfig
 
 /**
  * FlipsiBridge Capability-Gating (Issue #107-Umsetzung).
@@ -91,25 +92,35 @@ object CapabilityGate {
         Pair("GET", "/widgets") to "screen",
     )
 
-    /** Anzeigbare Capabilities (für die UI-Liste). */
-    val userFacing: List<Pair<String, String>> = listOf(
-        "screen" to "Bildschirm lesen",
-        "interaction" to "Gerät bedienen (tippen, swipen)",
-        "screen_capture" to "Screenshots & Aufnahme",
-        "notifications" to "Benachrichtigungen lesen & beantworten",
-        "clipboard" to "Zwischenablage",
-        "health" to "Gesundheitsdaten lesen (Health Connect)",
-        "location" to "Standort (invasiv)",
-        "sms" to "SMS senden (invasiv)",
-        "calls" to "Anrufe (invasiv)",
-        "contacts" to "Kontakte lesen (invasiv)",
-        "microphone" to "Mikrofon (invasiv)",
-        "device" to "Geräte-Hardware (Foto, Taschenlampe, Lautstärke, Netz, Wecker)",
-        "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
-        "files_write" to "Dateien schreiben & löschen (destruktiv!)",
-        "notify_reply" to "Antworten in Benachrichtigungen senden",
-        "selfupdate" to "App-Update installieren (mit Bestätigung)",
-    )
+    /** Anzeigbare Capabilities (für die UI-Liste).
+     *  PH-7/PS-G-1: play-Edition blendet selfupdate aus (Play-Updates-Regel,
+     *  PS-A-11) und benennt sms ehrlich um (Intent-Entwurf, PS-A-14). */
+    val userFacing: List<Pair<String, String>> by lazy {
+        val base = listOf(
+            "screen" to "Bildschirm lesen",
+            "interaction" to "Gerät bedienen (tippen, swipen)",
+            "screen_capture" to "Screenshots & Aufnahme",
+            "notifications" to "Benachrichtigungen lesen & beantworten",
+            "clipboard" to "Zwischenablage",
+            "health" to "Gesundheitsdaten lesen (Health Connect)",
+            "location" to "Standort (invasiv)",
+            "sms" to "SMS senden (invasiv)",
+            "calls" to "Anrufe (invasiv)",
+            "contacts" to "Kontakte lesen (invasiv)",
+            "microphone" to "Mikrofon (invasiv)",
+            "device" to "Geräte-Hardware (Foto, Taschenlampe, Lautstärke, Netz, Wecker)",
+            "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
+            "files_write" to "Dateien schreiben & löschen (destruktiv!)",
+            "notify_reply" to "Antworten in Benachrichtigungen senden",
+            "selfupdate" to "App-Update installieren (mit Bestätigung)",
+        )
+        when {
+            BuildConfig.EDITION_PLAY -> base
+                .filter { it.first != "selfupdate" }
+                .map { if (it.first == "sms") "sms" to "SMS-Entwurf öffnen (GitHub-Edition: Direktversand)" else it }
+            else -> base
+        }
+    }
 
     private const val PREFS = "flipsibridge_caps"
     // J6 (JÄGER-RFULL): DIESE Datei schreibt RelayClient (PREFS_NAME) —

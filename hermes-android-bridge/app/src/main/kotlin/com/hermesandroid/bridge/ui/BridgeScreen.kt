@@ -517,7 +517,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         },
                     )
                     // Termux-Wiederanlauf (ehem. „Erweitert", unverändert).
-                    AdvancedCard(configVersion)
+                    // PH-7/PS-G-7 (play): RUN_COMMAND-Permission entfällt —
+                    // keine Revival-UI im play-Build (Watchdog ist ebenfalls
+                    // play-no-op via BuildConfig in RelayClient).
+                    if (BuildConfig.EDITION_GITHUB) AdvancedCard(configVersion)
                     // Selbst-Update: github-Edition aktiv, play-Edition
                     // bewusst disabled mit Hinweis (FLAG_FULL_EDITION).
                     SelfUpdateCard()

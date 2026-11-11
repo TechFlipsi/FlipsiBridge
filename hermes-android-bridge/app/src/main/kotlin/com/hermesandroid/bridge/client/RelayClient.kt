@@ -1099,6 +1099,9 @@ object RelayClient {
      * the whole stack via start-zee.sh. Cooldown prevents loops.
      */
     private fun maybeFireTermuxRevival() {
+        // PH-7/PS-G-7 (play-Edition): RUN_COMMAND-Permission ist im play-Manifest
+        // entfernt — der Revival-Watchdog ist play-seitig bewusst ein no-op.
+        if (BuildConfig.EDITION_PLAY) return
         val p = prefs ?: return
         val enabled = p.getBoolean(KEY_REVIVAL_ENABLED, false)
         val failures = p.getInt(KEY_FAILURES, 0)

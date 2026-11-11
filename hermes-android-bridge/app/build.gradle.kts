@@ -15,9 +15,12 @@ android {
         minSdk = 26
         // targetSdk bewusst auf 34 belassen (Verhaltenssprung FGS/Rechte im Release
         // kontrolliert trennen; compileSdk 36 ist nur für Bibliotheksauswahl).
+        // PH-7/PS-G-1 (11.11.2026): der play-Flavor überschreibt targetSdk = 36
+        // (hartes Play-Gate seit 31.08.2026: neue Apps + Updates = API 36;
+        // die Verlängerung bis 01.11.2026 ist verpasst) — GitHub-Edition bleibt 34.
         targetSdk = 34
-        versionCode = 37
-        versionName = "0.14.1"
+        versionCode = 38
+        versionName = "0.15.0"
     }
 
     buildFeatures {
@@ -51,6 +54,11 @@ android {
             buildConfigField("boolean", "FLAG_FULL_EDITION", "false")
             buildConfigField("boolean", "EDITION_PLAY", "true")
             buildConfigField("boolean", "EDITION_GITHUB", "false")
+            // PH-7/DE-2: eigener Play-Zähler (3-stellig, Start 100), versionName-
+            // Suffix je Edition, targetSdk 36 = Play-Gate (neue Apps 31.08.2026).
+            versionCode = 100
+            versionNameSuffix = "-play"
+            targetSdk = 36
         }
     }
 
@@ -84,7 +92,10 @@ android {
         val variant = this
         outputs.all {
             (this as com.android.build.gradle.internal.api.BaseVariantOutputImpl)
-                .outputFileName = "flipsibridge-${variant.versionName}-${variant.flavorName}.apk"
+                .outputFileName = if (variant.versionName.endsWith("-${variant.flavorName}"))
+                    "flipsibridge-${variant.versionName}.apk"
+                else
+                    "flipsibridge-${variant.versionName}-${variant.flavorName}.apk"
         }
     }
 
