@@ -117,6 +117,10 @@ _MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
 # Modulkonstante), und der Parser liegt bewusst nur auf dem Inbound-Pfad —
 # Agent-Antworten laufen nie durch _dispatch_frame (kein Loop-Risiko).
 _SLASH_COMMANDS = frozenset({"new", "status", "help"})
+
+# Komposer Welle 12: Whitelist für die /model-Übersetzung (Injection-Schutz)
+_COMPOSER_MODEL_RE = re.compile(r"^[A-Za-z0-9._:@/+-]{1,64}$")
+_COMPOSER_EFFORTS = frozenset({"low", "medium", "high", "max"})
 _HELP_TEXT = (
     "Befehle:\n"
     "/new — Agenten-Unterhaltung zurücksetzen (mit Bestätigung)\n"
@@ -916,6 +920,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # elapsed_ms (Empfang→Antwort) und started_at des Activity-Frames.
         # Bewusst begrenzt (FIFO-Cap): Empfangs-Zeiten sind kein Archiv.
         self._received_at: dict[str, int] = {}
+        # Komposer Welle 12: Pro-Chat-Modell/Denken-Auswahl aus der App —
+        # Stash (Klartext-Metadaten, nie geloggt) + Applied-Tracking.
+        self._composer_meta: dict[str, dict] = {}
+        self._applied_composer: dict[str, tuple] = {}
 
         # --- MEDIA-T1: Media-Empfang/-Versand (chunked, E2E-only) ---
         # Empfangene Dateien landen im konfigurierbaren Media-Dir (0700);
@@ -1436,6 +1444,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             if not isinstance(body, dict):
                 body = {}
             text = str(body.get("text") or envelope.get("text") or "")
+            # Komposer Welle 12: Klartext-Pfad — optionale Felder auf Frame-Ebene
+            # (modell/denken), gleicher Stash wie der E2E-Pfad.
+            _pm = str(envelope.get("model") or "").strip()
+            _pe = str(envelope.get("effort") or "").strip()
+            if _pm or _pe:
+                self._composer_meta[chat_id] = {"model": _pm, "effort": _pe}
         # PH2-T11: Empfangszeit für elapsed_ms notieren (begrenzt, FIFO-Cap).
         self._received_at[chat_id] = int(time.time() * 1000)
         while len(self._received_at) > 256:
@@ -1446,6 +1460,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # Befehle fallen durch (normale Deliver-Pipeline).
         if self._handle_slash_command(envelope, chat_id, text or ""):
             return
+        # Komposer Welle 12: App-Modell-/Denken-Auswahl → session-scoped
+        # /model-Befehl VOR der eigenen Nachricht (Referenz-UX: der Chip am
+        # Komposer schaltet das Modell der Chat-Sitzung). Danach normale
+        # Zustellung der Nachricht selbst.
+        if self._composer_meta.get(chat_id):
+            self._schedule(self._apply_composer_switch(chat_id))
         # PH2-FIX (Jäger B4): chat.read erst NACH der Verarbeitung — vorher
         # wurde der Read schon beim bloßen Frame-Empfang bestätigt (Lüge:
         # 'gelesen', bevor der Text überhaupt angekommen war).
@@ -1717,6 +1737,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: %s-Entschlüsselung fehlgeschlagen (%s) — Frame verworfen",
                            etype, exc)
             return None
+        # Komposer Welle 12: optionale Felder aus der inneren Map stashen
+        # (modell/denken). Klartext nur im Prozess, nie in Logs.
+        _cmodel = str(payload.get("model") or "").strip()
+        _ceffort = str(payload.get("effort") or "").strip()
+        if _cmodel or _ceffort:
+            self._composer_meta[chat_id] = {"model": _cmodel, "effort": _ceffort}
         return str(payload.get("text") or "")
 
     def _handle_fingerprint_check(self, envelope: dict, chat_id: str, text: str) -> bool:
@@ -1993,6 +2019,68 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                            exc_info=True)
             return
         self._send_read_receipt(chat_id, msg_id)
+
+    def _apply_composer_switch(self, chat_id: str) -> None:
+        """Komposer Welle 12: App-Auswahl → Gateway-/model-Befehl (session-scoped).
+
+        Der Gateway kennt '/model <name> [--provider ...] [--reasoning level]'
+        aus dem CLI-Katalog (busy_policy=reject) — die Übersetzung passiert
+        HIER (Flipsi-Adapter, kein Gateway-Patch). 'Auto' kommt nie an (die
+        App sendet dann kein model-Feld). Denken-only (ohne Modell) braucht
+        das zuletzt angewendete Modell. busy=reject des Gateways verwirft
+        den Befehl — die Applied-Trackings bleiben ungesetzt, die nächste
+        Nachricht mit derselben Auswahl versucht es erneut.
+        """
+        meta = self._composer_meta.pop(chat_id, None)
+        if not meta:
+            return
+        model = str(meta.get("model") or "").strip()
+        effort = str(meta.get("effort") or "").strip()
+        if model and not _COMPOSER_MODEL_RE.match(model):
+            logger.info("FlipsiBridge: Komposer-Modell '%s' unsauber — verworfen", model[:8])
+            return
+        effort_ok = effort in _COMPOSER_EFFORTS
+        last_model, last_effort = self._applied_composer.get(chat_id, (None, ""))
+        if model:
+            if (model, effort if effort_ok else "") == (last_model, last_effort):
+                return
+            cmd = "/model " + model
+            if effort_ok:
+                cmd += " --reasoning " + effort
+            self._applied_composer[chat_id] = (model, effort if effort_ok else "")
+        elif effort_ok:
+            if not last_model or not _COMPOSER_MODEL_RE.match(last_model):
+                logger.info("FlipsiBridge: Komposer-Denken '%s' ohne bekanntes Modell — übersprungen",
+                            effort)
+                return
+            if effort == last_effort:
+                return
+            cmd = "/model " + last_model + " --reasoning " + effort
+            self._applied_composer[chat_id] = (last_model, effort)
+        else:
+            return
+        try:
+            gw_chat_id = self._stable_gateway_chat_id(chat_id)
+            self._ensure_phone_auto_approved(gw_chat_id)
+            if _UNDER_HERMES:
+                source = self.build_source(chat_id=gw_chat_id,
+                                           chat_name=self.get_chat_info(gw_chat_id)["name"],
+                                           chat_type="dm",
+                                           user_id=str(gw_chat_id),
+                                           user_name="FlipsiBridge Komposer",
+                                           message_id="")
+                from gateway.platforms.event import MessageEvent, MessageType  # noqa: F401
+                event = MessageEvent(source=source, text=cmd,
+                                     message_type=MessageType.TEXT)  # type: ignore[name-defined]
+                logger.info("FlipsiBridge: Komposer-Switch an Gateway: %s", cmd)
+                asyncio.get_running_loop().create_task(self._handle_and_ack(
+                    event, chat_id, "composer-%d" % int(time.time() * 1000)))
+            elif self.message_callback is not None:
+                self.message_callback({
+                    "chat_id": gw_chat_id, "text": cmd,
+                    "message_id": "composer-%d" % int(time.time() * 1000)})
+        except Exception:
+            logger.warning("FlipsiBridge: Komposer-Switch fehlgeschlagen", exc_info=True)
 
     async def _send_activity(self, chat_id: str, working: bool, started_at: int) -> None:
         """PH2-T11 (F2-S3): chat.activity-Frame senden — Fehler brechen nie die Antwort.

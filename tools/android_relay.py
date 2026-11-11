@@ -3232,6 +3232,14 @@ async def _handle_chat(request: web.Request, state: _RelayState) -> web.StreamRe
     }
     if file_ref:
         message["file_ref"] = file_ref
+    # Komposer Welle 12: optionale Composer-Felder (Klartext-Zweig) —
+    # nur saubere kurze Tokens weiterreichen; enc-Zweig trägt sie im ct.
+    _cm = str(body.get("model") or "").strip()
+    _ce = str(body.get("effort") or "").strip()
+    if _cm and re.match(r"^[A-Za-z0-9._:@/+-]{1,64}$", _cm):
+        message["model"] = _cm
+    if _ce and _ce in {"low", "medium", "high", "max"}:
+        message["effort"] = _ce
 
     # PH2-T5: Konversations-Owner festlegen — dieser Agent (und nur er)
     # darf später auf diese chat_id antworten.

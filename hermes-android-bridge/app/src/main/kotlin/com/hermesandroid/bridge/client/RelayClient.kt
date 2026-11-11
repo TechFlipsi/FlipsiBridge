@@ -2291,10 +2291,19 @@ object RelayClient {
      * dedupeKey, Minuten-Auflösung) und Anzeige-Bubble sich nicht an einem
      * Minuten-Roll (Submit vs. HTTP-Ergebnis) zu Dubletten verzählen.
      */
+    /**
+     * Composer Welle 12: optionale Pro-Chat-Parameter (Modell + Denkaufwand)
+     * reisen mit der Nachricht — E2E: in der VERSCHÜSSELten inneren Map,
+     * Klartext: als optionale Felder. Der Relay/Plugin behandelt sie
+     * backward-kompatibel (unbekannte Felder = kein Fehler); die Anwendung
+     * auf Agent-Seite folgt in der Server-Welle.
+     */
     fun sendChat(
         agentId: String,
         text: String,
         sentAtMs: Long = System.currentTimeMillis(),
+        model: String? = null,
+        effort: String? = null,
         onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit,
     ) {
         val activeScope = scope
@@ -2332,7 +2341,12 @@ object RelayClient {
                     historyChatId = peerChatId
                     val frame = cryptoPeer.encryptFrame(
                         "chat.send.enc", peerChatId,
-                        mapOf("msg_id" to "", "text" to text),
+                        buildMap<String, String> {
+                            put("msg_id", "")
+                            put("text", text)
+                            if (!model.isNullOrBlank()) put("model", model)
+                            if (!effort.isNullOrBlank()) put("effort", effort)
+                        },
                     )
                     val encBody = JsonObject().apply {
                         addProperty("agent_id", agentId)
@@ -2360,6 +2374,8 @@ object RelayClient {
                     val payload = JsonObject().apply {
                         addProperty("agent_id", agentId)
                         addProperty("text", text)
+                        if (!model.isNullOrBlank()) addProperty("model", model)
+                        if (!effort.isNullOrBlank()) addProperty("effort", effort)
                     }
                     val request = Request.Builder()
                         .url(url)

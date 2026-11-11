@@ -384,7 +384,15 @@ fun ChatScreen(padding: PaddingValues) {
      * RelayClient.sendChat ohnehin mit dem GESAMTEN text-Arg) — der Restore
      * faltet ihn unten mit ChatQuoteRules.splitWireText zurück.
      */
-    fun submitQuoted(agent: ChatAgent, text: String, quote: ChatQuote?): Long {
+    fun submitQuoted(
+        agent: ChatAgent,
+        text: String,
+        quote: ChatQuote?,
+        // Komposer Welle 12: Modell- und Denken-Auswahl reist mit der
+        // Nachricht (Transport-Layer); 'Auto'/'aus' = null = kein Feld.
+        composerModel: String? = null,
+        composerEffort: String? = null,
+    ): Long {
         val quoteSnapshot = quote?.takeIf { ChatQuoteRules.quoteSpan(it.text).isNotEmpty() }
         val wire = ChatQuoteRules.wireText(text, quoteSnapshot)
         // W4-FIX-JAG2 (C6): EIN Zeitstempel für UI-Bubble UND Persist-Versand.
@@ -418,7 +426,10 @@ fun ChatScreen(padding: PaddingValues) {
             // folgt dem Draht → der Restore faltet zurück.
             // W4-FIX-JAG2 (C6): der Persist-Timestamp = der UI-Bubble-Ts —
             // eine Uhr, keine Minuten-Roll-Kluft zwischen Anzeige und Platte.
-            RelayClient.sendChat(agent.agentId, wire, sentAtMs) { ok, error, msgId ->
+            RelayClient.sendChat(
+                agent.agentId, wire, sentAtMs,
+                model = composerModel, effort = composerEffort,
+            ) { ok, error, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
@@ -745,7 +756,13 @@ fun ChatScreen(padding: PaddingValues) {
                     // W4-B (Zitieren): mit aktivem Antwort-Verweis geht die
                     // Antwort in den Zitier-Verband (Draht-Text + Live-Bubble
                     // mit Zitat-Block, s. submitQuoted).
-                    submitQuoted(agent, text, replyQuote)
+                    // Komposer Welle 12: die Auswahl am Komposer (Modell/
+                    // Denken) reist mit JEDER Nachricht mit.
+                    submitQuoted(
+                        agent, text, replyQuote,
+                        composerModel = ChatComposerPrefs.model(context, agent.agentId),
+                        composerEffort = ChatComposerPrefs.effort(context, agent.agentId),
+                    )
                     replyQuote = null
                 }
             },
@@ -912,6 +929,16 @@ private fun ConversationBody(
     val reducedMotion = remember(agent.agentId) {
         ChatMotionRules.reduced(ChatMotionRules.animatorScale(compositionContext.contentResolver))
     }
+    // ── Komposer Welle 12: Modell-/Denken-Auswahl am Komposer ────────────────
+    // Auswahl lebt PRO AGENT (SharedPreferences via ChatComposerPrefs); die
+    // lokalen States spiegeln sie für die Chips. Das Sheet öffnet per Chip.
+    var composerModel by remember(agent.agentId) {
+        mutableStateOf(ChatComposerPrefs.model(compositionContext, agent.agentId))
+    }
+    var composerEffort by remember(agent.agentId) {
+        mutableStateOf(ChatComposerPrefs.effort(compositionContext, agent.agentId))
+    }
+    var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }
     // ── W4-B (Chat-Suche): Magnifier-Verband ─────────────────────────────────
     // Suchleiste + Treffer-Liste über dem VOLLSTÄNDIGEN Verlauf (Disk-Restore
     // via ChatHistoryStore + Live-Ankömmlinge — NIEMALS am chatEvents-200er-
@@ -1144,6 +1171,24 @@ private fun ConversationBody(
                     onAttach = onAttach,
                     voiceRecording = voiceRecording,
                     onVoiceToggle = onVoiceToggle,
+                    modelLabel = composerModel ?: "Auto",
+                    effortLabel = effortGermanLabel(composerEffort),
+                    onOpenPicker = { composerPickerOpen = true },
+                )
+            }
+            if (composerPickerOpen) {
+                ChatModelSheet(
+                    agentId = agent.agentId,
+                    currentModel = composerModel,
+                    currentEffort = composerEffort,
+                    onPickModel = { picked ->
+                        composerModel = picked
+                        composerPickerOpen = false
+                    },
+                    onPickEffort = { level ->
+                        composerEffort = level
+                    },
+                    onDismiss = { composerPickerOpen = false },
                 )
             }
         } else {

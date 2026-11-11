@@ -7,6 +7,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -42,7 +43,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -809,67 +812,145 @@ fun ChatInputBar(
     onAttach: (() -> Unit)? = null,
     voiceRecording: Boolean = false,
     onVoiceToggle: (() -> Unit)? = null,
+    // Komposer Welle 12 (Referenz-Übernahme): Meta-Reihe mit Modell-/Denk-
+    // Chip (öffnet die Auswahl-Sheet) im Flipsi-Pill-Look.
+    modelLabel: String = "Auto",
+    effortLabel: String? = null,
+    onOpenPicker: () -> Unit = {},
 ) {
-    Row(
+    val canSend = canSendChat(value)
+    Column(
         modifier = modifier
-            .heightIn(min = 72.dp)
-            // PH-FIX-CHAT-A (F2): 16 dp Außenabstand — bündig mit den
-            // Bubbles (12 dp contentPadding + 8 dp Zeilen-Padding
-            // ergibt 20 dp); vorher ragte das Feld optisch enger an den
-            // Rand als der Verlauf.
+            // PH-FIX-CHAT-A (F2): 16 dp Außenabstand — bündig mit den Bubbles
+            // (12 dp contentPadding + 8 dp Zeilen-Padding ergeben 20 dp).
             .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.Bottom,
     ) {
-        if (onAttach != null) {
-            IconButton(
-                onClick = onAttach,
-                modifier = Modifier.heightIn(min = 56.dp),
+        // Referenz-Form: EIN abgerundetes Pill-Panel, oben das Textfeld
+        // (ohne eigenen Kasten), darunter die Meta-Reihe (Anhang, Modell/
+        // Denken-Chips, Mikrofon, Send-Kreis). Flipsi-Farben: Panel,
+        // TextPrimary/Secondary, Ember-Aktion, SignalRed-Record.
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(28.dp))
+                .background(FlipsiColors.Panel)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+        ) {
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 40.dp),
+                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                    color = FlipsiColors.TextPrimary,
+                ),
+                cursorBrush = SolidColor(FlipsiColors.Ember),
+                maxLines = 4,
+                decorationBox = { innerTextField ->
+                    Box {
+                        if (value.isEmpty()) {
+                            Text(
+                                if (voiceRecording) "Sprachnachricht läuft …"
+                                else "Nachricht schreiben",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = FlipsiColors.TextSecondary,
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = "Anhang hinzufügen (Foto, Datei, Sprachnachricht)",
-                    tint = FlipsiColors.TextPrimary,
-                )
-            }
-        }
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .weight(1f)
-                .heightIn(min = 56.dp),
-            placeholder = {
-                Text(if (voiceRecording) "Sprachnachricht läuft …" else "Nachricht schreiben")
-            },
-            maxLines = 4,
-            shape = RoundedCornerShape(16.dp),
-        )
-        Spacer(Modifier.width(8.dp))
-        if (voiceRecording && onVoiceToggle != null) {
-            // MEDIA-T1: Aufnahme läuft — Stopp/Senden-Button (Ember-Rot-Sprache
-            // wie der restliche Chat; A11y: Text-Badge statt nur Farbe).
-            IconButton(
-                onClick = onVoiceToggle,
-                modifier = Modifier.heightIn(min = 56.dp),
-            ) {
-                Icon(
-                    painterResource(R.drawable.ic_mic),
-                    contentDescription = "Sprachnachricht beenden und senden",
-                    tint = FlipsiColors.SignalRed,
-                )
-            }
-        } else {
-            IconButton(
-                onClick = onSend,
-                // SIRS-05: leerer Text = disabled (Regel JVM-gepinnt, siehe ChatBubbleRules).
-                enabled = canSendChat(value),
-                modifier = Modifier.heightIn(min = 56.dp),
-            ) {
-                Icon(
-                    painterResource(R.drawable.ic_send),
-                    contentDescription = "Senden",
-                    tint = if (canSendChat(value)) FlipsiColors.Ember else FlipsiColors.TextSecondary,
-                )
+                if (onAttach != null) {
+                    IconButton(onClick = onAttach, modifier = Modifier.size(40.dp)) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "Anhang hinzufügen (Foto, Datei, Sprachnachricht)",
+                            tint = FlipsiColors.TextSecondary,
+                        )
+                    }
+                }
+                // Modell-Chip (Referenz: 'Auto'/Kurzname am Komposer — Tippen
+                // öffnet die Auswahl-Sheet).
+                Row(
+                    Modifier
+                        .heightIn(min = 32.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(FlipsiColors.PanelElev)
+                        .clickable(onClick = onOpenPicker)
+                        .padding(horizontal = 10.dp)
+                        .semantics { contentDescription = "Modell wählen: $modelLabel" },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        modelLabel.take(14),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (modelLabel == "Auto") FlipsiColors.TextSecondary
+                                else FlipsiColors.TextPrimary,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                if (effortLabel != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Row(
+                        Modifier
+                            .heightIn(min = 32.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(FlipsiColors.EmberDim)
+                            .clickable(onClick = onOpenPicker)
+                            .padding(horizontal = 10.dp)
+                            .semantics { contentDescription = "Denkstufe: $effortLabel" },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Denk: $effortLabel",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = FlipsiColors.TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
+                Spacer(Modifier.weight(1f))
+                if (onVoiceToggle != null) {
+                    IconButton(onClick = onVoiceToggle, modifier = Modifier.size(40.dp)) {
+                        Icon(
+                            painterResource(R.drawable.ic_mic),
+                            contentDescription = if (voiceRecording)
+                                "Sprachnachricht beenden und senden"
+                            else "Sprachnachricht aufnehmen",
+                            tint = if (voiceRecording) FlipsiColors.SignalRed
+                                   else FlipsiColors.TextSecondary,
+                        )
+                    }
+                }
+                // KOMPOSER WELLE 12: Send-Kreis (Referenz: runder Button mit
+                // ↑/Send); Ember-Fläche wenn send-fähig, gedimmt sonst —
+                // A11y via IconButton + Beschreibung, SIRS-05 bleibt gepinnt.
+                IconButton(
+                    onClick = onSend,
+                    enabled = canSend,
+                    modifier = Modifier.size(44.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(if (canSend) FlipsiColors.Ember
+                                        else FlipsiColors.PanelElev),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            painterResource(R.drawable.ic_send),
+                            contentDescription = "Senden",
+                            tint = if (canSend) FlipsiColors.OnEmber
+                                   else FlipsiColors.TextSecondary,
+                        )
+                    }
+                }
             }
         }
     }
