@@ -79,3 +79,10 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - **FAB unten rechts:** runder-Quadrat Ember-Kreis, weißes Plus/Meldungs-Icon → öffnet die Kopplung (neuer Agent).
 - **Bottom-Nav (wo vorhanden):** aktiver Tab = Ember-Pill-Hintergrund mit dunkler Textfarbe (Anmutung wie Vorbild-Green-Pill, unsere Farben).
 - **Verifikation:** Emulator-Screens der Agenten-Liste (Suche aktiv, Chips, gelesene/ungelesene Zeilen, FAB) in den Drill-Report.
+
+## P12 — COLOR-CUSTOMIZER (Sir-Direktive 11.11. spät) — FEATURE/DESIGN
+- Sirs Wunsch: die GESAMTE App in eigenen Farb-Wünschen einstellbar, dazu die Chat-Bubble-Farben separat — mit der HARTEN Nebenregel: kein Zustand, in dem Texte unlesbar werden.
+- **ThemeEngine (Code):** Nutzer-Farben persistiert (Prefs): Akzentfarbe (default Ember), Bubble-eigen, Bubble-Agent, Hintergrund-Ton, optional nutzer-Wallpaper (P11-Pick). Alles über ein zentrales Theme-Objekt, keins der bestehenden FlipsiColors.Literals bleibt hart in Screens.
+- **Lesbarkeits-Garantie (die harte Nebendingkeit):** Textfarben werden NIEMALS mitgewählt, sondern ALGORITHMSCH abgeleitet: je Nutzer-Fläche wird die relative Luminanz berechnet → Text automatisch dunkel (OnEmber-Stil) oder hell (TextPrimary) — Kontrast-Ziel ≥ 4,5:1 für Fließtext; fällt eine Nutzerkombination unter das Ziel, gewinnt die abgeleitete Textfarbe automatisch (die App weigert sich freundlich, unlesbar zu malen) + Live-Preview-Swatch im Settings zeigt die Kombination VOR dem Speichern.
+- **UI in den Einstellungen:** Abschnitt „Darstellung": Voreinstellungen (Flipsi-Standard + ausgewählte Paletten) + swatch-grid für Akzent/„Eigene Bubble"/„Agenten-Bubble"/Hintergrund + „Chat-Hintergrundbild wählen" (P11-Pick) + [„Zurücksetzen auf Flipsi-Standard"]. Live-Preview-Karte (Mini-Chat) direkt im Sheet.
+- **Verifikation:** Kontrast-Berechnungs-Unit-Tests (≥4,5:1 je generierter Kombi); Emulator-Screens mit EXTREM-Farben (hell-auf-hell-Probe = App korrigiert) im Drill-Report.
