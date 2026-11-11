@@ -55,10 +55,16 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - Fix: ASSIST-Intent-Activity (Kurz-Einstieg: Mikro öffnet Voice-Chat direkt) + Einstellungen-Karte „Als Standard-Assistent einrichten" → RoleManager(ROLE_ASSISTANT)-Anfrage; danach Lang-Drücken/Assistant-Trigger öffnet FlipsiBridge statt Gemini.
 - Verifikation: RoleManager-Übergabe + System-Default-Screen belegt (Drill-Beweis).
 
-## P11 — Chat-Fenster im WhatsApp-Design-Spruch (Sir-Direktive 11.11. spät) — DESIGN-REBUILD
-- Sirs Befund: unser Chat wirkt „zusammen gebastelt". Ziel: die WhatsApp-Anmutung (aufgeräumt, bewährt) — aber mit eigenen Assets (kein 1:1-Kopieren fremder Grafiken/Texte, Sir-Regel): Wallpaper selbst generieren in Flipsi-Farben (sehr dunkel, subtil), Bubbles/Spacing nach dem bewährten Muster neu setzen.
-- Bubbles: Sende-/Empfangsseite mit unterschiedliche Radius-Silhouette (Ecke zur Absenderseite klein), Hintergrund-Töne dezent unterscheidbar, Zeitsempel INSIDE der Bubble unten rechts, Status-Chip daneben, Datumstrenner als kleine mittige Chips, max-Bubble-Breite ~75 %, Tails weglassen (modern flach), einheitliche Padding-Matrix.
-- Chat-Kopf: Avatar + Name + Statusband (Online/arbeitet) + Zurück — Höhe kompakt, wie beim Vorbild-Muster.
-- Wallpaper: eigenes PNG (Tilebar oder Blur-Spot) in Void-Navy mit sehr subtiler Struktur — NICHT WhatsApp-Raster kopieren.
-- Komposer passt schon zum Muster (Single-Pill aus der Referenz) — Feinjustierung: Icons-Einklang, Abstände.
-- Verifikation: Emulator-Screenshots Chat-View (eigene + Agenten-Seite, Datum-Chip, lange Bubbles, Medien-Bubbles) in den Drill-Report.
+## P11 — Chat-Fenster: Sirs Wunschbild (WhatsApp-Screenshot „Valentin Bruder", 11.11. 22:44) als Bauvorlage — DESIGN-REBUILD
+- Grundregel (unverändert): **Anmutung ja, Assets nein** — kein WhatsApp-Wallpaper/Avatar/Grafik wird kopiert; Struktur, Formen, Radien, Layout-Grammatik werden 1:1 nachgebaut; Farben = Flipsi-Palette; Hintergrund-Foto-Feeling lösen wir als FEATURE (nutzer-eigener Wallpaper-Pick) statt kopiertem Foto.
+- **Hintergrund:** statt starrem Muster → Chat-Einstellungen „Chat-Hintergrund": Standard = sehr dunkles Eigenmuster (Void-Navy, hand-generiert, minimal), WUNSCH: Nutzer wählt eigenes Foto (ContentResolver-Pick), App legt dunkles Overlay drüber (Wie WhatsApp-Lesbarkeit).
+- **Kopf (kompakt, Panel-Ton):** Zurück → Avatar (Agent-Initialkette/Icon) → Name + Statuszeile (z. B. „arbeitet … (mm:ss)" oder zuletzt aktiv) → rechts KEINE Call-Icons (nicht unser Scope), nur ⋯-Menu. Höhe kompakt.
+- **Bubbles (Spec aus dem Bild):**
+  - Outgoing (eigene): dunkler warm-ton mit Ember-Bezug (EmberDim #3A2A1F, Text TextPrimary), Radius 14, unten Ecke klein zur rechten Seite (Tail optional weglassen = flach modern).
+  - Incoming (Agent): Panel #1A1D23, Radius 14, unten kleine Ecke links.
+  - Zeitstempel INSIDE unten-right (labelSmall, TextSecondary), unser Status-Chip (wartend ✓/gelesen) rechts daneben.
+  - Quote: nested-Box innen mit vertikalem Ember-Streifen-Sender-Label (haben wir — Angleichung an Bubble-Pattern).
+  - Max-Breite ~75 %, Medien-Bubbles gleiche Silhouette.
+- **Datum-Chip:** mittig, kleine PanelElev-Pill.
+- **Komposer:** bleibt die Single-Pill (passt zum Bild: Kapsel + Anhang-Links + runder Aktionsknopf rechts — unser Send-Kreis = Ember).
+- Verifikation: Emulator-Screencaps (eigene+Agenten-Bubbles mit Zeit/Status, Quote, Datum-Chip, Wallpaper-Default + nutzer-Foto-Fall) in den Drill-Report.
