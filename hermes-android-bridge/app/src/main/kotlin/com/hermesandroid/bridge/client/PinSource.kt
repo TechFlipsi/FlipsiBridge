@@ -66,14 +66,6 @@ object PinSource {
      * Format `sha256/<Base64-(SPKI)>` — wortgetreu aus dem Beweis-Dump.
      */
     val OWN_RELAY_PINS: List<String> = emptyList() // leer im Release — Pins nur via Nutzer-Konfiguration
-        "sha256/qgGoKoCQ9cUa7RvgD2AVujR7kA6P+3Zpjw+9NzWbGZ8=",
-        // Intermediate CN=YE1,O=Let's Encrypt,C=US (stabil bis 2028-09-02)
-        "sha256/brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=",
-        // CN=Root YE,O=ISRG,C=US (stabil bis 2032-09-02)
-        "sha256/sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=",
-        // CN=ISRG Root X2,O=ISRG,C=US — Cross-Sign von Root X1 (bis 2032-09-02)
-        "sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=",
-    )
 
     /** FAILED-Anzeigetext DE (Konvention: aktive App-Sprache, W4-05 zieht um). */
     const val PIN_FAILED_DE: String =
