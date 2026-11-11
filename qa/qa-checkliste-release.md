@@ -51,7 +51,9 @@
 - [ ] Fehlschlag EINES dieser Punkte = Release-Block (Fix vor jedem weiteren Schritt).
 
 ## H. Recht & Play-Compliance
-- [ ] Impressum/Datenschutz/Nutzungsbedingungen: Inhalt vorhanden, korrekt (Österreich), erreichbar in der App (Einstellungen) + Assistent-Gate.
+- [ ] Impressum/Datenschutz/Nutzungsbedingungen: Inhalt vorhanden, korrekt (Österreich), erreichbar in der App (Einstellungen → ℹ️-Info-Button, **ausklappbare Sektionen**) + Assistent-Gate.
+- [ ] Versionsinfo: NUR im Info-Button (About-Sheet, Format „vX.Y.Z" ohne Suffix) — NICHT dauerhaft im Settings-Kopf sichtbar.
+- [ ] Settings-Redesign: Abschnitte als ausklappbare Sektionen, Standard eingeklappt, Spacing/Apple-Pass erfüllt.
 - [ ] Play: Datenschutz-Richtlinie-URL gesetzt, Datensicherheit-Formular passend zu den tatsächlichen Datenflüssen, Zielgruppenfragen beantwortet.
 - [ ] Keine Server-/Setup-Pflichten, die normale Nutzer nicht erfüllen können, ohne dass die App es erklärt.
 

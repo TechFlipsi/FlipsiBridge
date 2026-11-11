@@ -6,9 +6,15 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - Ursache: FLAG_SECURE-Weg (W3: war für den PIN-/Sperr-Screen gedacht, klebt aber an der Chat/Whole-Activity-Schale).
 - Fix: FLAG_SECURE vollständig aus Chat/MainActivity entfernen. Wenn überhaupt, NUR am PIN-Verriegelungs-Screen selbst (Begründung im Bericht). Verifikation: Emulator-Screencap im Chat ≠ schwarz.
 
-## P2 — Settings-Design (Text-Stacking + klebende Versionszeile + „-play") — SCHNELL-FIX
-- Ursahe a) Karten ohne sauberen AutoWrap/Höhen-Fuß (Erlaubnis-Karten brechen Buchstabenweise); b) Version-Text ohne eigenen Abstand direkt unter „Einstellungen"; c) versionName zeigt BuildConfig-String mit Editions-Suffix.
-- Fix: Karten-Layout auf konsistentes Spacing-Regelwerk (16 dp Sektion, 8 dp Zeile, AutoWrap), Versionszeile eigenständig „v0.15.2" (BuildConfig.VERSION_NAME ohne Suffix — Anzeigeformat in einer Konsole kürzen), Abstände überall.
+## P2 — Settings-Design (Text-Stacking + klebende Versionszeile + „-play") — SCHNELL-FIX + REDESIGN
+- Ursache a) Karten ohne sauberen AutoWrap/Höhen-Fuß (Erlaubnis-Karten brechen Buchstabenweise); b) Version-Text ohne eigenen Abstand direkt unter „Einstellungen"; c) versionName zeigt BuildConfig-String mit Editions-Suffix.
+- Fix a) Karten-Layout auf konsistentes Spacing-Regelwerk (16 dp Sektion, 8 dp Zeile, AutoWrap), Abstände überall.
+- Fix b) **Sirs Direktive 11.11.: Version = NICHT dauerhaft sichtbar.** Versionszeile aus dem Kopf RAUS; stattdessen ein Info-Button (ℹ️) am Settings-Kopf → About-Sheet mit: Versionsnummer (nur „v0.15.2", ohne -play), Impressum, Datenschutz, Nutzungsbedingungen, ggf. Licenses.
+- Fix c) Overall-Redesign der Einstellungen (Sir): aufgeräumt, platzsparend — Abschnitte als **ausklappbare Sektionen** (Expandable/Accordion-Karten), Standard = eingeklappt; Apple-Design-Pass (P5) direkt mit drin.
+
+## P7 — Impressum/Datenschutz/Nutzungsbedingungen + Accept — STRUKTUR
+- Fix a) Rechtliches-Gate als Onboarding-Schritt (Accept vor „Fertigstellen", Zustand persistiert).
+- Fix b) **Sirs Direktive 11.11.: Rechts-Dokumente leben ausklappbar in den Einstellungen/Info-Bereich** (keine fünf eigenen Top-Level-Einträge): Abschnitt „Rechtliches" mit Expandern — Impressum, Datenschutz (DSGVO, Österreich, Serverbetreiber-Angabe), Nutzungsbedingungen; Inhalt als Assets/Strings, jederzeit erreichbar (Einstellungen → ℹ️-Info), österreichrechtlich korrekt.
 
 ## P3 — Sprache kaputt + Sprache = Schritt 1 + Rechtschreibprüfung — STRUKTUR
 - Fix a) OnboardingSteps: NEUER Schritt 0 „Sprache" (DE/EN Tiles) VOR der Kopplung; AppLanguage-Gate wird dadurch initialisiert.
