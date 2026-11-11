@@ -145,7 +145,7 @@ dependencies {
     // sperrt nichts — perk macht die IAP Play-policy-konform).
     // … — Welle-5-Compile-Beweis: create()-Flavors erzeugen KES typed
     // Accessors in KTS (AGP 8.9.1) → add() ist die korrekte Form.
-    add("playImplementation", "com.android.billingclient:billing-ktx:7.1.1")
+    add("playImplementation", "com.android.billingclient:billing-ktx:8.0.0")
     debugImplementation(libs.compose.ui.tooling)
 
     implementation(libs.androidx.core)

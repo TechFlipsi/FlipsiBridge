@@ -63,7 +63,6 @@ def main():
         print(json.dumps(detail, indent=1, ensure_ascii=False))
     elif cmd == "upload-aab":
         aab = sys.argv[2]
-        rc = api.uploads()  # namespace
         edits = api.edits()
         edit = edits.insert(body={}, packageName=PACKAGE).execute()
         eid = edit["id"]
@@ -84,7 +83,7 @@ def main():
                         "name": f"0.15.0-play ({version})",
                         "versionCodes": [str(version)],
                         "status": "completed",
-                        "releaseNotes": [{"default": "Erste interne Testversion — Play-Edition."}],
+                        "releaseNotes": [{"language": "de-DE", "text": "Erste interne Testversion — Play-Edition."}],
                     }
                 ],
             },
