@@ -41,17 +41,20 @@
         <package android:name="com.huawei.systemmanager" />
     </queries>
 
-    <!-- J1-F01/J2-F2 (11.11.2026, play): FGS dataSync hat ab targetSdk 35 ein
-         6h/24h-Budget (Service.onTimeout, ohne stopSelf = Crash) — die permanente
-         Brücke läuft im play-Bau als specialUse (kein Budget-Timeout); der Subtype
-         deckt die Play-Konsole-Deklaration (PH-8/9, Begründung: persistente
-         Nutzer-eigene Gerätebrücke). SERVICE-Elemente gehören in <application>:
-         Welle-3-Beweis = AAPT-Fail "unexpected element <service> in <manifest>",
-         wenn es direkt unter <manifest> steht. -->
+    <!-- J1-F01/J2-F2 + Welle-7-Beweis (11.11.2026, play): FGS dataSync hat ab
+         targetSdk 35 ein 6h/24h-Budget (Service.onTimeout, ohne stopSelf = Crash)
+         — die permanente Brücke läuft im play-Bau NUR als specialUse (kein
+         Budget-Timeout); der Subtype deckt die Play-Konsole-Deklaration (PH-8/9,
+         Begründung: persistente Nutzer-eigene Gerätebrücke). SERVICE-Elemente
+         gehören in <application> (Welle-3-AAPT-Fail), und das Overlay MUSS das
+         Main-Element REPlacieren — reine Deklaration vereinigt die FGS-Types
+         (Welle-7-Beweis: merged 'specialUse|dataSync'). -->
     <application>
         <service
             android:name=".service.BridgeConnectionService"
-            android:foregroundServiceType="specialUse">
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:node="replace">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="persistent_device_bridge" />
@@ -72,5 +75,11 @@
         tools:node="remove" />
     <uses-permission
         android:name="com.termux.permission.RUN_COMMAND"
+        tools:node="remove" />
+    <!-- Welle-7-Beweis (play): FGS_DATA_SYNC-Declaration klebte im Merge — mit
+         specialUse-only-Service ist die Permission Totholz und würde eine
+         dataSync-Deklaration in der Konsole erzwingen. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
         tools:node="remove" />
 </manifest>
