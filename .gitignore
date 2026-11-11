@@ -57,3 +57,8 @@ CORE-OS/
 /docs/ROADMAP*.md
 /docs/security-*.md
 /docs/chat-protocol.md
+
+# Privatsphaeren-Gate G (11.11.2026): Evidenz/Beweis-Dumps mit privaten Domain-/IP-Belegen NIE ins Repo
+scratch/
+*.pcap
+qa/**/shots/
