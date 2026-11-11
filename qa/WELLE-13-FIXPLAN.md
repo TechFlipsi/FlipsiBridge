@@ -97,3 +97,11 @@ Sirs 7 Befunde — Ursache + Fix je Punkt. Reihenfolge: Schnell-Fixes zuerst, da
 - APK installiert am Emulator (adb install --no-streaming, push 180 MB/s, „Success") ✓
 - Start: Onboarding lädt, aber WhatsApp WEIGERT sich am Emulator (Custom-ROM-Alarm, 2 Warnseiten, Weiter = verweigert) — tiefere Screens ohne ECHTE Nummer + auf nicht-geprüften ROMs NICHT erreichbar. Ehrliche Grenze dokumentiert.
 - Deshalb: Design-Quellen = (a) Sirs eigene Screenshots (Pixelproben — P11-ANHANG 1) und (b) die Struktur-Analyse. APK-Assets/Code werden NICHT kopiert (Sir-Regel).
+
+### P11-ANHANG 3: Tiefscan 2. Datenlieferung (Julia=Wisch→Antwort, Gedi=Tageschips, 11.11. spät)
+- **Tages-Chips:** kleine mittige Pill, RELATIVE Tagesnamen („Montag", „Heute") statt langem Datum — ChatDateRules: heut/morgen/7-Tage = Relativname, sonst „4. November 2026". Text light-grey auf medium-grey-Pill ≈ (WA #3B4A54 → wir: PanelElev).
+- **Bubble-Silhouette (korrigiert, mess-genau):** Radius ~16-20 dp, kleine SCHARFE Ecke am OBEREN Absender-Rand (nicht unten — gemessen an 4 Bubbles); Breitencap ~75-80 %; Abstand innerhalb einer Sende-Sequenz klein (4-6 dp), bei Senderwechsel größer (8-10 dp).
+- **Foto-Bubble:** Bild + Caption = EIN Container (Caption unten im Bubble-Inneren, Zeit+Häkchen daneben) — bei uns: Media-Bubble = Bild + Caption-Zone in derselben Surface.
+- **Reaktionen (WA-Feature, NOTIERT, NICHT gebaut):** Emoji-Reaktion am Bubble-Fuß — als künftiger Parkplatz in der Backlog-Notiz, kein W13-Scope.
+- **Wisch→Antwort (Anmutung):** Wisch = TRIGGER (Bubble schnappt zurück) → Antwort-Preview-Leiste ÜBER dem Composer: dunkle Fläche + VERTIKALER EMBER-STREifen links + Sendername in Ember (Farbverknüpfung zur Original-Seite) + der Originaltext 1 Zeile; KEIN X (Abbruch = Wischweg/Tap ins Feld); die gesendete Antwort-Bubble zeigt das Zitat-Verband (haben wir schon — ChatQuote ✓ Angleichung an das Bubble-Pattern + Ember-Streifen).
+- **Anbindung an uns:** swipe-to-reply existiert (replyQuote + submitQuoted ✓) — der Fix = die REPLY-BAR-Anmutung über dem Komposer + Quote-in-Bubble-Muster (Ember-Streifen), Tages-Chips-Textregeln = ChatDateRules-Erweiterung.
