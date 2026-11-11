@@ -105,6 +105,7 @@ object PinSource {
      * bekommen bewusst KEINE Pins (Parität zu NSC includeSubdomains=false).
      */
     fun pinsFor(host: String): List<String>? {
+        if (host.isBlank() || OWN_RELAY_PINS.isEmpty()) return null
         val normalized = host.trim().lowercase()
         return if (normalized == OWN_RELAY_HOST) OWN_RELAY_PINS else null
     }
@@ -115,7 +116,7 @@ object PinSource {
      * Debug-Kill-Switch); hostname-only-Hosts treffen KEIN Pin-Muster.
      */
     fun pinner(): CertificatePinner? {
-        if (debugKillSwitch) return null
+        if (debugKillSwitch || OWN_RELAY_PINS.isEmpty()) return null
         val builder = CertificatePinner.Builder()
         for (pin in OWN_RELAY_PINS) builder.add(OWN_RELAY_HOST, pin)
         return builder.build()
