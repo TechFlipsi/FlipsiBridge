@@ -167,8 +167,22 @@ fun SupporterDialog(activity: Activity?, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(if (badgeActive) "Unterstützer ✓" else "FlipsiBridge unterstützen",
-                 fontWeight = FontWeight.SemiBold)
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(
+                    if (badgeActive) "Unterstützer" else "FlipsiBridge unterstützen",
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (badgeActive) com.hermesandroid.bridge.ui.FlipsiColors.Ember
+                            else com.hermesandroid.bridge.ui.FlipsiColors.TextPrimary,
+                )
+                if (badgeActive) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "♥",
+                        color = com.hermesandroid.bridge.ui.FlipsiColors.Ember,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
         },
         text = {
             Column {

@@ -5,6 +5,7 @@ import android.content.Context
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -178,10 +179,23 @@ fun SupporterCard(activity: Activity?) {
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(
-                if (badgeActive) "Unterstützer ✓" else "FlipsiBridge unterstützen",
-                fontWeight = FontWeight.SemiBold,
-            )
+            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Text(
+                    if (badgeActive) "Unterstützer" else "FlipsiBridge unterstützen",
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (badgeActive) com.hermesandroid.bridge.ui.FlipsiColors.Ember
+                            else com.hermesandroid.bridge.ui.FlipsiColors.TextPrimary,
+                )
+                if (badgeActive) {
+                    Spacer(Modifier.width(8.dp))
+                    // Sir 12.11.: Herz-Status sichtbar (Ember-Herz als Glyph, A11y-Aufzaehlung folgt im Text).
+                    Text(
+                        "♥",
+                        color = com.hermesandroid.bridge.ui.FlipsiColors.Ember,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                }
+            }
             Text(
                 if (badgeActive) {
                     "Danke! Dein Unterstützer-Badge ist aktiv — die App bleibt komplett, nichts wird gesperrt."
