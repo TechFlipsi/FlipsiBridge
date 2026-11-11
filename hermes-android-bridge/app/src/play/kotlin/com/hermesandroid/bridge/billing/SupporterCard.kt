@@ -108,11 +108,11 @@ fun SupporterCard(activity: Activity?) {
                     ),
                 )
                 .build(),
-        ) { response ->
-            // Billing-8.0-KTX: das Callback liefert EIN ProductDetailsResponse-Objekt
-            // (billingResult + productDetailsList) statt zwei Parameter.
-            val billingResult = response.billingResult
-            val list = response.productDetailsList
+        ) { billingResult, result ->
+            // Billing-8.0-KTX (javap-Ground-Truth, Welle 10b): zwei Parameter —
+            // (BillingResult, QueryProductDetailsResult); die Liste kommt vom
+            // result.getProductDetailsList().
+            val list = result.productDetailsList
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK &&
                 !list.isNullOrEmpty()
             ) {
