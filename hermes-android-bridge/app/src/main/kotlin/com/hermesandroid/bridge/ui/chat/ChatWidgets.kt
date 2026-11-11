@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -329,7 +330,7 @@ fun DeliveryChecks(
     Box(
         modifier = modifier
             .padding(end = 4.dp)
-            .semantics { contentDescription = description },
+            .semantics(mergeDescendants = true) { contentDescription = description },
         contentAlignment = Alignment.Center,
     ) {
         when (status) {
@@ -1023,7 +1024,8 @@ fun FilterChipFlipsi(
         modifier = modifier
             .clip(RoundedCornerShape(20.dp))
             .background(if (active) FlipsiColors.Ember else FlipsiColors.PanelElev)
-            .clickable(onClick = onClick)
+            .clickable(onClick = onClick, role = Role.Checkbox)
+            .semantics(mergeDescendants = true) { selected = active; contentDescription = label }
             .padding(horizontal = 14.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

@@ -184,6 +184,7 @@ fun ChatModelSheet(
                     selected = currentModel == m,
                     onRemove = {
                         ChatComposerPrefs.removeModel(context, m)
+                        if (currentModel == m) { ChatComposerPrefs.setModel(context, agentId, null) } // Jaeger-2: Prefs mitraeumen
                         if (currentModel == m) onPickModel(null)
                         customRefresh++
                     },
@@ -216,8 +217,13 @@ fun ChatModelSheet(
             Text("Denken", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
+            val stageLabels = THINK_STAGES.map { it.first }
             Slider(
                 value = stageIndex.toFloat(),
+                modifier = Modifier.semantics {
+                    this.contentDescription = "Denkstufe"
+                    stateDescription = stageLabels.getOrNull(stageIndex) ?: "Aus"
+                },
                 onValueChange = { idx ->
                     val stage = THINK_STAGES[idx.toInt().coerceIn(0, THINK_STAGES.size - 1)]
                     ChatComposerPrefs.setEffort(context, agentId, stage.second)

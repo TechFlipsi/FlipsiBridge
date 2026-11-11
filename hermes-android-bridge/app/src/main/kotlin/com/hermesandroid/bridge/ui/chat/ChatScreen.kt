@@ -1265,9 +1265,16 @@ private fun ConversationBody(
                 // WELLE-13 P11 (Datum-Chip): Heute/Gestern-Schlüssel je Composition
                 // (Composable-Scope, NICHT im LazyListScope — remember wäre dort
                 // unzulässig); Tageswechsel-Regeln rein JVM-getestet (ChatDateRules).
-                val todayKey = remember { ChatDateRules.dayKey(System.currentTimeMillis()) }
+                var todayKey by remember { mutableStateOf(ChatDateRules.dayKey(System.currentTimeMillis())) }
+                // Jaeger-2: Tageswechsel zur Laufzeit (Chip zeigt ab Mitternacht wieder Heute)
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        kotlinx.coroutines.delay(60_000L)
+                        todayKey = ChatDateRules.dayKey(System.currentTimeMillis())
+                    }
+                }
                 val yesterdayKey = remember {
-                    ChatDateRules.dayKey(System.currentTimeMillis() - 86_400_000L)
+                    ChatDateRules.dayKey(java.time.LocalDate.now().minusDays(1).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
                 }
                 Box(modifier = Modifier.weight(1f)) {
                     ChatWallpaper(modifier = Modifier.fillMaxSize())

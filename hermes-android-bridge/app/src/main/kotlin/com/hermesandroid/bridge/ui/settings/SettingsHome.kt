@@ -208,7 +208,6 @@ private fun AboutSheetContent() {
                 fontWeight = FontWeight.SemiBold,
             )
         }
-        Spacer(Modifier.width(0.dp))
         // Rechtliches-Kurzeinträge (P7b): dieselben legal_*-Texte wie in der
         // Karte — About-Sheet und Einstellungen zeigen niemals zwei Wahrheiten.
         LegalExpander(

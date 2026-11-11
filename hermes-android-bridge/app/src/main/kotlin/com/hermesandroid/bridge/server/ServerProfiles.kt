@@ -338,6 +338,7 @@ object ServerProfiles {
     @Synchronized
     fun completeOnboarding() {
         dto.onboardingDone = true
+        dto.onboardingSkipped = false // Jaeger-Fund: Skip→Resume→Fertigstellen raeumt den Skip-Merker ab
         persist()
         publish()
     }

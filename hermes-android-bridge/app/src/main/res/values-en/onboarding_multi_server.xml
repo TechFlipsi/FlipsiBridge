@@ -43,8 +43,8 @@
     <string name="onb_fp_phone_label">Phone fingerprint (session)</string>
     <string name="onb_fp_agent_label">Agent identity fingerprint</string>
     <string name="onb_fp_waiting">Waiting for the E2E handshake — the fingerprint appears on first agent contact.</string>
-    <string name="onb_fp_hint">Confirming has finished the first-run setup — comparison remains available in chat.</string>
-    <string name="onb_confirm">Confirm — go to chat</string>
+    <string name="onb_fp_hint">Confirming continues to the Permissions step — comparison remains available in chat.</string>
+    <string name="onb_confirm">Confirm</string>
     <string name="ms_title">Relay servers</string>
     <string name="ms_hint">Stored relays. One entry is active — switching consciously disconnects the old connection.</string>
     <string name="ms_add">+ Add server</string>
@@ -59,7 +59,7 @@
     <string name="ms_edit">Edit</string>
     <string name="ms_remove">Delete</string>
     <string name="ms_switch_title">Switch connection?</string>
-    <string name="ms_switch_text">The connection to “%1$s” is disconnected, afterwards “%2$s” connects. Chat is unreachable until rebuilt.</string>
+    <string name="ms_switch_text">The connection to “%1$s” will be disconnected; afterwards “%2$s” connects. Chat is unreachable until rebuilt.</string>
     <string name="ms_switch_confirm">Disconnect and switch</string>
     <string name="ms_cancel">Cancel</string>
     <string name="ms_remove_title">Delete server profile?</string>
@@ -84,12 +84,13 @@
     <string name="onb_perm_settings">Open system settings</string>
     <string name="onb_perm_status_denied">Denied</string>
     <string name="onb_perm_status_granted">Granted</string>
-    <string name="onb_perm_title_camera">—</string>
-    <string name="onb_perm_title_contacts">—</string>
-    <string name="onb_perm_title_location">—</string>
+    <string name="onb_perm_title_camera">Camera</string>
+    <string name="onb_perm_title_contacts">Contacts</string>
+    <string name="onb_perm_title_location">Location</string>
     <string name="onb_perm_title_mic">Microphone</string>
-    <string name="onb_perm_title_notifications">—</string>
+    <string name="onb_perm_title_notifications">Notifications</string>
     <string name="onb_step_header_perm">Permissions</string>
     <string name="onb_step_text_perm">Review the app permissions — each one lists what it is used for.</string>
     <string name="onb_finish">Finish</string>
+    <string name="onb_skip">Skip setup</string>
 </resources>
