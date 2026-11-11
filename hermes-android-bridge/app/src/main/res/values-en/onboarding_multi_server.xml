@@ -16,7 +16,7 @@
     <!-- Step 1: legal gate (Welle 13, P7) -->
     <string name="onb_step_header_legal">Step 1 of 5 — legal</string>
     <string name="onb_step_text_legal">Expand the documents and read them briefly. Setup only continues once you accept — no data is transmitted before that.</string>
-    <string name="onb_title">Couple FlipsiBridge</string>
+    <string name="onb_title">Pair FlipsiBridge</string>
     <string name="onb_step_header_url">Step 1 of 3 — relay address</string>
     <string name="onb_step_text_url">Enter the address of the relay running on your server. The app then asks for the pairing code.</string>
     <string name="onb_url_label">Relay URL</string>
