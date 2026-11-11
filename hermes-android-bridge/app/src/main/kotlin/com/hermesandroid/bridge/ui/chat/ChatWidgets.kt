@@ -302,9 +302,74 @@ data class StatusChip(val label: String, val color: Color, val description: Stri
 private fun statusChip(status: String?): StatusChip = when (status) {
     "queued" -> StatusChip("⏱ Wartet", FlipsiColors.SignalAmber, "Nachricht wartet im Relay-Spool")
     "delivered" -> StatusChip("✓✓ Zugestellt", FlipsiColors.TextSecondary, "Beim Agenten zugestellt")
-    "read" -> StatusChip("✓✓ Gelesen", Color(0xFF58A6FF), "Vom Agenten gelesen")
+    "read" -> StatusChip("✓✓ Gelesen", FlipsiColors.Ember, "Vom Agenten gelesen")
     "failed" -> StatusChip("✕ Fehlgeschlagen", FlipsiColors.SignalRedText, "Senden fehlgeschlagen")
     else -> StatusChip("✓ Gesendet", FlipsiColors.TextSecondary, "An das Relay gesendet")
+}
+
+/**
+ * WELLE 13 P11 (Sir: „Lesebestätigungs-Häkchen wie WhatsApp"): Status-NICHT
+ * mehr als Wort-Text, sondern als Häkchen-Grammatik NEBEN dem Zeitstempel —
+ * 1 Häkchen = gesendet, 2 Häkchen = zugestellt, 2 Häkchen in Akzentfarbe
+ * (Ember statt WhatsApp-Blau) = gelesen, rotes ✕ = fehlgeschlagen, Amber-
+ * Uhr = wartet. A11y bleibt GEWAHRT: TalkBack liest die vollen Worte über
+ * contentDescription — sie stehen bewusst NICHT als sichtbarer Text am
+ * Screen (das ist die WhatsApp-Anmutung), die Bedeutung ist nie nur im
+ * Bild/Konkurrenz (Beschreibung immer gesetzt).
+ * Häkchen = selbst gezeichnete Canvas-Pfade (keine fremden Assets).
+ */
+@Composable
+fun DeliveryChecks(
+    status: String?,
+    tint: Color,
+    description: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .padding(end = 4.dp)
+            .semantics { contentDescription = description },
+        contentAlignment = Alignment.Center,
+    ) {
+        when (status) {
+            "queued" -> Text(
+                "⏱",
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+            )
+            "failed" -> Text(
+                "✕",
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+                fontWeight = FontWeight.Bold,
+            )
+            else -> {
+                val double = status == "delivered" || status == "read"
+                val pathColor = tint
+                androidx.compose.foundation.Canvas(Modifier.width(20.dp).height(14.dp)) {
+                    val stroke = 1.6.dp.toPx()
+                    val seg = size.width / (if (double) 2.4f else 1.35f)
+                    fun checkPath(x0: Float) {
+                        val p = androidx.compose.ui.graphics.Path().apply {
+                            moveTo(x0 + seg * 0.18f, size.height * 0.62f)
+                            lineTo(x0 + seg * 0.45f, size.height * 0.88f)
+                            lineTo(x0 + seg * 0.82f, size.height * 0.18f)
+                        }
+                        drawPath(
+                            path = p,
+                            color = pathColor,
+                            style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                width = stroke,
+                                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                            ),
+                        )
+                    }
+                    checkPath(0f)
+                    if (double) checkPath(size.width * 0.40f)
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -664,14 +729,11 @@ fun MessageBubble(
                         // kein Chip (kein Backend).
                         if (!message.fromAgent && showStatusChip) {
                             val chip = statusChip(status)
-                            Text(
-                                chip.label,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = chip.color,
-                                modifier = Modifier
-                                    .padding(end = 4.dp)
-                                    .semantics { contentDescription = chip.description },
-                            )
+                        DeliveryChecks(
+                            status = status,
+                            tint = chip.color,
+                            description = chip.description,
+                        )
                         }
                         Text(
                             message.time,
