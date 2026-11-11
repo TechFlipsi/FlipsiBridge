@@ -145,4 +145,5 @@
     <string name="legal_terms_title">Terms of use</string>
     <string name="legal_terms_body">Use: FlipsiBridge is provided free of charge for private use.\n\nWarranty: the app is provided as is; statutory warranty is excluded to the extent legally permissible.\n\nLiability: TechFlipsi is liable only for intent and gross negligence and for personal injury. No liability for damage caused by improper use, third-party systems or data loss.\n\nYour duties: use the app only on devices you own or are authorized to use, and within applicable law.\n\nChanges: these terms may change; the current version lives in the app under Settings → About.</string>
     <string name="legal_accept">I accept</string>
+    <string name="support_a11y">Support button: support the app with a one-time donation</string>
 </resources>

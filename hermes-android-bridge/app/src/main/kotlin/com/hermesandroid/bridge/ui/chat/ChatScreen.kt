@@ -33,6 +33,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -1216,6 +1217,7 @@ private fun ConversationBody(
                 searchOpen = !searchOpen
                 if (!searchOpen) searchQuery = ""
             },
+            onSupport = { supportDialogOpen = true },
         )
         HorizontalDivider(color = FlipsiColors.LineStrong)
         // PH2-FIX (E2E P1): dismissbare Fehler-Zeile direkt unter dem Kopf —
@@ -1225,6 +1227,10 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
+        // WELLE 13 (Sir): Herz-Knopf oeffnet den Support/IAP-Dialog (2,99-Perk).
+        if (supportDialogOpen) {
+            SupporterDialog(activity = chatActivity, onDismiss = { supportDialogOpen = false })
+        }
         // ── W4 (App-Lane C): Tab-Verband [Chat | Mediathek] am Chatscreen ────
         // Der Mediathek-Tab lebt NEBEN dem Chat in derselben Conversation
         // (gemeinsamer Kopf). Zustand je Agent: Agent-Wechsel setzt auf Chat
@@ -1443,6 +1449,8 @@ private fun ConversationHeader(
     // ConversationBody gehalten — der Kopf reicht nur den Knopf durch).
     searchOpen: Boolean = false,
     onSearchToggle: () -> Unit = {},
+    // WELLE 13 (Sir): Herz-Knopf = Support/IAP-Dialog (2,99-Perk, kein Zwang).
+    onSupport: () -> Unit = {},
 ) {
     // mm:ss seit started_at — je Sekunde neu gerechnet (nur bei working).
     // PH-FIX-CHAT-A (F5): 10-Minuten-Deckel statt while(true)-Ewigzähler —
@@ -1523,6 +1531,14 @@ private fun ConversationHeader(
                 contentDescription = stringResource(
                     if (searchOpen) R.string.chat_search_close_a11y else R.string.chat_search_open_a11y,
                 ),
+                tint = FlipsiColors.TextPrimary,
+            )
+        }
+        // WELLE 13 (Sir 12.11.): Herz = Unterstützer-Knopf (IAP, unaufdringlich).
+        IconButton(onClick = onSupport) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = stringResource(R.string.support_a11y),
                 tint = FlipsiColors.TextPrimary,
             )
         }

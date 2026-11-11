@@ -135,4 +135,5 @@
     <string name="legal_terms_title">Nutzungsbedingungen</string>
     <string name="legal_terms_body">Nutzung: FlipsiBridge wird unentgeltlich für private Nutzung zur Verfügung gestellt.\n\nGewährleistung: Die App wird im vorhandenen Zustand bereitgestellt; die gesetzliche Gewährleistung ist soweit gesetzlich zulässig ausgeschlossen.\n\nHaftung: Die Haftung von TechFlipsi ist auf Vorsatz und grobe Fahrlässigkeit sowie Personenschäden beschränkt. Keine Haftung für Schäden durch unsachgemäßen Einsatz, Drittsysteme oder Datenverlust.\n\nPflichten: Du nutzt die App nur auf Geräten, die dir gehören oder für deren Nutzung du berechtigt bist, und im Rahmen der anwendbaren Gesetze.\n\nÄnderungen: Diese Bedingungen können sich ändern; die jeweils aktuelle Fassung steht in der App unter Einstellungen → Info.</string>
     <string name="legal_accept">Ich akzeptiere</string>
+    <string name="support_a11y">Unterstützer-Knopf: App unterstützen mit einmaliger Spende</string>
 </resources>
