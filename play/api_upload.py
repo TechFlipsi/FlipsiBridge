@@ -22,8 +22,28 @@ TRACK = "internal"  # Interner Test-Track
 
 
 def service():
-    from google.oauth2 import service_account
+    """Anmeldeweg automatisch: OAuth-Benutzer-Token vorziehen (Play-Route ohne
+    Service-Account-Accept-Falle); SA-JWT = Fallback."""
     from googleapiclient.discovery import build
+    oauth_path = "/root/.secrets/play-oauth.json"
+    import os
+
+    if os.path.exists(oauth_path):
+        from google.oauth2.credentials import Credentials
+
+        d = json.load(open(oauth_path))
+        creds = Credentials(
+            token=d.get("access_token", None),
+            refresh_token=d["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=d["client_id"],
+            client_secret=d["client_secret"],
+            scopes=[SCOPE],
+        )
+        return build("androidpublisher", "v3", credentials=creds)
+
+    from google.oauth2 import service_account
+
     creds = service_account.Credentials.from_service_account_file(
         JSON_PATH, scopes=[SCOPE]
     )

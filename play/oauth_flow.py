@@ -23,7 +23,7 @@ import requests
 CLIENT_FILE = "/root/.secrets/play-oauth-client.json"
 TOKEN_FILE = "/root/.secrets/play-oauth.json"
 SCOPE = "https://www.googleapis.com/auth/androidpublisher"
-REDIRECT_URI = "http://127.0.0.1:8765/"
+REDIRECT_URI = "http://127.0.0.1:8765"
 
 def _client():
     d = json.load(open(CLIENT_FILE))
