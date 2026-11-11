@@ -104,7 +104,8 @@ import com.hermesandroid.bridge.security.AppLockSettingsCard
 import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.ServerProfiles
-import com.hermesandroid.bridge.ui.chat.ChatScreen
+import com.hermesandroid.bridge.ui.chat
+import com.hermesandroid.bridge.ui.settings.SettingsHome.ChatScreen
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import com.hermesandroid.bridge.ui.components.BadgeState
