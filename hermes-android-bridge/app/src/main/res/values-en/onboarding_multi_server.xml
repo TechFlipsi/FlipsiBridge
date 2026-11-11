@@ -76,4 +76,17 @@
     <string name="ms_resume_title">Setup skipped</string>
     <string name="ms_resume_hint">The setup assistant was skipped. You can reopen it anytime.</string>
     <string name="ms_resume_cta">Resume assistant later</string>
+    <string name="onb_perm_purpose_camera">For photos/videos in chat: recordings are sent as media.</string>
+    <string name="onb_perm_purpose_contacts">Contacts: the agent can read contacts when you task it.</string>
+    <string name="onb_perm_purpose_location">Location: the agent can provide positions when you ask.</string>
+    <string name="onb_perm_purpose_mic">For voice messages: your voice is recorded and sent to your agent.</string>
+    <string name="onb_perm_purpose_notifications">Notifications: agent replies reach you even when the app is closed.</string>
+    <string name="onb_perm_settings">Open system settings</string>
+    <string name="onb_perm_status_denied">Denied</string>
+    <string name="onb_perm_status_granted">Granted</string>
+    <string name="onb_perm_title_camera">—</string>
+    <string name="onb_perm_title_contacts">—</string>
+    <string name="onb_perm_title_location">—</string>
+    <string name="onb_perm_title_mic">Microphone</string>
+    <string name="onb_perm_title_notifications">—</string>
 </resources>

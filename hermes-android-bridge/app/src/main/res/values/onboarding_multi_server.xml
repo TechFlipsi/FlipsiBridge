@@ -95,4 +95,17 @@
     <string name="ms_code_note">Der Code liegt je Profil im App-Vault — er ist hier bewusst verborgen.</string>
     <string name="ms_save">Speichern</string>
     <string name="ms_url_blank_error">URL-Format: https://dein-relay.example</string>
+    <string name="onb_perm_purpose_camera">Für Fotos/Videos im Chat: Aufnahmen werden als Medien gesendet.</string>
+    <string name="onb_perm_purpose_contacts">Kontakt-Funktion: Agent kann Kontakte lesen, wenn du ihn beauftragst.</string>
+    <string name="onb_perm_purpose_location">Standort: der Agent kann Positionen liefern, wenn du es anfragst.</string>
+    <string name="onb_perm_purpose_mic">Für Sprachnachrichten: deine Stimme wird aufgenommen und an deinen Agenten gesendet.</string>
+    <string name="onb_perm_purpose_notifications">Benachrichtigungen: Agenten-Antworten erreichen dich, auch wenn die App zu ist.</string>
+    <string name="onb_perm_settings">In Systemeinstellungen öffnen</string>
+    <string name="onb_perm_status_denied">Verweigert</string>
+    <string name="onb_perm_status_granted">Erteilt</string>
+    <string name="onb_perm_title_camera">—</string>
+    <string name="onb_perm_title_contacts">—</string>
+    <string name="onb_perm_title_location">—</string>
+    <string name="onb_perm_title_mic">Mikrofon</string>
+    <string name="onb_perm_title_notifications">—</string>
 </resources>
