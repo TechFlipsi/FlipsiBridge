@@ -470,6 +470,14 @@ object RelayClient {
     private val _e2eBanner = MutableStateFlow<String?>(null)
     val e2eBanner: StateFlow<String?> = _e2eBanner.asStateFlow()
 
+    /**
+     * W13-P2: sichtbarer Prekey-Fehler (null = keiner) — der Onboarding-
+     * Fingerprint-Schritt zeigt diese Zeile STATT der stillen Warte-Box,
+     * wenn das Relay dem Agenten nach allen Retries keinen spk_pub liefert.
+     */
+    private val _prekeyError = MutableStateFlow<String?>(null)
+    val prekeyError: StateFlow<String?> = _prekeyError.asStateFlow()
+
     /** agentId → aktive (hello_ack-verifizierte) E2E-Session. Keys nur Heap. */
     private val cryptoSessions = ConcurrentHashMap<String, PhoneCryptoPeer>()
 
@@ -485,6 +493,13 @@ object RelayClient {
      * Zurückgesetzt je erfolgreichem consumeAck + je frischem connect()-Zyklus.
      */
     private val helloAckFailures = ConcurrentHashMap<String, Int>()
+
+    /**
+     * W13-P2: agentId → key_get-Versuche mit leerem spk_pub (max.
+     * AgentPrekeyPolicy.MAX_ATTEMPTS gesamt, danach sichtbare Fehlerzeile).
+     * Zurückgesetzt je geliefertem Prekey + je frischem Connect-Zyklus.
+     */
+    private val prekeyFailures = ConcurrentHashMap<String, Int>()
 
     /** Phone-Identity (X25519, aus dem Keystore-sealed IdentityStore geladen). */
     @Volatile
@@ -650,6 +665,10 @@ object RelayClient {
         // oben wird ohnehin genullt — ein Reconnect ist die User-Heilung).
         helloAckFailures.clear()
         _e2eBanner.value = null
+        // W13-P2: frisches Prekey-Retry-Budget + Fehlerzeile je Connect-Zyklus
+        // (ein Reconnect ist die User-Heilung, siehe Bug-1-Härtung).
+        prekeyFailures.clear()
+        _prekeyError.value = null
         publishE2eSessions()
 
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -1591,7 +1610,23 @@ object RelayClient {
         activeScope.launch {
             try {
                 val base = serverUrl?.trim()?.trimEnd('/') ?: return@launch
-                val agentKeys = keyGet(base, agentId) ?: return@launch
+                // W13-P2: key_get unterscheidet jetzt die Eckfälle — Ok =
+                // Handshake läuft weiter, MissingPrekey = Retry/Status statt
+                // stiller CryptoFrameException, null = HTTP-/Netz-Fehler (wie bisher).
+                val agentKeys = when (val keys = keyGet(base, agentId)) {
+                    is AgentPrekeyPolicy.KeyGetResult.Ok -> {
+                        // Erfolg = Prekey kam nach / Neu-Connect → Budget + alte
+                        // Fehlerzeile zurücksetzen (Onboarding heilt sichtbar).
+                        prekeyFailures.remove(agentId)
+                        _prekeyError.value = null
+                        keys
+                    }
+                    is AgentPrekeyPolicy.KeyGetResult.MissingPrekey -> {
+                        onPrekeyMissing(agentId)
+                        return@launch
+                    }
+                    null -> return@launch
+                }
                 val peer = PhoneCryptoPeer(
                     agentId = agentId,
                     agentIkPubHex = agentKeys.ikPub,
@@ -1617,10 +1652,13 @@ object RelayClient {
         }
     }
 
-    /** PH-3: Agent-Public-Keys aus der Registry (404 = Agent ohne E2E-Keys). */
-    private class AgentKeys(val ikPub: String, val spkPub: String)
-
-    private fun keyGet(base: String, agentId: String): AgentKeys? = runCatching {
+    /**
+     * W13-P2: /key_get je Agent — Ok = Keys, MissingPrekey = HTTP 200 mit
+     * leerem/fehlendem spk_pub (Relay kennt den Agent-Prekey nicht),
+     * null = HTTP-/Netz-/Parse-Fehler (fail-closed, wie bisher).
+     * Parse/Klassifikation steckt JVM-testbar in AgentPrekeyPolicy.
+     */
+    private fun keyGet(base: String, agentId: String): AgentPrekeyPolicy.KeyGetResult? = runCatching {
         val request = Request.Builder()
             .url(buildHttpUrl(base, "/key_get?agent_id=$agentId"))
             .header("Authorization", "Bearer ${PairingManager.getCode()}")
@@ -1631,10 +1669,42 @@ object RelayClient {
                 Log.w(TAG, "PH-3: /key_get für Agent ${agentId.take(24)} → HTTP ${response.code} (fail-closed)")
                 return null
             }
-            val obj = JsonParser.parseString(response.body?.string() ?: "").asJsonObject
-            AgentKeys(obj.get("ik_pub").asString, obj.get("spk_pub").asString)
+            val obj = runCatching {
+                JsonParser.parseString(response.body?.string() ?: "").asJsonObject
+            }.getOrNull()
+            AgentPrekeyPolicy.classify(obj)
         }
     }.getOrNull()
+
+    /**
+     * W13-P2 (Jäger-Befund 12.11.26): key_get liefert 200 ohne spk_pub →
+     * NIE mehr stiller Handshake-Tod im „Warte auf E2E-Handshake“-Kasten.
+     * Max. [AgentPrekeyPolicy.MAX_ATTEMPTS] Versuche gesamt mit Abstand,
+     * danach sichtbare deutsche Fehlerzeile im Onboarding-Status mit
+     * Handlungshinweis (Relay-Konfiguration/Prekey-Eintrag prüfen).
+     */
+    private fun onPrekeyMissing(agentId: String) {
+        val failures = (prekeyFailures[agentId] ?: 0) + 1
+        prekeyFailures[agentId] = failures
+        if (AgentPrekeyPolicy.shouldRetry(failures)) {
+            Log.i(
+                TAG,
+                "W13-P2: Prekey fehlt am Relay (Versuch $failures/${AgentPrekeyPolicy.MAX_ATTEMPTS} " +
+                    "für Agent ${agentId.take(24)}) — Retry mit Abstand",
+            )
+            scope?.launch {
+                delay(AgentPrekeyPolicy.RETRY_BACKOFF_MS * failures)
+                startHandshake(agentId)
+            }
+        } else {
+            Log.w(
+                TAG,
+                "W13-P2: Prekey nach ${AgentPrekeyPolicy.MAX_ATTEMPTS} Versuchen leer — " +
+                    "sichtbarer Fehler statt stiller Wartekasten",
+            )
+            _prekeyError.value = AgentPrekeyPolicy.statusText(agentId)
+        }
+    }
 
     /** JSON-POST mit Pairing-Bearer (Key-Registry + crypto_hello-Routen). */
     private fun postJson(base: String, path: String, body: JsonObject): Boolean = runCatching {

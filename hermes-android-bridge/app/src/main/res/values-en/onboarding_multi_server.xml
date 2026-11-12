@@ -43,6 +43,7 @@
     <string name="onb_fp_phone_label">Phone fingerprint (session)</string>
     <string name="onb_fp_agent_label">Agent identity fingerprint</string>
     <string name="onb_fp_waiting">Waiting for the E2E handshake — the fingerprint appears on first agent contact.</string>
+    <string name="onb_help_prekey_title">Agent prekey missing on the relay</string>
     <string name="onb_fp_hint">Confirming continues to the Permissions step — comparison remains available in chat.</string>
     <string name="onb_confirm">Confirm</string>
     <string name="ms_title">Relay servers</string>

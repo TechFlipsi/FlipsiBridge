@@ -65,6 +65,7 @@
     <string name="onb_fp_phone_label">Telefon-Fingerprint (Sitzung)</string>
     <string name="onb_fp_agent_label">Agent-Identity-Fingerprint</string>
     <string name="onb_fp_waiting">Warte auf den E2E-Handshake — der Fingerprint erscheint beim ersten Agent-Kontakt.</string>
+    <string name="onb_help_prekey_title">Agent-Prekey fehlt am Relay</string>
     <string name="onb_fp_hint">Die Bestätigung öffnet den Berechtigungs-Schritt — der Abgleich bleibt im Chat möglich.</string>
     <string name="onb_confirm">Bestätigen</string>
     <string name="ms_title">Relay-Server</string>

@@ -252,6 +252,10 @@ fun OnboardingScreens(
     val context = LocalContext.current
     val status by BridgeStatus.state.collectAsState()
     val e2eSessions by RelayClient.e2eSessions.collectAsState()
+    // W13-P2: Prekey-Fehlerzeile des Relays (null = keiner) — im Fingerprint-
+    // Schritt STATT der stillen Warte-Box, wenn nach allen Retries kein
+    // Agent-Prekey geliefert wird (Jäger-Befund 12.11.26).
+    val prekeyError by RelayClient.prekeyError.collectAsState()
     var step by rememberSaveable { mutableStateOf(OnboardingStep.SPRACHE.ordinal) }
     var urlText by rememberSaveable { mutableStateOf("") }
     var codeText by rememberSaveable { mutableStateOf("") }
@@ -556,7 +560,19 @@ fun OnboardingScreens(
                             Text(s.agentFingerprintDisplay, style = FlipsiType.Code)
                         }
                         if (session == null) {
-                            OnboardingInfoBox(stringResource(R.string.onb_fp_waiting))
+                            // W13-P2 (Jäger-Befund): leeres spk_pub vom Relay NIE
+                            // mehr still in der Warte-Box versinken — nach
+                            // aufgebrauchtem Retry-Budget steht hier eine klare
+                            // Fehlerzeile mit Handlungshinweis.
+                            val prekeyText = prekeyError
+                            if (prekeyText != null) {
+                                OnboardingHelpCard(
+                                    title = stringResource(R.string.onb_help_prekey_title),
+                                    text = prekeyText,
+                                )
+                            } else {
+                                OnboardingInfoBox(stringResource(R.string.onb_fp_waiting))
+                            }
                         }
                     }
                 }
