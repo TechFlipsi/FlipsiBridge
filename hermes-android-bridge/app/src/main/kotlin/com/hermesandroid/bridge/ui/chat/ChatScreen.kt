@@ -559,7 +559,7 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
                         // die Media-Bubble hört ab jetzt denselben ChatStatus-
                         // Chip-Verband wie Text: chat.status (Key msg_id) liefert
                         // queued→delivered→read → Chip „✓ Gesendet → ✓✓ Zuge-
-                        // stellt → ✓✓ Gelesen (blau)" UNTER der Media-Bubble
+                        // stellt → ✓✓ Gelesen (grün)" IN der Media-Bubble
                         // (Chip-Zeile in ChatWidgets.MessageBubble rendert
                         // bereits für Medien-Bubbles — die msg_id-Bindung war
                         // die fehlende Faser). B3-Verband (Relay W4-B3, 14:29):

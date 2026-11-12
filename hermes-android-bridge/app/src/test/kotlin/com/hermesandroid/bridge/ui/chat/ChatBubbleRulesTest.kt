@@ -76,4 +76,25 @@ class ChatBubbleRulesTest {
             assertEquals(probe.isNotBlank(), canSendChat(probe))
         }
         assertNotEquals(canSendChat(""), canSendChat("x"))
-    }}
+    }
+
+    // ── W15 (Sir-Fixliste 10): 3-Stufen-Häkchen ✓/✓✓/✓✓grün ────────────────
+
+    @Test
+    fun deliveryCheckLevelThreeStages() {
+        // Stufe 1 = EIN Häkchen (versendet — null/Broker-Accept ohne Status).
+        assertEquals(1, deliveryCheckLevel(null))
+        assertEquals(1, deliveryCheckLevel(""))
+        // Stufe 2 = ZWEI Häkchen (zugestellt).
+        assertEquals(2, deliveryCheckLevel("delivered"))
+        // Stufe 3 = ZWEI Häkchen GRÜN (Agent hat gelesen — Read-Ack).
+        assertEquals(3, deliveryCheckLevel("read"))
+    }
+
+    @Test
+    fun deliveryCheckLevelQueuedAndFailedDrawNoCheck() {
+        // 0 = kein Häkchen: queued zeichnet die Amber-Uhr, failed das rote ✕.
+        assertEquals(0, deliveryCheckLevel("queued"))
+        assertEquals(0, deliveryCheckLevel("failed"))
+    }
+}
