@@ -292,8 +292,11 @@ object WorkingStatusRules {
 /**
  * PH2-T10: Anzeige-Chip je Zustell-/Lese-Status einer EIGENEN Nachricht.
  * null/unbekannt = gesendet (App hat den Broker-Accept), queued = Wartet
- * (Agent offline, Nachricht im Spool), delivered = zugestellt, read = blau
- * gelesen. Zustand NIE nur über Farbe (A11y): Text bleibt lesbar.
+ * (Agent offline, Nachricht im Spool), delivered = zugestellt, read = GRÜN
+ * gelesen. Zustand NIE nur über Farbe (A11y): TalkBack liest die vollen
+ * Worte über contentDescription.
+ * W15 (Sir-Fixliste 10): read = SignalGreen (Sir: „✓✓ GRÜN wenn gelesen",
+ * WhatsApp-Muster) — vorher Ember, was sich nicht von 'zugestellt' abhob.
  * PH2-FIX (Jäger B7): 'failed' = endgültig gescheiterter Send (RelayClient
  * meldete ok=false) → '✕ Fehlgeschlagen' in Rot statt des gelogenen
  * '✓ Gesendet'. SignalRedText statt SignalRed: BridgeTheme schreibt
@@ -305,7 +308,7 @@ data class StatusChip(val label: String, val color: Color, val description: Stri
 private fun statusChip(status: String?): StatusChip = when (status) {
     "queued" -> StatusChip("⏱ Wartet", FlipsiColors.SignalAmber, "Nachricht wartet im Relay-Spool")
     "delivered" -> StatusChip("✓✓ Zugestellt", FlipsiColors.TextSecondary, "Beim Agenten zugestellt")
-    "read" -> StatusChip("✓✓ Gelesen", FlipsiColors.Ember, "Vom Agenten gelesen")
+    "read" -> StatusChip("✓✓ Gelesen", FlipsiColors.SignalGreen, "Vom Agenten gelesen")
     "failed" -> StatusChip("✕ Fehlgeschlagen", FlipsiColors.SignalRedText, "Senden fehlgeschlagen")
     else -> StatusChip("✓ Gesendet", FlipsiColors.TextSecondary, "An das Relay gesendet")
 }
@@ -313,14 +316,31 @@ private fun statusChip(status: String?): StatusChip = when (status) {
 /**
  * WELLE 13 P11 (Sir: „Lesebestätigungs-Häkchen wie WhatsApp"): Status-NICHT
  * mehr als Wort-Text, sondern als Häkchen-Grammatik NEBEN dem Zeitstempel —
- * 1 Häkchen = gesendet, 2 Häkchen = zugestellt, 2 Häkchen in Akzentfarbe
- * (Ember statt WhatsApp-Blau) = gelesen, rotes ✕ = fehlgeschlagen, Amber-
+ * 1 Häkchen = gesendet, 2 Häkchen = zugestellt, 2 Häkchen GRÜN
+ * (SignalGreen, WhatsApp-Muster) = gelesen, rotes ✕ = fehlgeschlagen, Amber-
  * Uhr = wartet. A11y bleibt GEWAHRT: TalkBack liest die vollen Worte über
  * contentDescription — sie stehen bewusst NICHT als sichtbarer Text am
  * Screen (das ist die WhatsApp-Anmutung), die Bedeutung ist nie nur im
  * Bild/Konkurrenz (Beschreibung immer gesetzt).
  * Häkchen = selbst gezeichnete Canvas-Pfade (keine fremden Assets).
  */
+
+/**
+ * W15 (Sir-Fixliste 10): 3-Stufen-Häkchen-Grammatik einer EIGENEN Nach-
+ * richt — reine Regel, JVM-getestet (ChatBubbleRulesTest):
+ * 1 = EIN Häkchen (versendet), 2 = ZWEI Häkchen (zugestellt),
+ * 3 = ZWEI Häkchen GRÜN (vom Agenten gelesen — Read-Ack-Kette: Relay
+ * chat.read → chat.status 'read' → ChatStatusRank → Chip).
+ * 0 = KEIN Häkchen (queued = Amber-Uhr, failed = rotes ✕ — diese Zweige
+ * zeichnen in [DeliveryChecks] ihr eigenes Zeichen statt der Häkchen).
+ */
+internal fun deliveryCheckLevel(status: String?): Int = when (status) {
+    "read" -> 3
+    "delivered" -> 2
+    "queued", "failed" -> 0
+    else -> 1
+}
+
 @Composable
 fun DeliveryChecks(
     status: String?,
@@ -347,7 +367,10 @@ fun DeliveryChecks(
                 fontWeight = FontWeight.Bold,
             )
             else -> {
-                val double = status == "delivered" || status == "read"
+                // W15 (Fixliste 10): Stufe aus der reinen Regel — Doppel-Häkchen
+                // ab Stufe 2 (delivered), GRÜN liefert der tint aus statusChip
+                // ('read' = SignalGreen).
+                val double = deliveryCheckLevel(status) >= 2
                 val pathColor = tint
                 androidx.compose.foundation.Canvas(Modifier.width(20.dp).height(14.dp)) {
                     val stroke = 1.6.dp.toPx()
@@ -415,11 +438,10 @@ fun DeliveryChecks(
  * - TalkBack: onLongClickLabel „Nachricht zitieren“; Zitat-Block liest
  *   contentDescription „Zitierte Nachricht“ + Text mit.
  *
- * WELLE-13 P11 (Sirs Bauvorlage): Radius 14 dp mit kleiner (3 dp) unterer
- * Ecke zur ABSENDER-Seite (Agent: unten links, eigene: unten rechts),
- * eigene = EmberDim / Agent = Panel, Zeitstempel + Status-Chip INSIDE
- * unten-rechts, Bubble max 75 % Breite — Medien-Bubbles erben die gleiche
- * Silhouette über dieselbe Surface.
+ * WELLE-13 P11 (Sirs Bauvorlage): Radius 14 dp, eigene = EmberDim /
+ * Agent = Panel, Zeitstempel + Status-Häkchen INSIDE unten-rechts, Bubble
+ * max 75 % Breite — Medien-Bubbles erben die gleiche Silhouette über
+ * dieselbe Surface. W15 (Fixliste 1): alle vier Ecken voll gerundet.
  * WELLE-13 P9: [speaking] = diese Agenten-Bubble wird gerade vorgelesen →
  * Speaking-Chip (Tap = Stopp) in der Meta-Zeile ([onStopSpeaking]).
  * WELLE-13 P8: [onDownloadMedia] = Holen-Verband für eingehende Medien ohne
@@ -435,9 +457,12 @@ fun MessageBubble(
     showStatusChip: Boolean = true,
     replyAfterMs: Long? = null,
     // MEDIA-T1: Upload-Fortschritt der EIGENEN Medien-Bubble (null = keine
-    // Media-Nachricht oder kein laufender Upload) — Zeile unter der Bubble:
-    // 'Upload x/y Chunks', '✓ Übertragen' (alle Chunks vom Agenten geackt)
-    // oder rot bei Fehlschlag.
+    // Media-Nachricht oder kein laufender Upload) — W15 (Sir-Fixliste 10):
+    // kleines Icon OHNE sichtbaren Text in der Meta-Zeile (⏳ läuft / rotes
+    // ✕ fehlgeschlagen); A11y über contentDescription. Nach FERTIGEM Upload
+    // zeigt die Zeile NICHTS mehr — die Zustell-Häkchen (✓/✓✓/✓✓grün)
+    // übernehmen, kein doppelter Haken (Video-Befund: '✓ Übertragen (1
+    // Chunks)' wirkte wie Debug-Text und drückte Zeit+Inhalt weg).
     mediaUpload: RelayClient.MediaUploadState? = null,
     modifier: Modifier = Modifier,
     // W4-B (Zitieren): Longpress → Zitieren-Overlay (ConversationBody setzt
@@ -635,17 +660,13 @@ fun MessageBubble(
                                 Modifier
                             }
                         ),
-                    // WELLE-13 P11 (Sirs Bauvorlage): Radius 14 dp überall,
-                    // nur die untere Ecke zur ABSENDER-Seite bleibt klein
-                    // (3 dp, flach-modern — kein Tail-Bau) → Silhouette liest
-                    // sich als Sprechblase ohne Kopierte Grafik. Farben: eigene
-                    // = EmberDim (warm), Agent = Panel — Medien-Bubbles laufen
-                    // durch dieselbe Surface automatisch mit (gleiche Silhouette).
-                    shape = if (message.fromAgent) {
-                        RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 3.dp, bottomEnd = 14.dp)
-                    } else {
-                        RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = 14.dp, bottomEnd = 3.dp)
-                    },
+                    // W15 (Sir-Fixliste 1): Radius 14 dp auf ALLEN vier Ecken —
+                    // die bisherige kleine 3-dp-Ecke unten zur AbSender-Seite
+                    // wirkte wie abgeschnitten (Sirs Screenshot-Befund), kein
+                    // Tail-Bau. Farben: eigene = EmberDim (warm), Agent =
+                    // Panel — Medien-Bubbles laufen durch dieselbe Surface
+                    // automatisch mit (gleiche Silhouette).
+                    shape = RoundedCornerShape(14.dp),
                     color = if (message.fromAgent) FlipsiColors.Panel else FlipsiColors.EmberDim,
                     // W4-B (Chat-Suche): Sprung-Highlight der Suche — Ember-Rand
                     // (A11y: zusätzlich contentDescription „Suchtreffer“, nie
@@ -743,22 +764,32 @@ fun MessageBubble(
                             style = MaterialTheme.typography.labelSmall,
                             color = FlipsiColors.TextSecondary,
                         )
-                        // MEDIA-T1: Upload-Fortschritt eigener Medien (neben der Zeit,
-                        // nie nur Farbe — Text-Chip, TalkBack-lesbar).
-                        if (!message.fromAgent && message.media != null && mediaUpload != null) {
-                            val progress = when {
-                                mediaUpload.failed != null ->
-                                    "✕ ${mediaUpload.failed!!.take(40)}" to FlipsiColors.SignalRedText
-                                mediaUpload.done ->
-                                    "✓ Übertragen (${mediaUpload.totalChunks} Chunks)" to FlipsiColors.SignalGreen
-                                else -> "⏳ Upload ${mediaUpload.ackedChunks}/${mediaUpload.totalChunks} Chunks" to
-                                    FlipsiColors.TextSecondary
-                            }
+                        // MEDIA-T1 + W15 (Sir-Fixliste 10): Upload-Fortschritt
+                        // eigener Medien als kleines Icon OHNE sichtbaren Text
+                        // (⏳ läuft, rotes ✕ fehlgeschlagen). FERTIGER Upload
+                        // zeigt NICHTS — die Zustell-Häkchen übernehmen (kein
+                        // doppelter Haken). A11y: TalkBack liest die volle
+                        // Info über contentDescription, nie nur Farbe/Form.
+                        val uploadFailed = !message.fromAgent && message.media != null &&
+                            mediaUpload?.failed != null
+                        val uploadRunning = !message.fromAgent && message.media != null &&
+                            mediaUpload != null && mediaUpload.failed == null && !mediaUpload.done
+                        if (uploadFailed || uploadRunning) {
                             Spacer(Modifier.width(6.dp))
                             Text(
-                                progress.first,
+                                if (uploadFailed) "✕" else "⏳",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = progress.second,
+                                color = if (uploadFailed) FlipsiColors.SignalRedText
+                                        else FlipsiColors.TextSecondary,
+                                fontWeight = if (uploadFailed) FontWeight.Bold else null,
+                                modifier = Modifier.semantics {
+                                    contentDescription = if (uploadFailed) {
+                                        "Upload fehlgeschlagen: ${mediaUpload?.failed?.take(40)}"
+                                    } else {
+                                        "Upload läuft: ${mediaUpload?.ackedChunks} von " +
+                                            "${mediaUpload?.totalChunks} Chunks"
+                                    }
+                                },
                             )
                         }
                     }
