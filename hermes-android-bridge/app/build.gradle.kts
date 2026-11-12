@@ -59,7 +59,7 @@ android {
             buildConfigField("boolean", "EDITION_GITHUB", "false")
             // PH-7/DE-2: eigener Play-Zähler (3-stellig, Start 100), versionName-
             // Suffix je Edition, targetSdk 36 = Play-Gate (neue Apps 31.08.2026).
-            versionCode = 102
+            versionCode = 103
             versionNameSuffix = "-play"
             targetSdk = 36
         }
