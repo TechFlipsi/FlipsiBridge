@@ -67,7 +67,12 @@ fun SettingsCard(
                     .toggleable(
                         value = expanded,
                         role = Role.Button,
-                        onValueChange = onExpandedChange,
+                        onValueChange = {
+                            // W15/P7: Top-Bar-Pfad („Einstellungen › <Sektion>“) —
+                            // die zuletzt aufgeklappte Sektion gewinnt.
+                            SettingsNav.onSectionToggle(title, it)
+                            onExpandedChange(it)
+                        },
                     )
                     .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,

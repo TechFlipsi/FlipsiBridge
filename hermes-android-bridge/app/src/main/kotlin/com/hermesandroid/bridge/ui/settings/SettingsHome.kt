@@ -33,8 +33,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.heading
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.BuildConfig
@@ -46,8 +44,9 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  * Welle 13 / P2 (Settings-Redesign, Sirs Direktive 11.11.): der neue
  * Einstellungen-Screen.
  *
- * Kopf = Titel + ℹ️-Info-Button (KEINE dauerhafte Versionszeile mehr — P2b:
- * die Version lebt NUR im About-Sheet). Body = ausklappbare Karten, Standard
+ * Kopf = NUR ℹ️-Info-Button (W15/P7: KEIN Titel — der Standort-Pfad
+ * „Einstellungen › <Sektion>“ lebt in der Top-Bar; KEINE dauerhafte
+ * Versionszeile, die Version lebt NUR im About-Sheet). Body = ausklappbare Karten, Standard
  * ZUGEKLAPPT, Sektions-Abstand 16 dp / Zeilen-Abstand 8 dp (SettingsCard),
  * Touch-Ziele ≥ 48 dp.
  *
@@ -138,26 +137,17 @@ fun SettingsHome(
     }
 }
 
-/** Kopf des Settings-Screens: Heading + ℹ️-Info-Button (48 dp). KEINE Version. */
+/**
+ * Kopf des Settings-Screens (W15/P7, Sir): NUR der ℹ️-About-Button — KEIN
+ * Titel/Untertitel mehr. Der Standort-Titel („Einstellungen › <Sektion>“)
+ * lebt ausschließlich in der Top-Bar, doppelter Titel war Sirs Befund.
+ */
 @Composable
 private fun SettingsHead(onOpenAbout: () -> Unit) {
     Row(
         Modifier.fillMaxWidth().heightIn(min = 48.dp),
-        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.End,
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(
-                stringResource(R.string.settings_home_title),
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.semantics { heading() },
-            )
-            Text(
-                stringResource(R.string.settings_home_subtitle),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-            )
-        }
         IconButton(onClick = onOpenAbout) {
             Icon(
                 Icons.Outlined.Info,

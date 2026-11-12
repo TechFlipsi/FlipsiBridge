@@ -3,6 +3,7 @@ package com.hermesandroid.bridge.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,9 +37,11 @@ sealed interface PermissionAction {
 }
 
 /**
- * Berechtigungs-Zeile (v0.12.0): Icon + Titel/Beschreibung + StatusBadge +
- * klare Aktion („Öffnen"-Chip für Settings-Sprünge, Switch-Anzeige für
- * Toggles) — statt der 8-Parameter-Farbzeile der v0.11.0. Ganze Zeile ≥48dp.
+ * Berechtigungs-Zeile (W15/P6, Sir): Text OBEN volle Breite, darunter
+ * ZENTRIERT die Status-Info (an/aus/fehlt) mit der Aktion daneben
+ * („Öffnen“-Chip für Settings-Sprünge, Switch-Anzeige für Toggles) —
+ * statt Badge + Chip nebeneinander im Weg des Beschreibungs-Texts.
+ * Ganze Kachel ≥48dp bleibt Touch-Feld.
  */
 @Composable
 fun PermissionRow(
@@ -52,8 +55,9 @@ fun PermissionRow(
     // LETZTER Parameter — trailing-lambda der Aufrufe bindet hier (onOpen).
     onOpen: () -> Unit = {},
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        // W15/P6: Abstand Textblock ↔ Statuszeile.
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = FlipsiSpacing.RowMin)
@@ -71,34 +75,44 @@ fun PermissionRow(
             )
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
     ) {
-        ResourceIcon(iconRes, tint = FlipsiColors.TextSecondary, size = 24.dp)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
-            Text(
-                description,
-                style = MaterialTheme.typography.bodyMedium,
-                color = FlipsiColors.TextSecondary,
-            )
+        // Zeile 1: Icon + Titel/Beschreibung — volle Breite, AutoWrap.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ResourceIcon(iconRes, tint = FlipsiColors.TextSecondary, size = 24.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = FlipsiColors.TextSecondary,
+                )
+            }
         }
-        Spacer(Modifier.width(8.dp))
-        StatusBadge(badge.first, badge.second)
-        when (onAction) {
-            is PermissionAction.SettingsSprung -> AssistChip(
-                onClick = onOpen,
-                label = { Text("Öffnen") },
-                modifier = Modifier.padding(start = 8.dp),
-                border = AssistChipDefaults.assistChipBorder(
-                    borderColor = FlipsiColors.LineStrong,
-                    enabled = true,
-                ),
-            )
-            is PermissionAction.Toggle -> Switch(
-                checked = onAction.checked,
-                onCheckedChange = null,
-                colors = SwitchDefaults.colors(checkedTrackColor = FlipsiColors.Ember),
-            )
-            PermissionAction.None -> {}
+        // Zeile 2 (W15/P6, Sir): Status-Info zentriert, Aktion daneben.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StatusBadge(badge.first, badge.second)
+            when (onAction) {
+                is PermissionAction.SettingsSprung -> AssistChip(
+                    onClick = onOpen,
+                    label = { Text("Öffnen") },
+                    modifier = Modifier.padding(start = 8.dp),
+                    border = AssistChipDefaults.assistChipBorder(
+                        borderColor = FlipsiColors.LineStrong,
+                        enabled = true,
+                    ),
+                )
+                is PermissionAction.Toggle -> Switch(
+                    checked = onAction.checked,
+                    onCheckedChange = null,
+                    modifier = Modifier.padding(start = 8.dp),
+                    colors = SwitchDefaults.colors(checkedTrackColor = FlipsiColors.Ember),
+                )
+                PermissionAction.None -> {}
+            }
         }
     }
 }

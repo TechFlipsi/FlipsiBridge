@@ -106,6 +106,7 @@ import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.chat.ChatScreen
 import com.hermesandroid.bridge.ui.settings.SettingsHome
+import com.hermesandroid.bridge.ui.settings.SettingsNav
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import com.hermesandroid.bridge.ui.components.BadgeState
@@ -638,7 +639,19 @@ fun BridgeScreen(initialRoute: Int = 0) {
         containerColor = FlipsiColors.Void,
         topBar = {
             TopAppBar(
-                title = { Text(topBarTitle(route), fontWeight = FontWeight.SemiBold) },
+                title = {
+                    // W15/P7 (Sir): Pfad statt doppelter Titel — im Settings-
+                    // Screen zeigt die Top-Bar „Einstellungen › <Sektion>“,
+                    // der Screen-Kopf selbst ist titellos.
+                    Text(
+                        if (route == 1) {
+                            SettingsNav.topBarPath(stringResource(R.string.settings_home_title))
+                        } else {
+                            topBarTitle(route)
+                        },
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                },
                 actions = {
                     // PH-3 F6: E2E-Kleppe im Header — sichtbar sobald aktive
                     // E2E-Sessions existieren (kein unsichtbarer Zustand).
@@ -1485,12 +1498,14 @@ private fun localIpOf(context: Context): String {
 
 // ── PH1-T1: Top-Bar-Titel je Route ──────────────────────────────────────────
 
-/** Titel der Top-Bar je Route (0 = Home mit dem App-Namen). */
+/**
+ * Titel der Top-Bar je Route (W15/P7: Route 1 = Einstellungen wird NICHT hier
+ * behandelt — sie zeigt den Sektions-Pfad via SettingsNav, „Einstellungen › …“).
+ * 0 = Home mit dem App-Namen; unbekannte Werte fallen darauf zurück.
+ */
 private fun topBarTitle(route: Int): String = when (route) {
-    1 -> "Einstellungen"
     2 -> "Chat"
     3 -> "Impressum & Datenschutz"
-    // 0 = Home; unbekannte Werte fallen auf den App-Namen zurück.
     else -> "FlipsiBridge"
 }
 
@@ -1523,7 +1538,12 @@ private fun AccordionCard(
                     .toggleable(
                         value = expanded,
                         role = Role.Button,
-                        onValueChange = onExpandedChange,
+                        onValueChange = {
+                            // W15/P7: Top-Bar-Pfad — die zuletzt aufgeklappte
+                            // Sektion gewinnt (gleicher Vertrag wie SettingsCard).
+                            SettingsNav.onSectionToggle(title, it)
+                            onExpandedChange(it)
+                        },
                     )
                     .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,

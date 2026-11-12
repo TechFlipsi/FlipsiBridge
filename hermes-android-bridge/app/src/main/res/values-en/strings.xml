@@ -84,7 +84,6 @@
 
     <!-- ── Wave 13 / Settings lane: settings redesign (P2) — EN ─────────────── -->
     <string name="settings_home_title">Settings</string>
-    <string name="settings_home_subtitle">Tap a section to expand or collapse it.</string>
     <string name="settings_info_a11y">Open about FlipsiBridge</string>
     <string name="about_sheet_title">About FlipsiBridge</string>
     <string name="about_version_label">Version</string>
