@@ -5,7 +5,7 @@
 - **Fix 5 (I18n):** Root-Cause war Hardeutsch in der UI (stringResource umgangen) — 419+85 Keys je 3 Dateien, Sprachwechsel wirkt jetzt live (AppLanguageGate wrap/System-Restore).
 - **Fix 6/7 (Einstellungen):** Kachel-Layout global: Text volle Breite oben, Status darunter zentriert, Öffnen-Button daneben; Top-Bar zeigt Pfad («Einstellungen › Server»), Doppel-Titel weg.
 - **Fix 8/9 (Dashboard):** Neue Startseite = Status-Dashboard (Agenten-Live-Slots, was sie tun, Verbindungskarte integriert; NavigationBar Dashboard|Chat|Agenten|E2E), «Setup überspringen» landet jetzt auf dem Dashboard.
-- versionCode 41 (github) / 104 (play).
+- versionCode 42 (github) / 105 (play).
 
 ## [0.15.2] - 2026-11-12 — Welle 13: Kopplungs-Drill-Fixes (Send/Prekey)
 - **Fix (Chat UI):** Conversation-Kopf lief auf schmalen Flächen (sw262dp = Drill-Emulator) über: das FP-Abgleich-Label ohne maxLines brach auf 11 Zeilen um (Button 184×506 dp), verdrängte die Composer-Pill unter ihre `.clip()`-Kante und schlug die Meta-Reihe (Anhang/Modell-Chip/Mikrofon/Send-Kreis) pixellos weg. Fix: `maxLines=1` + `softWrap=false` am FP-Label (ChatScreen.kt); breite Screens unberührt.
