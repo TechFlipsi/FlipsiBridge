@@ -1,3 +1,11 @@
+## [0.15.3] - 2026-11-12 — Welle 15: Sirs Fixliste (Chat/Dashboard/Einstellungen/I18n)
+- **Fix 1/2/10 (Chat):** Bubbles haben unten keine abgerüttelten Ecken mehr (14 dp rund voll), Uhrzeit+Status klein unten rechts IN der Bubble ohne Debug-Text («Übertragen (1 Chunks)» weg), Stufen ✓ versendet / ✓✓ zugestellt / ✓✓ GRÜN gelesen (SignalGreen; chat.read-Wiring lag vor).
+- **Fix 3/4 (Agenten-Screen):** «Agenten»-Schriftzug + Untertitel komplett entfernt, Liste beginnt direkt mit Such-Kapsel, Rhythmus-Abstand konsistent.
+- **Fix 5 (I18n):** Root-Cause war Hardeutsch in der UI (stringResource umgangen) — 419+85 Keys je 3 Dateien, Sprachwechsel wirkt jetzt live (AppLanguageGate wrap/System-Restore).
+- **Fix 6/7 (Einstellungen):** Kachel-Layout global: Text volle Breite oben, Status darunter zentriert, Öffnen-Button daneben; Top-Bar zeigt Pfad («Einstellungen › Server»), Doppel-Titel weg.
+- **Fix 8/9 (Dashboard):** Neue Startseite = Status-Dashboard (Agenten-Live-Slots, was sie tun, Verbindungskarte integriert; NavigationBar Dashboard|Chat|Agenten|E2E), «Setup überspringen» landet jetzt auf dem Dashboard.
+- versionCode 41 (github) / 104 (play).
+
 ## [0.15.2] - 2026-11-12 — Welle 13: Kopplungs-Drill-Fixes (Send/Prekey)
 - **Fix (Chat UI):** Conversation-Kopf lief auf schmalen Flächen (sw262dp = Drill-Emulator) über: das FP-Abgleich-Label ohne maxLines brach auf 11 Zeilen um (Button 184×506 dp), verdrängte die Composer-Pill unter ihre `.clip()`-Kante und schlug die Meta-Reihe (Anhang/Modell-Chip/Mikrofon/Send-Kreis) pixellos weg. Fix: `maxLines=1` + `softWrap=false` am FP-Label (ChatScreen.kt); breite Screens unberührt.
 - **Fix (Onboarding):** `key_get` ohne Agent-Prekey (`spk_pub=""`) erzeugt nie mehr stillen Warte-Tod: klare Fehlermeldung „Relay fehlt Prekey für <agentId>" + begrenzter automatischer Retry (3 Versuche, Backoff, Reset bei geliefertem Prekey) mit Handlungshinweis (AgentPrekeyPolicy + RelayClient + Onboarding-Fehlercard, strings DE/EN).

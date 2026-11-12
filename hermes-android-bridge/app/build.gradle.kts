@@ -19,8 +19,8 @@ android {
         // (hartes Play-Gate seit 31.08.2026: neue Apps + Updates = API 36;
         // die Verlängerung bis 01.11.2026 ist verpasst) — GitHub-Edition bleibt 34.
         targetSdk = 34
-        versionCode = 40
-        versionName = "0.15.2"
+        versionCode = 41
+        versionName = "0.15.3"
     }
 
     buildFeatures {
@@ -59,7 +59,7 @@ android {
             buildConfigField("boolean", "EDITION_GITHUB", "false")
             // PH-7/DE-2: eigener Play-Zähler (3-stellig, Start 100), versionName-
             // Suffix je Edition, targetSdk 36 = Play-Gate (neue Apps 31.08.2026).
-            versionCode = 103
+            versionCode = 104
             versionNameSuffix = "-play"
             targetSdk = 36
         }
