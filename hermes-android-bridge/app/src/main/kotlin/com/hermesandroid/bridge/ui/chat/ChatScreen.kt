@@ -71,7 +71,6 @@ import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.media.VoiceMemoRecorder
 import com.hermesandroid.bridge.ui.FlipsiColors
-import com.hermesandroid.bridge.ui.components.SectionTitle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -935,14 +934,14 @@ private fun AgentListBody(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding),
-        contentPadding = PaddingValues(bottom = 16.dp),
+        // W15-3/4 (Sirs Update): 'Agenten'-Kopfzeile + Untertitel KOMPLETT weg —
+        // die Liste beginnt direkt mit der Such-Kapsel. Kein hängender
+        // Titel-Restraum: SectionTitle trug paddingFromBaseline(top = 28.dp)
+        // ein; der ist mit dem Item entfallen. Einzig der Rhythmus-Abstand
+        // zur Top-Bar bleibt als contentPadding(top) — konsistent zur
+        // 16-dp-Seiten-Rhythmik der Kapsel/Zeilen.
+        contentPadding = PaddingValues(top = 12.dp, bottom = 16.dp),
     ) {
-        item {
-            SectionTitle(
-                "Agenten",
-                sub = "Direkt-Chat mit den gekoppelten Agenten — live über das Relay.",
-            )
-        }
         // WELLE-13 P11b (Sirs Wunschbild): Such-Kapsel + Filter-Chips. Nur
         // ehrliche Filter: Alle / Online / Offline (Ungelesen-Leseschalter
         // existiert datenseitig nicht → der Chip LÜGT, also fehlt er).
