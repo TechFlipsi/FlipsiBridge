@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -28,7 +27,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -82,16 +80,13 @@ import kotlinx.coroutines.isActive
 @Composable
 fun DashboardScreen(
     padding: PaddingValues,
-    serverUrlText: String,
-    onUrlChange: (String) -> Unit,
-    onConnect: () -> Unit,
+    // W15b (Fix E): URL-Feld + Verbinden leben nur noch in der Server-Gruppe
+    // der Einstellungen — hier bleibt nur die Trenn-Aktion der Verbindungskarte.
     onDisconnect: () -> Unit,
     enabledCapabilityCount: Int,
     totalCapabilityCount: Int,
     onOpenAgentChat: (String) -> Unit,
-    onSnack: (String) -> Unit,
 ) {
-    val context = androidx.compose.ui.platform.LocalContext.current
     // ── Live-Daten (vorhandene RelayClient-Flows) ───────────────────────────
     val agents by RelayClient.agents.collectAsState()
     val agentWorking by RelayClient.agentWorking.collectAsState()
@@ -157,14 +152,10 @@ fun DashboardScreen(
             }
         }
 
-        // ── Verbindung: die alten Start-Elemente als eigene Karte ──────────
+        // ── Verbindung: schlanke Karte (W15b) — nur Status + Trennen ───────
         item(key = "verbindung") {
             VerbindungCard(
-                serverUrlText = serverUrlText,
-                onUrlChange = onUrlChange,
-                onConnect = onConnect,
                 onDisconnect = onDisconnect,
-                onBlankUrl = { onSnack(context.getString(R.string.snack_url_missing)) },
             )
         }
 
@@ -355,17 +346,16 @@ private fun AgentsEmptyCard() {
 // ── Verbindung (alte Start-Elemente, gleiche SSOT wie das Settings-Feld) ─────
 
 /**
- * W15: die frühere Home-ConnectionCard als „Verbindung“-Karte — Statuspunkt
- * + Zustandswort, letzte Relay-Meldung (nur im getrennten Zustand), URL-Feld
- * (gleicher serverUrlText-SSOT wie die Einstellungen) und Verbinden/Trennen.
+ * W15b (Fix E, Sir-Befund): die „Verbindung“-Karte ist SCHLANK — nur Status-
+ * punkt + Zustandswort, letzte Relay-Meldung (getrennter Zustand) und die
+ * Trennen-Aktion. Das Server-Adresse-Feld + der Verbinden-Button sind RAUS:
+ * beides lebt weiter in der Server-Gruppe der Einstellungen (gleicher
+ * serverUrlText-SSOT) — auf dem Dashboard machten sie die Karte überladen,
+ * und Verbinden gehört in den Setup-/Einstellungs-Kontext.
  */
 @Composable
 private fun VerbindungCard(
-    serverUrlText: String,
-    onUrlChange: (String) -> Unit,
-    onConnect: () -> Unit,
     onDisconnect: () -> Unit,
-    onBlankUrl: () -> Unit,
 ) {
     val status by BridgeStatus.state.collectAsState()
     val message by BridgeStatus.message.collectAsState()
@@ -398,8 +388,7 @@ private fun VerbindungCard(
                     modifier = Modifier.padding(start = 10.dp),
                 )
             }
-            // Detail-Zeile (letzte Relay-Meldung) — OHNE URL-Wiederholung:
-            // die URL lebt NUR im Eingabefeld. Nur im getrennten Zustand.
+            // Detail-Zeile (letzte Relay-Meldung) — nur im getrennten Zustand.
             if (status !is BridgeStatus.ConnectionState.CONNECTED) {
                 Text(
                     message.ifBlank { stringResource(R.string.home_state_fallback) },
@@ -408,34 +397,14 @@ private fun VerbindungCard(
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            HorizontalDivider(Modifier.padding(vertical = 12.dp), color = FlipsiColors.LineStrong)
-            OutlinedTextField(
-                value = serverUrlText,
-                onValueChange = onUrlChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text(stringResource(R.string.conn_url_label_short)) },
-                // Bewusst generisch — keine private Domain im Quellcode (GitHub-Hygiene)!
-                placeholder = { Text(stringResource(R.string.conn_url_placeholder)) },
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(
-                    onClick = {
-                        if (serverUrlText.trim().isBlank()) onBlankUrl() else onConnect()
-                    },
-                    enabled = status !is BridgeStatus.ConnectionState.CONNECTED,
-                    modifier = Modifier.height(48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = FlipsiColors.Ember,
-                        contentColor = FlipsiColors.OnEmber,
-                        disabledContainerColor = FlipsiColors.PanelElev,
-                        disabledContentColor = FlipsiColors.TextSecondary,
-                    ),
-                ) { Text(stringResource(R.string.conn_connect)) }
-                if (status is BridgeStatus.ConnectionState.CONNECTED) {
+            // W15b (Fix E): NUR noch die Trenn-Aktion — Verbinden + URL-Feld
+            // leben exklusiv in der Server-Gruppe der Einstellungen.
+            if (status is BridgeStatus.ConnectionState.CONNECTED) {
+                HorizontalDivider(Modifier.padding(vertical = 12.dp), color = FlipsiColors.LineStrong)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                ) {
                     OutlinedButton(
                         onClick = onDisconnect,
                         modifier = Modifier.height(48.dp),

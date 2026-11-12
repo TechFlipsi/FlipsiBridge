@@ -738,22 +738,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
             5 -> E2eContent(padding)
             else -> DashboardScreen(
                 padding = padding,
-                serverUrlText = serverUrlText,
-                onUrlChange = { serverUrlText = it },
-                onConnect = {
-                    // W4-D (A7): die Schnellverbindung folgt dem AKTIVEN
-                    // Profil — die Liste bleibt wahr (URL+Vault-Spiegel
-                    // wandern mit), verbindet wird wie bisher über
-                    // RelayClient.connect + SSOT-Code.
-                    val url = serverUrlText.trim()
-                    if (url.isBlank()) {
-                        snack(context.getString(R.string.snack_url_missing))
-                    } else {
-                        ServerProfiles.syncActiveUrl(url)
-                        BridgeConnectionService.start(context)
-                        RelayClient.connect(url, PairingManager.getCode())
-                    }
-                },
+                // W15b (Fix E): URL-Feld + Verbinden-Button nur noch in der
+                // Server-Gruppe der Einstellungen — die Dashboard-Verbindungs-
+                // karte zeigt Status + Trennen (schlank, Sirs Befund).
                 onDisconnect = {
                     RelayClient.disconnect()
                     snack(context.getString(R.string.snack_disconnected))
@@ -766,7 +753,6 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     pendingChatAgentId = agentId
                     route = 2
                 },
-                onSnack = { snack(it) },
             )
         }
     }
