@@ -19,7 +19,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,22 +26,15 @@ import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.border
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
@@ -58,6 +50,10 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemColors
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -105,6 +101,7 @@ import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.chat.ChatScreen
+import com.hermesandroid.bridge.ui.dashboard.DashboardScreen
 import com.hermesandroid.bridge.ui.settings.SettingsHome
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
@@ -113,7 +110,6 @@ import com.hermesandroid.bridge.ui.components.CapabilityGroupCard
 import com.hermesandroid.bridge.ui.components.CapabilityMaster
 import com.hermesandroid.bridge.ui.components.CapIcon
 import com.hermesandroid.bridge.ui.components.ALL_CAPABILITY_UIS
-import com.hermesandroid.bridge.ui.components.CountBadge
 import com.hermesandroid.bridge.ui.components.INVASIVE_CAPS
 import com.hermesandroid.bridge.ui.components.GroupIcons
 import com.hermesandroid.bridge.ui.components.MasterCapabilityCard
@@ -125,7 +121,6 @@ import com.hermesandroid.bridge.ui.components.ResourceIcon
 import com.hermesandroid.bridge.ui.components.SectionTitle
 import com.hermesandroid.bridge.ui.components.SettingsIcons
 import com.hermesandroid.bridge.ui.components.LanguageSettingsCard
-import com.hermesandroid.bridge.ui.components.StateBanner
 import com.hermesandroid.bridge.ui.components.capabilityGroups
 import androidx.compose.ui.res.stringResource
 import com.hermesandroid.bridge.R
@@ -164,6 +159,16 @@ import kotlinx.coroutines.withContext
  * dem aktiven Profil (ServerProfiles.syncActiveUrl), Umschalten zwischen
  * Profilen läuft bewusst über Bestätigung + disconnect/connect
  * (Singletons-Faser — genau ein WebSocket, OkHttpClient-Fabrik unangetastet).
+ *
+ * W15 (Sir-Fixliste 9+8): Route 0 ist das STATUS-DASHBOARD
+ * (ui/dashboard/DashboardScreen.kt — Agenten-Slots mit Live-Status, alte
+ * Start-Elemente als „Verbindung“-Karte) und die Navigation ist eine echte
+ * TAB-LEISTE in Sirs Tab-Order [Dashboard | Chat | Agenten | E2E] (Routes
+ * 0/2/4/5). Die früheren Einstellungen-Gruppen „Agenten“ und
+ * „Verschlüsselung“ sind als eigene Tabs nach vorn gewandert (gleiche
+ * Composables + SSOT, keine Kopie); Einstellungen (1) und Impressum (3)
+ * bleiben Sprünge oben rechts. „Setup überspringen“ startet IMMER auf dem
+ * Dashboard (Fix 8), der Wizard-Abschluss bleibt direkt im Chat.
  */
 
 private enum class HealthDialogCause { NOT_INSTALLED, NEEDS_UPDATE, DENIED_OR_SILENT }
@@ -191,8 +196,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // Activity wäre bei DE/EN-Wahl null und würde ALLE Berechtigungs-Sprünge
     // killen). Der Gate liefert die ORIGINAL Activity (AppLanguage.LocalAppActivity).
     val activity = com.hermesandroid.bridge.i18n.AppLanguage.LocalAppActivity.current
-    val status by BridgeStatus.state.collectAsState()
-    val statusMessage by BridgeStatus.message.collectAsState()
+    // W15: status/statusMessage/der Verbindungszustand leben jetzt im
+    // Dashboard (ui/dashboard/DashboardScreen.kt sammelt selbst); serverUrl
+    // bleibt hier — das URL-Feld der Einstellungen teilt sich dieselbe SSOT.
     val serverUrl by BridgeStatus.serverUrl.collectAsState()
     val configVersion by BridgeStatus.configVersion.collectAsState()
     // PH-3 F6: aktive E2E-Sessions für die Header-Kleppe (sichtbarer
@@ -210,10 +216,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
 
     // ── PH1-T1: Nav-Route ──────────────────────────────────────────────
     // Einfache Int-Route per rememberSaveable (KEINE androidx.navigation-
-    // Dependency): 0=Home, 1=Einstellungen, 2=Chat, 3=Impressum/Datenschutz.
-    // Back-Taste = Route zurück auf Home.
+    // Dependency): 0=Dashboard, 1=Einstellungen, 2=Chat, 3=Impressum/
+    // Datenschutz, 4=Agenten-Tab, 5=E2E-Tab (W15). Back-Taste = Route
+    // zurück aufs Dashboard.
     // W4-D (A6): initialRoute=2 nach der Wizard-Fingerprint-Bestätigung —
-    // „danach direkt im Chat“; normale Starts starten auf 0 (Home).
+    // „danach direkt im Chat“; normale Starts starten auf 0 (Dashboard).
+    // W15 (Fix 8): Setup ÜBERSPRINGEN startet IMMER auf 0 (Dashboard),
+    // nie im Chat — der Skip-Pfad setzt onboardingJustDone nicht mehr.
     var route by rememberSaveable {
         // WELLE 13 P10: ASSISTENTEN-Start = direkt in den Chat (Voice-Verband
         // folgt im ChatScreen) — sonst Standart-Start bei Route 0.
@@ -226,19 +235,25 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // bewusst getrennte Flags, damit mehrere Gruppen offen sein können).
     var settingsServerOpen by rememberSaveable { mutableStateOf(true) }
     var settingsAppOpen by rememberSaveable { mutableStateOf(false) }
-    var settingsAgentOpen by rememberSaveable { mutableStateOf(false) }
+    // W15: die Gruppen „Agenten“ (Route 4) und „Verschlüsselung“ (Route 5)
+    // sind eigene TABS geworden — ihre settingsAgentOpen/settingsCryptoOpen-
+    // Klappe-Zustände entfallen hier (der Agenten-Tab trägt seine eigenen).
     // PH-2X X-1: Gruppe 4 „App-Sperre“ — append-only, startet zu.
     var settingsSecurityOpen by rememberSaveable { mutableStateOf(false) }
-    // PH-3 Welle 2: Gruppe 5 „Verschlüsselung“ (Fingerprints) — append-only.
-    var settingsCryptoOpen by rememberSaveable { mutableStateOf(false) }
     // W4 (App-Lane C): Gruppe „Sprache“ (DE/EN) — append-only, startet zu.
     var settingsLanguageOpen by rememberSaveable { mutableStateOf(false) }
-    // ── PH1-T5: je Fähigkeiten-Gruppe ein eigener Klappe-Zustand (innerhalb
-    // der Agenten-Einstellungen); die invasive Gruppe startet bewusst zu.
+    // ── PH1-T5: je Fähigkeiten-Gruppe ein eigener Klappe-Zustand (im
+    // Agenten-Tab, Route 4); die invasive Gruppe startet bewusst zu.
     var capGroupAnsehenOpen by rememberSaveable { mutableStateOf(true) }
     var capGroupBedienenOpen by rememberSaveable { mutableStateOf(true) }
     var capGroupSchreibenOpen by rememberSaveable { mutableStateOf(true) }
     var capGroupInvasivOpen by rememberSaveable { mutableStateOf(false) }
+
+    // ── W15 (Sir-Fixliste 9): Tap auf einen Agenten-Slot im Dashboard
+    // öffnet die Conversation dieses Agenten — einmalig (der Konsum-
+    // Callback aus dem ChatScreen räumt den Merker direkt ab, ein erneuter
+    // Chat-Tab-Besuch landet wieder auf der Agenten-Liste).
+    var pendingChatAgentId by rememberSaveable { mutableStateOf<String?>(null) }
 
     fun snack(text: String) {
         scope.launch { snackbarHostState.showSnackbar(text) }
@@ -330,70 +345,94 @@ fun BridgeScreen(initialRoute: Int = 0) {
     }
 
     /**
-     * Home-Screen (Route 0, PH1-T2 schlank): Statusbanner + Verbindungs-
-     * status + Master-Status-Kompakt + Fußzeile. Die langen Listen
-     * (Kopplung, Fähigkeiten-Zentrale, Berechtigungen, Erweitert) leben
-     * seit Welle 2 in den EINSTELLUNGEN (Route 1). Lokale Composable:
-     * schließt über die BridgeScreen-Zustände.
+     * W15 (Sir-Fixliste 9): Tab „Agenten“ (Route 4) — der Master-Schalter +
+     * die 4 klapptbaren Fähigkeiten-Gruppen. Der Inhalt ist 1:1 die frühere
+     * Einstellungen-Gruppe „Agenten“ (gleiche Composables, gleiche SSOT:
+     * CapabilityGate, DisclosureState, BridgeStatus.refreshConfig) — sie ist
+     * aus den Einstellungen hierher gewandert, KEINE Kopie.
      */
     @Composable
-    fun HomeContent(padding: PaddingValues) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
-            contentPadding = PaddingValues(
-                start = 16.dp, end = 16.dp, top = 8.dp,
-                // Karten enden nie hart an der Gesture-Navigationssäule
-                bottom = 40.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding(),
-            ),
+    fun AgentsContent(padding: PaddingValues) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            // ── Status: immer ERST, EINE Instanz ────────────────────────────
-            item(key = "banner") { screenStateBanner(status, serverUrl) }
-
-            // ── PH1-T2: Kopplung, Fähigkeiten, Berechtigungen und Erweitert
-            // sind in die EINSTELLUNGEN gewandert (Sir-Idee: Home schlank —
-            // die langen Listen leben in Route 1). Der Kopplungszustand bleibt
-            // über das Statusbanner sichtbar (NEUER CODE / KOPPLUNG).
-            item(key = "step1label") { StepLabel(1, "Verbindung herstellen") }
-            item(key = "step2card") {
-                ConnectionCard(
-                    status,
-                    message = statusMessage,
-                    serverUrlText = serverUrlText,
-                    onUrlChange = { serverUrlText = it },
-                    onConnect = {
-                        val url = serverUrlText.trim()
-                        if (url.isBlank()) {
-                            snack("Server-Adresse eintragen")
+            MasterCapabilityCard(
+                enabledCount = enabledIds.size,
+                totalCount = allCaps.size,
+                onCheckedChange = onMasterCheckedChange,
+            )
+            SectionTitle(
+                "Fähigkeiten des Agenten",
+                sub = "Was der Agent am Gerät darf — je Gruppe auf- und zuklappbar (PH1-T5).",
+            )
+            groups.forEachIndexed { index, (title, caps) ->
+                CapabilityGroupCard(
+                    title = title,
+                    caps = caps,
+                    enabledIds = enabledIds,
+                    onToggle = { cap, on ->
+                        // v0.12.0 QA-SK-01: die Einzeltoggles MÜSSEN ins Gate
+                        // schreiben. PH-7/PS-G-2 (play): sensible Toggles
+                        // bekommen VOR dem Einschalten ihre EIGENE Disclosure.
+                        if (BuildConfig.EDITION_PLAY && on && cap.id in com.hermesandroid.bridge.policy.SENSITIVE_TOGGLES) {
+                            DisclosureState.request(context, cap.id) {
+                                CapabilityGate.setEnabled(cap.id, true)
+                                BridgeStatus.refreshConfig()
+                            }
                         } else {
-                            // W4-D (A7): die Schnellverbindung folgt dem AKTIVEN
-                            // Profil — die Liste bleibt wahr (URL+Vault-Spiegel
-                            // wandern mit), verbindet wird wie bisher über
-                            // RelayClient.connect + SSOT-Code.
-                            ServerProfiles.syncActiveUrl(url)
-                            BridgeConnectionService.start(context)
-                            RelayClient.connect(url, PairingManager.getCode())
+                            CapabilityGate.setEnabled(cap.id, on)
+                            BridgeStatus.refreshConfig()
                         }
                     },
-                    onDisconnect = {
-                        RelayClient.disconnect()
-                        snack("Verbindung getrennt")
+                    iconRes = when (index) {
+                        0 -> GroupIcons.ansehen
+                        1 -> GroupIcons.bedienen
+                        2 -> GroupIcons.schreiben
+                        else -> GroupIcons.invasiv
+                    },
+                    // PH1-T5: je Gruppe eigener Klappe-Zustand.
+                    expanded = when (index) {
+                        0 -> capGroupAnsehenOpen
+                        1 -> capGroupBedienenOpen
+                        2 -> capGroupSchreibenOpen
+                        else -> capGroupInvasivOpen
+                    },
+                    onExpandedChange = { open ->
+                        when (index) {
+                            0 -> capGroupAnsehenOpen = open
+                            1 -> capGroupBedienenOpen = open
+                            2 -> capGroupSchreibenOpen = open
+                            else -> capGroupInvasivOpen = open
+                        }
                     },
                 )
             }
+        }
+    }
 
-            // ── Master-Status kompakt (PH1-T2): nur die Ansicht auf Home —
-            // der Master-Schalter und die Einzeltoggles leben in den
-            // Agenten-Einstellungen (Einstellungen → Agenten).
-            item(key = "masterCompact") {
-                MasterCompactCard(
-                    enabledCount = enabledIds.size,
-                    totalCount = allCaps.size,
-                )
-            }
-
-            // ── Fußzeile: lokale LAN-Steuerung ─────────────────────────────
-            item(key = "footer") { FooterCard() }
+    /**
+     * W15 (Sir-Fixliste 9): Tab „E2E“ (Route 5) — die Ende-zu-Ende-Sicht:
+     * Warn-Zeile (XDH fehlt), Abweichungs-Banner (dismissbar) und die
+     * Fingerprints je aktiver Sitzung. Inhalt = die frühere Einstellungen-
+     * Gruppe „Verschlüsselung“ (CryptoSettingsCard, gleiche SSOT:
+     * RelayClient.e2eSessions/e2eBanner) — gewandert, nicht kopiert.
+     */
+    @Composable
+    fun E2eContent(padding: PaddingValues) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            CryptoSettingsCard()
         }
     }
 
@@ -528,68 +567,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 }
 
 
-            // ── Gruppe 3: Agenten (Master + 4 Fähigkeiten-Gruppen, PH1-T5) ─
-            
-                AccordionCard(
-                    title = "Agenten",
-                    iconRes = SettingsIcons.agent,
-                    expanded = settingsAgentOpen,
-                    onExpandedChange = { settingsAgentOpen = it },
-                ) {
-                    MasterCapabilityCard(
-                        enabledCount = enabledIds.size,
-                        totalCount = allCaps.size,
-                        onCheckedChange = onMasterCheckedChange,
-                    )
-                    SectionTitle(
-                        "Fähigkeiten des Agenten",
-                        sub = "Was der Agent am Gerät darf — je Gruppe auf- und zuklappbar (PH1-T5).",
-                    )
-                    groups.forEachIndexed { index, (title, caps) ->
-                        CapabilityGroupCard(
-                            title = title,
-                            caps = caps,
-                            enabledIds = enabledIds,
-                            onToggle = { cap, on ->
-                                // v0.12.0 QA-Fix (SK-01, dreifach belegt): die
-                                // Einzeltoggles MÜSSEN ins Gate schreiben — der
-                                // v0.11.0-Write ging beim Redesign verloren.
-                                // PH-7/PS-G-2 (play): sensible Toggles bekommen
-                                // VOR dem Einschalten ihre EIGENE Disclosure.
-                                if (BuildConfig.EDITION_PLAY && on && cap.id in com.hermesandroid.bridge.policy.SENSITIVE_TOGGLES) {
-                                    DisclosureState.request(context, cap.id) {
-                                        CapabilityGate.setEnabled(cap.id, true)
-                                        BridgeStatus.refreshConfig()
-                                    }
-                                } else {
-                                    CapabilityGate.setEnabled(cap.id, on)
-                                    BridgeStatus.refreshConfig()
-                                }
-                            },
-                            iconRes = when (index) {
-                                0 -> GroupIcons.ansehen
-                                1 -> GroupIcons.bedienen
-                                2 -> GroupIcons.schreiben
-                                else -> GroupIcons.invasiv
-                            },
-                            // PH1-T5: je Gruppe eigener Klappe-Zustand.
-                            expanded = when (index) {
-                                0 -> capGroupAnsehenOpen
-                                1 -> capGroupBedienenOpen
-                                2 -> capGroupSchreibenOpen
-                                else -> capGroupInvasivOpen
-                            },
-                            onExpandedChange = { open ->
-                                when (index) {
-                                    0 -> capGroupAnsehenOpen = open
-                                    1 -> capGroupBedienenOpen = open
-                                    2 -> capGroupSchreibenOpen = open
-                                    else -> capGroupInvasivOpen = open
-                                }
-                            },
-                        )
-                    }
-                }
+            // ── W15 (Sir-Fixliste 9): Gruppe „Agenten“ ist der eigene TAB
+            // geworden (Route 4) — derselbe Inhalt (Master-Schalter + die 4
+            // Fähigkeiten-Gruppen, gleiche SSOT) lebt jetzt vorne in der
+            // Tab-Navigation, nicht mehr als Einstellungs-Accordion.
 
 
             // ── Gruppe 4: App-Sperre (PH-2X X-1) — APPEND-ONLY am Ende ────
@@ -604,16 +585,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 }
 
 
-            // ── Gruppe 5: Verschlüsselung (PH-3 Welle 2) — APPEND-ONLY ─────
-            
-                AccordionCard(
-                    title = "Verschlüsselung",
-                    iconRes = SettingsIcons.crypto,
-                    expanded = settingsCryptoOpen,
-                    onExpandedChange = { settingsCryptoOpen = it },
-                ) {
-                    CryptoSettingsCard()
-                }
+            // ── W15 (Sir-Fixliste 9): Gruppe „Verschlüsselung“ ist der eigene
+            // TAB „E2E“ geworden (Route 5) — Fingerprints + Banner leben
+            // jetzt vorne in der Tab-Navigation, nicht mehr als Accordion.
 
 
             // ── Gruppe Sprache (W4, App-Lane C) — Einstellungen-Zeile
@@ -657,20 +631,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     }
                     // WELLE 13 P2 (Sir): Version NICHT dauerhaft sichtbar —
                     // sie lebt ausschliesslich im Settings-About-Info-Sheet.
-                    // PH1-T1: Nav-Icons — Material-Icons ohne neue Dependency
-                    // (Settings/Info aus dem Compose-BOM-Icons-Set; die Chat-
-                    // Bubble als eigener Vector-Drawable im res/drawable-Hausstil).
+                    // W15: Chat/Agenten/E2E/Navigation leben in der TAB-Leiste
+                    // unten (NavigationBar) — hier bleiben nur Einstellungen
+                    // (Zahnrad) und Impressum/Datenschutz (Info) als Sprünge.
                     IconButton(onClick = { route = 1 }) {
                         Icon(
                             Icons.Outlined.Settings,
                             contentDescription = "Einstellungen",
-                            tint = FlipsiColors.TextPrimary,
-                        )
-                    }
-                    IconButton(onClick = { route = 2 }) {
-                        Icon(
-                            painterResource(NavIcons.chat),
-                            contentDescription = "Chat",
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
@@ -685,11 +652,51 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = FlipsiColors.Void),
             )
         },
+        // ── W15 (Sir-Fixliste 9): TAB-NAVIGATION — sauber als eigene Leiste
+        // in Sirs Tab-Order: Dashboard | Chat | Agenten | E2E. Einstellungen
+        // (Route 1) und Impressum (Route 3) bleiben Sprünge oben rechts; auf
+        // ihnen ist kein Tab selektiert. Material3-NavigationBar ohne neue
+        // Dependency (Compose-BOM), Haus-Farbrollen (Ember = aktiver Tab).
+        bottomBar = {
+            NavigationBar(
+                containerColor = FlipsiColors.Void,
+                contentColor = FlipsiColors.TextPrimary,
+            ) {
+                NavigationBarItem(
+                    selected = route == 0,
+                    onClick = { route = 0 },
+                    icon = { Icon(painterResource(R.drawable.ic_dashboard), contentDescription = null) },
+                    label = { Text("Dashboard") },
+                    colors = navTabColors(),
+                )
+                NavigationBarItem(
+                    selected = route == 2,
+                    onClick = { route = 2 },
+                    icon = { Icon(painterResource(NavIcons.chat), contentDescription = null) },
+                    label = { Text("Chat") },
+                    colors = navTabColors(),
+                )
+                NavigationBarItem(
+                    selected = route == 4,
+                    onClick = { route = 4 },
+                    icon = { Icon(painterResource(SettingsIcons.agent), contentDescription = null) },
+                    label = { Text("Agenten") },
+                    colors = navTabColors(),
+                )
+                NavigationBarItem(
+                    selected = route == 5,
+                    onClick = { route = 5 },
+                    icon = { Icon(painterResource(SettingsIcons.crypto), contentDescription = null) },
+                    label = { Text("E2E") },
+                    colors = navTabColors(),
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) },
     ) { padding ->
-        // PH1-T1: Screen-Route — 0=Home (else-Zweig = defensiver Rückfall
-        // auch für ungültige Route-Werte), 1=Einstellungen, 2=Chat, 3=Impressum.
-        // PH-2-T3: Route 2 zeigt jetzt das echte Chat-Gerüst (ui/chat/ChatScreen).
+        // W15: Screen-Route — 0=Dashboard (else-Zweig = defensiver Rückfall
+        // auch für ungültige Route-Werte), 1=Einstellungen, 2=Chat,
+        // 3=Impressum, 4=Agenten-Tab, 5=E2E-Tab.
         when (route) {
             1 -> SettingsHome(
                 padding = padding,
@@ -701,9 +708,48 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 // Standard-Assistent).
                 legacyGroups = { LegacySettingsGroups() },
             )
-            2 -> ChatScreen(padding, onOpenSettings = { route = 1 }) // Welle 13: Herz = Einstellungen (Supporter-Karte)
+            2 -> ChatScreen(
+                padding,
+                onOpenSettings = { route = 1 }, // Welle 13: Herz = Einstellungen (Supporter-Karte)
+                // W15: Dashboard-Slot-Tap → Conversation des Agenten (einmalig).
+                openAgentId = pendingChatAgentId,
+                onOpenedAgent = { pendingChatAgentId = null },
+            )
             3 -> LegalScreenPlaceholder(padding)
-            else -> HomeContent(padding)
+            4 -> AgentsContent(padding)
+            5 -> E2eContent(padding)
+            else -> DashboardScreen(
+                padding = padding,
+                serverUrlText = serverUrlText,
+                onUrlChange = { serverUrlText = it },
+                onConnect = {
+                    // W4-D (A7): die Schnellverbindung folgt dem AKTIVEN
+                    // Profil — die Liste bleibt wahr (URL+Vault-Spiegel
+                    // wandern mit), verbindet wird wie bisher über
+                    // RelayClient.connect + SSOT-Code.
+                    val url = serverUrlText.trim()
+                    if (url.isBlank()) {
+                        snack("Server-Adresse eintragen")
+                    } else {
+                        ServerProfiles.syncActiveUrl(url)
+                        BridgeConnectionService.start(context)
+                        RelayClient.connect(url, PairingManager.getCode())
+                    }
+                },
+                onDisconnect = {
+                    RelayClient.disconnect()
+                    snack("Verbindung getrennt")
+                },
+                enabledCapabilityCount = enabledIds.size,
+                totalCapabilityCount = allCaps.size,
+                // W15: Tap auf den Agenten-Slot → Chat-Tab mit der
+                // Conversation DIESES Agenten (Pending-Merker oben).
+                onOpenAgentChat = { agentId ->
+                    pendingChatAgentId = agentId
+                    route = 2
+                },
+                onSnack = { snack(it) },
+            )
         }
     }
 
@@ -847,264 +893,6 @@ fun BridgeScreen(initialRoute: Int = 0) {
             },
             containerColor = FlipsiColors.PanelElev,
         )
-    }
-}
-
-// ── Bausteine ───────────────────────────────────────────────────────────────
-
-/**
- * Banner-Verkabelung (PH1-T3): Zustands-Matching auf ConnectionState — die
- * frühere String-Grep-Route („Verbinde"/„Neuverbindung" im Message-Text) ist
- * komplett raus. Das Neu-Code-Ereignis überdeckt kurzzeitig die Zustands-
- * Anzeige, wenn weder verbunden noch die Kopplung abgelehnt ist.
- */
-@Composable
-private fun screenStateBanner(
-    state: BridgeStatus.ConnectionState,
-    serverUrl: String?,
-) {
-    val codeEvent = PairingManager.getLastCodeEvent()
-    // PH1-W3-Fund (Drill-Beweis, P1): CodeEvent.REGENERATED persistiert in den
-    // Prefs (beim allerersten Code-Anlegen gesetzt, nie zurückgesetzt) — der
-    // Verdeck-Fall darf deshalb KEINE Fehler- oder Wiederverbindungs-Kommunikation
-    // ausblenden (FAILED-Ursache-Banner PH1-T4 + RECONNECTING-Hinweis PH1-T3),
-    // sonst ist die ganze Zustands-Banner-Logik im Normalbetrieb unsichtbar.
-    // Verdeckt bleibt nur die Erstnutzer-Führung (IDLE/CONNECTING).
-    if (codeEvent == PairingManager.CodeEvent.REGENERATED &&
-        state !is BridgeStatus.ConnectionState.CONNECTED &&
-        state !is BridgeStatus.ConnectionState.PAIRING_BROKEN &&
-        state !is BridgeStatus.ConnectionState.FAILED &&
-        state !is BridgeStatus.ConnectionState.RECONNECTING
-    ) {
-        StateBanner(
-            tint = FlipsiColors.SignalAmber,
-            title = "Kopplungscode wurde neu erstellt",
-            text = "Schritt: Code in den Einstellungen kopieren → am Server eintragen → dann verbinden.",
-            badge = "NEUER CODE" to BadgeState.WARN,
-        )
-        return
-    }
-    val visual = when (state) {
-        is BridgeStatus.ConnectionState.PAIRING_BROKEN -> BannerVisual(
-            tint = FlipsiColors.SignalRedText,
-            title = "Kopplungscode wurde abgelehnt",
-            // PH1-T4: Ursache + Handlung in Nutzbar-Deutsch (generisch).
-            text = "Kopplung abgelehnt — Code in den Einstellungen neu erzeugen bzw. am Server hinterlegen, dann wieder verbinden.",
-            busy = false,
-            badge = "KOPPLUNG" to BadgeState.ERROR,
-        )
-        is BridgeStatus.ConnectionState.CONNECTED -> BannerVisual(
-            tint = FlipsiColors.SignalGreen,
-            title = "Verbunden — Brücke steht",
-            text = "Der Agent kann das Gerät nutzen — Fähigkeiten in den Einstellungen anpassen.",
-            busy = false,
-            badge = "AKTIV" to BadgeState.OK,
-        )
-        is BridgeStatus.ConnectionState.CONNECTING -> connectingVisual()
-        is BridgeStatus.ConnectionState.RECONNECTING -> reconnectingVisual(state.ursache)
-        is BridgeStatus.ConnectionState.FAILED -> BannerVisual(
-            tint = FlipsiColors.SignalAmber,
-            title = "Nicht verbunden",
-            // PH1-T4: Banner sagt Ursache + Handlung (generisch) — die rohe
-            // Ursache bleibt in der Detailzeile der Verbindungskarte sichtbar.
-            text = ursacheHinweis(state.ursache),
-            busy = false,
-            badge = "GETRENNT" to BadgeState.OFF,
-        )
-        is BridgeStatus.ConnectionState.IDLE -> BannerVisual(
-            tint = FlipsiColors.TextSecondary,
-            title = "Nicht verbunden",
-            text = if (!serverUrl.isNullOrBlank())
-                "Adresse unten eintragen und verbinden. Die Wiederverbindung läuft im 5-Min-Modus."
-            else
-                "Kopplungscode in den Einstellungen am Server einrichten, dann unten verbinden.",
-            busy = false,
-            badge = "GETRENNT" to BadgeState.OFF,
-        )
-    }
-    StateBanner(
-        tint = visual.tint,
-        title = visual.title,
-        text = visual.text,
-        busy = visual.busy,
-        badge = visual.badge,
-    )
-}
-
-/** Sichtwerte des Status-Banners je Zustand (PH1-T3). */
-private data class BannerVisual(
-    val tint: Color,
-    val title: String,
-    val text: String,
-    val busy: Boolean,
-    val badge: Pair<String, BadgeState>,
-)
-
-/** Verbindungsaufbau (erstmalig oder in der Schleife): Spinner-Visual. */
-private fun connectingVisual(): BannerVisual = BannerVisual(
-    tint = FlipsiColors.SignalAmber,
-    title = "Verbinde …",
-    text = "Die Wiederverbindungs-Schleife läuft (1–30 s Abstand, danach alle 5 min).",
-    busy = true,
-    badge = "VERBINDE" to BadgeState.WARN,
-)
-
-/**
- * Wiederverbindungs-Schleife (PH1-T4): Spinner + Ursachen-Hinweis — die
- * rohe Ursache (Relay-Text) bleibt in der Statuszeile der Verbindungskarte
- * sichtbar, der Banner sagt, was der Nutzer tun kann (generisch, ohne
- * private Daten).
- */
-private fun reconnectingVisual(ursache: String): BannerVisual {
-    val hint = when {
-        // Eigene RelayClient-Meldung (Termux-Revival-Auslösung).
-        ursache.startsWith("Stack nicht erreichbar") ->
-            "Server nicht erreichbar — der Hilfsstack wird gestartet, weitere Versuche laufen automatisch."
-        else ->
-            "Server nicht erreichbar — neue Versuche laufen automatisch. URL in den Einstellungen prüfen, falls es dauerhaft nicht klappt."
-    }
-    return BannerVisual(
-        tint = FlipsiColors.SignalAmber,
-        title = "Verbinde …",
-        text = hint,
-        busy = true,
-        badge = "VERBINDE" to BadgeState.WARN,
-    )
-}
-
-/**
- * PH1-T4: Ursachen-Text des Relais in nutzerseitige Handlungs-Hinweise
- * übersetzen. Die Präfixe stammen aus unseren EIGENEN RelayClient-
- * Meldungen (deterministische Konstanten) — unbekannte Fälle zeigen den
- * generischen Hinweis. Die Detailzeile der Verbindungskarte bleibt die
- * rohe Ursache-Auskunft für Fortgeschrittene.
- */
-private fun ursacheHinweis(ursache: String): String = when {
-    ursache.startsWith("Server-Adresse ungültig") ->
-        "Server-Adresse ist ungültig — URL in den Einstellungen prüfen und erneut verbinden."
-    ursache.startsWith("Verbindungsfehler") ->
-        "Server nicht erreichbar — URL in den Einstellungen prüfen und Verbindung wiederherstellen."
-    ursache.startsWith("Revival") ->
-        "Termux-Hilfsstack konnte nicht gestartet werden — Termux öffnen und die Erlaubnis dafür prüfen."
-    else ->
-        "Verbindung fehlgeschlagen — Server-Adresse prüfen und erneut verbinden."
-}
-
-/** Schritt-Kennzeichnung — der Ablaufläufer: 1 = Code am Server, 2 = Verbinden. */
-@Composable
-private fun StepLabel(number: Int, title: String) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.padding(top = 6.dp),
-    ) {
-        Box(
-            Modifier
-                .size(22.dp)
-                .background(FlipsiColors.PanelElev, CircleShape)
-                .border(1.dp, FlipsiColors.LineStrong, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                number.toString(),
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = FlipsiColors.Ember,
-            )
-        }
-        Text(
-            title,
-            style = MaterialTheme.typography.titleSmall,
-            color = FlipsiColors.TextSecondary,
-            modifier = Modifier.padding(start = 8.dp),
-        )
-    }
-}
-
-@Composable
-private fun ConnectionCard(
-    state: BridgeStatus.ConnectionState,
-    message: String,
-    serverUrlText: String,
-    onUrlChange: (String) -> Unit,
-    onConnect: () -> Unit,
-    onDisconnect: () -> Unit,
-) {
-    // PH1-T3: Zustands-Matching auf ConnectionState (exhaustive, ohne else) —
-    // die frühere Text-Grep-Route („Verbinde"/„Neuverbindung") ist raus.
-    val (dotColor, stateLabel) = when (state) {
-        is BridgeStatus.ConnectionState.CONNECTED ->
-            FlipsiColors.SignalGreen to "Verbunden"
-        is BridgeStatus.ConnectionState.PAIRING_BROKEN ->
-            FlipsiColors.SignalRed to "Kopplung nötig"
-        is BridgeStatus.ConnectionState.CONNECTING ->
-            FlipsiColors.SignalAmber to "Verbinde …"
-        is BridgeStatus.ConnectionState.RECONNECTING ->
-            FlipsiColors.SignalAmber to "Verbinde …"
-        is BridgeStatus.ConnectionState.FAILED ->
-            FlipsiColors.SignalAmber to "Getrennt"
-        is BridgeStatus.ConnectionState.IDLE ->
-            FlipsiColors.SignalAmber to "Getrennt"
-    }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).background(dotColor, CircleShape))
-                Text(
-                    stateLabel,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-            }
-            // Detail-Zeile (letzte Relay-Meldung ODER lokaler K5-Hinweis) —
-            // OHNE die URL-Wiederholung: die URL lebt NUR im Eingabefeld.
-            // PH1-T3: Sichtbarkeit über den Zustand statt Text-Präfix-Check.
-            if (state !is BridgeStatus.ConnectionState.CONNECTED) {
-                Text(
-                    message.ifBlank { "Zustand der Bridge" },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = FlipsiColors.TextSecondary,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            androidx.compose.material3.HorizontalDivider(Modifier.padding(vertical = 12.dp), color = FlipsiColors.LineStrong)
-            OutlinedTextField(
-                value = serverUrlText,
-                onValueChange = onUrlChange,
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-                label = { Text("Server-Adresse") },
-                // Bewusst generisch — keine private Domain im Quellcode (GitHub-Hygiene)!
-                placeholder = { Text("https://dein-relay.example") },
-            )
-            Row(
-                Modifier.fillMaxWidth().padding(top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Button(
-                    onClick = onConnect,
-                    enabled = state !is BridgeStatus.ConnectionState.CONNECTED,
-                    modifier = Modifier.height(48.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = FlipsiColors.Ember,
-                        contentColor = FlipsiColors.OnEmber,
-                        disabledContainerColor = FlipsiColors.PanelElev,
-                        disabledContentColor = FlipsiColors.TextSecondary,
-                    ),
-                ) { Text("Verbinden") }
-                if (state is BridgeStatus.ConnectionState.CONNECTED) {
-                    OutlinedButton(
-                        onClick = onDisconnect,
-                        modifier = Modifier.height(48.dp),
-                        // Destruktive Aktion = kenntlich dezent rot
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.SignalRedText),
-                    ) { Text("Trennen", fontWeight = FontWeight.Medium) }
-                }
-            }
-        }
     }
 }
 
@@ -1442,56 +1230,40 @@ private fun AdvancedCard(configVersion: Int) {
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 8.dp),
             )
-        }
     }
-}
-
-@Composable
-private fun FooterCard() {
-    val context = LocalContext.current
-    val ip = remember { localIpOf(context) }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Lokale Steuerung (USB/LAN)", fontWeight = FontWeight.SemiBold)
-            Text(
-                "http://$ip:8765 — nur im Heim-WLAN",
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                ),
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Text(
-                "Regelbetrieb läuft über den Relay-Server (oben) — damit der Agent auch unterwegs Zugriff hat.",
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
-private fun localIpOf(context: Context): String {
-    return runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces()?.toList()
-            ?.flatMap { it.inetAddresses.toList() }
-            ?.firstOrNull { !it.isLoopbackAddress && it.hostAddress?.contains(':') == false }
-            ?.hostAddress ?: "—"
-    }.getOrNull() ?: "—"
 }
 
 // ── PH1-T1: Top-Bar-Titel je Route ──────────────────────────────────────────
 
-/** Titel der Top-Bar je Route (0 = Home mit dem App-Namen). */
+/** Titel der Top-Bar je Route (0 = Dashboard mit dem App-Namen). */
 private fun topBarTitle(route: Int): String = when (route) {
     1 -> "Einstellungen"
     2 -> "Chat"
     3 -> "Impressum & Datenschutz"
-    // 0 = Home; unbekannte Werte fallen auf den App-Namen zurück.
+    4 -> "Agenten"
+    5 -> "E2E-Verschlüsselung"
+    // 0 = Dashboard; unbekannte Werte fallen auf den App-Namen zurück.
     else -> "FlipsiBridge"
+}
+
+// ── W15: Tab-Navigations-Farben (Haus-Rollen: Ember = aktiv) ─────────────────
+
+/**
+ * Farbwerte der Tab-Leiste — aktiver Tab in Ember (EmberDim als Pille), inaktive
+ * Tabs in TextSecondary; NIE nur Farbe als Träger: das Label steht immer daneben.
+ */
+@Composable
+private fun navTabColors(): NavigationBarItemColors {
+    // remember vermeidet Neuaufbau je Frame — die Werte sind konstant.
+    return remember {
+        NavigationBarItemDefaults.colors(
+            selectedIconColor = FlipsiColors.Ember,
+            selectedTextColor = FlipsiColors.Ember,
+            unselectedIconColor = FlipsiColors.TextSecondary,
+            unselectedTextColor = FlipsiColors.TextSecondary,
+            indicatorColor = FlipsiColors.EmberDim,
+        )
+    }
 }
 
 // ── PH1-T2: Einstellungen-Bausteine (Accordion-Gruppenkarten) ──────────────
@@ -1552,37 +1324,6 @@ private fun AccordionCard(
                     content = content,
                 )
             }
-        }
-    }
-}
-
-/**
- * Master-Status kompakt (PH1-T2): reine ANSICHT auf Home — Zähler-Badge +
- * Wegweiser zu den Agenten-Einstellungen. Schalter leben in Route 1.
- */
-@Composable
-private fun MasterCompactCard(enabledCount: Int, totalCount: Int) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ResourceIcon(GroupIcons.master, tint = FlipsiColors.TextSecondary, size = 20.dp)
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    "Fähigkeiten des Agenten",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                CountBadge(enabled = enabledCount, total = totalCount, invasive = false)
-            }
-            Text(
-                "$enabledCount von $totalCount Fähigkeiten aktiv — ein- und ausschalten unter Einstellungen → Agenten.",
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
         }
     }
 }

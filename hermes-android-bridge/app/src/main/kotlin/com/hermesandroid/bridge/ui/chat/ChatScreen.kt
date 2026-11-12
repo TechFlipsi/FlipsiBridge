@@ -92,7 +92,17 @@ import java.util.Locale
  * bleibt der Demo-Fallback mit den Beispiel-Einträgen (siehe sampleAgents).
  */
 @Composable
-fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
+fun ChatScreen(
+    padding: PaddingValues,
+    onOpenSettings: () -> Unit = {},
+    // W15 (Sir-Fixliste 9): optionaler Öffnen-Wunsch aus dem Dashboard —
+    // ein Tap auf einen Agenten-Slot startet hier DIREKT in der Conversation
+    // dieses Agenten (statt der Liste). Einmalig: der Konsum-Callback räumt
+    // den Pending-Merker in BridgeScreen ab, ein späterer Chat-Tab-Besuch
+    // landet wieder auf der Agenten-Liste.
+    openAgentId: String? = null,
+    onOpenedAgent: () -> Unit = {},
+) {
     // PH2-MERGE: echte Agenten-Liste vom Relay; leer = Demo-Fallback.
     val relayAgents by RelayClient.agents.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
@@ -399,6 +409,23 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
     // der Zitier-Modus beendet — konservativ, nie ein Zitat an die falsche
     // Bubble kleben. Rückfold der restaurierten Bubbles unten (splitWireText).
     var replyQuote by remember { mutableStateOf<ChatQuote?>(null) }
+
+    // W15 (Sir-Fixliste 9): Dashboard-Tap auf einen Agenten-Slot → direkt
+    // die Conversation dieses Agenten öffnen (echte Relay-IDs matchen; der
+    // Demo-Fallback hat leere agentId und matcht bewusst nie). onOpenedAgent
+    // räumt den Pending-Merker sofort ab → der nächste Tab-Besuch startet
+    // wieder normal auf der Liste. Eingabe/Zitat starten je Conversation neu
+    // (gleicher Verband wie der normale Listen-Tap).
+    LaunchedEffect(openAgentId) {
+        if (openAgentId != null) {
+            agents.firstOrNull { it.agentId == openAgentId }?.let { match ->
+                selectedAgentId = match.id
+                inputText = ""
+                replyQuote = null
+            }
+            onOpenedAgent()
+        }
+    }
 
     /**
      * W4-B (Zitieren): Antwort mit Zitier-Verband — Ratchet-Vertrag: kein
