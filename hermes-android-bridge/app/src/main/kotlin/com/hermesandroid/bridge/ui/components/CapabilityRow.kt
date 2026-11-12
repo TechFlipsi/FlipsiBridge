@@ -1,4 +1,6 @@
 package com.hermesandroid.bridge.ui.components
+import com.hermesandroid.bridge.R
+import androidx.compose.ui.res.stringResource
 
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Column
@@ -40,6 +42,12 @@ fun CapabilityRow(
     onToggle: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // W15: Status-Beschreibung als Ressource (DE/EN live über das AppLanguageGate).
+    val stateDescriptionText = if (enabled) {
+        stringResource(R.string.caps_row_a11y_on)
+    } else {
+        stringResource(R.string.caps_row_a11y_off)
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
@@ -51,21 +59,21 @@ fun CapabilityRow(
                 role = Role.Switch,
                 onValueChange = onToggle,
             )
-            .semantics { stateDescription = if (enabled) "Aktiviert" else "Aus" }
+            .semantics { stateDescription = stateDescriptionText }
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
     ) {
         CapIcon(cap.id, tint = FlipsiColors.TextSecondary, size = 24.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(cap.label, style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
+                Text(stringResource(cap.labelRes), style = MaterialTheme.typography.bodyLarge, fontWeight = androidx.compose.ui.text.font.FontWeight.Medium)
                 if (cap.invasive) {
                     Spacer(Modifier.width(6.dp))
                     ResourceIcon(StatusIcons.error, tint = FlipsiColors.SignalAmber, size = 14.dp)
                 }
             }
             Text(
-                cap.description,
+                stringResource(cap.descriptionRes),
                 style = MaterialTheme.typography.bodyMedium,
                 color = FlipsiColors.TextSecondary,
             )

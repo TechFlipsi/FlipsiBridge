@@ -243,14 +243,14 @@ object ChatBubbleRules {
     const val MIN_REPLY_AFTER_MS = 100L
 }
 
-/** SIRS-04: Anzeige-Zeile „Antwort nach X s“ — null = nicht anzeigen. */
-internal fun replyAfterLabel(ms: Long?): String? =
-    if (ms == null || ms < ChatBubbleRules.MIN_REPLY_AFTER_MS) null
-    else "Antwort nach ${"%.1f".format(ms / 1000.0)} s"
-
-/** SIRS-04: TalkBack-Beschreibung der Antwort-Latenz („Sekunden“ ausgeschrieben). */
-internal fun replyAfterDescription(ms: Long): String =
-    "Antwort nach ${"%.1f".format(ms / 1000.0)} Sekunden"
+/**
+ * SIRS-04/W15: Sekunden-Wert der Antwort-Latenz — null = nicht anzeigen
+ * (unter 100 ms). Der ANZEIGE-Text lebt als Ressource (chat_reply_after_s /
+ * chat_reply_after_long_s) und löst unter dem AppLanguageGate live in DE/EN
+ * auf; der formatierte Wert wird am Aufrufort übergeben.
+ */
+internal fun replyAfterSeconds(ms: Long?): Double? =
+    if (ms == null || ms < ChatBubbleRules.MIN_REPLY_AFTER_MS) null else ms / 1000.0
 
 /**
  * SIRS-05 (Volltest): Senden nur bei nicht-leerem Text — leer/Whitespace =
@@ -303,11 +303,31 @@ data class StatusChip(val label: String, val color: Color, val description: Stri
 
 @Composable
 private fun statusChip(status: String?): StatusChip = when (status) {
-    "queued" -> StatusChip("⏱ Wartet", FlipsiColors.SignalAmber, "Nachricht wartet im Relay-Spool")
-    "delivered" -> StatusChip("✓✓ Zugestellt", FlipsiColors.TextSecondary, "Beim Agenten zugestellt")
-    "read" -> StatusChip("✓✓ Gelesen", FlipsiColors.Ember, "Vom Agenten gelesen")
-    "failed" -> StatusChip("✕ Fehlgeschlagen", FlipsiColors.SignalRedText, "Senden fehlgeschlagen")
-    else -> StatusChip("✓ Gesendet", FlipsiColors.TextSecondary, "An das Relay gesendet")
+    "queued" -> StatusChip(
+        stringResource(R.string.chat_status_queued),
+        FlipsiColors.SignalAmber,
+        stringResource(R.string.chat_status_queued_desc),
+    )
+    "delivered" -> StatusChip(
+        stringResource(R.string.chat_status_delivered),
+        FlipsiColors.TextSecondary,
+        stringResource(R.string.chat_status_delivered_desc),
+    )
+    "read" -> StatusChip(
+        stringResource(R.string.chat_status_read),
+        FlipsiColors.Ember,
+        stringResource(R.string.chat_status_read_desc),
+    )
+    "failed" -> StatusChip(
+        stringResource(R.string.chat_status_failed),
+        FlipsiColors.SignalRedText,
+        stringResource(R.string.chat_status_failed_desc),
+    )
+    else -> StatusChip(
+        stringResource(R.string.chat_status_sent),
+        FlipsiColors.TextSecondary,
+        stringResource(R.string.chat_status_sent_desc),
+    )
 }
 
 /**
@@ -460,6 +480,8 @@ fun MessageBubble(
 ) {
     // W4-B (Chat-Suche): TalkBack-Beschreibung der Suchtreffer-Bubble.
     val searchHitDescription = stringResource(R.string.chat_search_hit_a11y)
+    // WELLE-13 P9/W15: Stopp-A11y der vorgelesenen Bubble als Ressource (DE/EN).
+    val stopReadAloudA11y = stringResource(R.string.chat_tts_stop_a11y)
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
     // Breite ein (16 dp Außen + 12 dp Text-Padding = „randnah + gequetscht“).
@@ -698,11 +720,11 @@ fun MessageBubble(
                                     .background(FlipsiColors.EmberDim)
                                     .clickable(onClick = onStopSpeaking)
                                     .padding(horizontal = 8.dp, vertical = 2.dp)
-                                    .semantics { contentDescription = "Vorlesen stoppen" },
+                                    .semantics { contentDescription = stopReadAloudA11y },
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    "🔊 Liest vor · Stopp",
+                                    stringResource(R.string.chat_tts_chip),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = FlipsiColors.Ember,
                                     fontWeight = FontWeight.SemiBold,
@@ -714,16 +736,21 @@ fun MessageBubble(
                         // SIRS-04: unter 100 ms bleibt die Zeile WEG — 'Antwort nach
                         // 0.0 s' war eine Anzeige unter der Messauflösung (kein echtes
                         // Timing), darüber steht die echte Zeit.
-                        val replyLine = replyAfterLabel(replyAfterMs)
-                        if (message.fromAgent && replyLine != null) {
+                        val replySeconds = replyAfterSeconds(replyAfterMs)
+                        if (message.fromAgent && replySeconds != null) {
+                            // W15: Text als Ressource — "%.1f".format folgt dem
+                            // App-Locale (AppLanguageGate setzt Locale.setDefault).
+                            val replyText = "%.1f".format(replySeconds)
                             Text(
-                                replyLine,
+                                stringResource(R.string.chat_reply_after_s, replyText),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = FlipsiColors.TextSecondary,
                                 modifier = Modifier
                                     .padding(end = 4.dp)
                                     .semantics {
-                                        contentDescription = replyAfterDescription(replyAfterMs!!)
+                                        contentDescription = stringResource(
+                                            R.string.chat_reply_after_long_s, replyText,
+                                        )
                                     },
                             )
                         }
@@ -748,11 +775,16 @@ fun MessageBubble(
                         if (!message.fromAgent && message.media != null && mediaUpload != null) {
                             val progress = when {
                                 mediaUpload.failed != null ->
-                                    "✕ ${mediaUpload.failed!!.take(40)}" to FlipsiColors.SignalRedText
+                                    stringResource(R.string.chat_upload_failed, mediaUpload.failed!!.take(40)) to
+                                        FlipsiColors.SignalRedText
                                 mediaUpload.done ->
-                                    "✓ Übertragen (${mediaUpload.totalChunks} Chunks)" to FlipsiColors.SignalGreen
-                                else -> "⏳ Upload ${mediaUpload.ackedChunks}/${mediaUpload.totalChunks} Chunks" to
-                                    FlipsiColors.TextSecondary
+                                    stringResource(R.string.chat_upload_done, mediaUpload.totalChunks) to
+                                        FlipsiColors.SignalGreen
+                                else -> stringResource(
+                                    R.string.chat_upload_progress,
+                                    mediaUpload.ackedChunks,
+                                    mediaUpload.totalChunks,
+                                ) to FlipsiColors.TextSecondary
                             }
                             Spacer(Modifier.width(6.dp))
                             Text(
@@ -1123,8 +1155,8 @@ fun ChatInputBar(
                     Box {
                         if (value.isEmpty()) {
                             Text(
-                                if (voiceRecording) "Sprachnachricht läuft …"
-                                else "Nachricht schreiben",
+                                if (voiceRecording) stringResource(R.string.chat_input_hint_recording)
+                                else stringResource(R.string.chat_input_hint),
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = FlipsiColors.TextSecondary,
                             )
@@ -1141,7 +1173,7 @@ fun ChatInputBar(
                     IconButton(onClick = onAttach, modifier = Modifier.size(40.dp)) {
                         Icon(
                             Icons.Filled.Add,
-                            contentDescription = "Anhang hinzufügen (Foto, Datei, Sprachnachricht)",
+                            contentDescription = stringResource(R.string.chat_attach_a11y),
                             tint = FlipsiColors.TextSecondary,
                         )
                     }
@@ -1155,6 +1187,8 @@ fun ChatInputBar(
                 // verdrahtet; das Sheet blieb trotzdem weg, weil ChatModelSheet
                 // bei blank agentId still returnete — das zweite Bein des Fixes
                 // liegt in ComposerUi.kt.
+                // W15: A11y-Text des Picker-Chips als Ressource (DE/EN, mit Modell-Name).
+                val modelPickerA11y = stringResource(R.string.chat_model_picker_a11y, modelLabel)
                 Row(
                     Modifier
                         .heightIn(min = 48.dp)
@@ -1162,7 +1196,7 @@ fun ChatInputBar(
                         .background(FlipsiColors.PanelElev)
                         .clickable(onClick = onOpenPicker)
                         .padding(horizontal = 12.dp)
-                        .semantics { contentDescription = "Modell wählen: $modelLabel" },
+                        .semantics { contentDescription = modelPickerA11y },
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
@@ -1225,7 +1259,8 @@ fun ChatInputBar(
                     ) {
                         Icon(
                             painterResource(R.drawable.ic_send),
-                            contentDescription = "Senden",
+                            // W15: Senden-A11y als Ressource (DE/EN).
+                            contentDescription = stringResource(R.string.chat_send_a11y),
                             tint = if (canSend) FlipsiColors.OnEmber
                                    else FlipsiColors.TextSecondary,
                         )

@@ -40,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -67,6 +68,20 @@ object ChatMediaDownload {
 }
 
 /**
+ * W15 (I18n): Anzeige-Label je Media-Art als RESSOURCE (löst unter dem
+ * AppLanguageGate live in DE/EN auf). UI-Spiegel von MediaProtocol.kindLabel —
+ * jenes bleibt als stabile Protokoll-/Test-Kennung unangetastet (ChatMediaTest
+ * pinnt die deutschen Werte), nur die ANZEIGE läuft über diesen Umweg.
+ */
+@Composable
+internal fun mediaKindLabel(kind: String): String = when (kind) {
+    "image" -> stringResource(R.string.media_kind_image)
+    "video" -> stringResource(R.string.media_kind_video)
+    "voice" -> stringResource(R.string.media_voice_title)
+    else -> stringResource(R.string.media_kind_file)
+}
+
+/**
  * MEDIA-T1: Media-Bubble-Inhalt je Art (in der MessageBubble-Surface).
  *
  * - image: Thumbnail (downgesampelte Dekodierung, app-private Datei) +
@@ -89,6 +104,10 @@ internal fun MediaBubbleContent(
     var viewerOpen by remember { mutableStateOf(false) }
     val contentColor = if (fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC)
     val subColor = if (fromAgent) FlipsiColors.TextSecondary else Color(0xFFFCE9DC).copy(alpha = 0.8f)
+    // W15: Anzeige-Labels als Ressource (DE/EN) statt MediaProtocol-Literalen
+    // (MediaProtocol.kindLabel bleibt als stabile Protokoll-/Test-Kennung).
+    val kindLabel = mediaKindLabel(media.kind)
+    val photoTapA11y = stringResource(R.string.media_photo_tap_a11y, media.name)
 
     Column(
         modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
@@ -101,15 +120,14 @@ internal fun MediaBubbleContent(
                 if (thumbnail != null) {
                     Image(
                         bitmap = thumbnail.asImageBitmap(),
-                        contentDescription = "Foto ${media.name} — zum Vergrößern antippen",
+                        contentDescription = photoTapA11y,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 220.dp)
                             .clickable { viewerOpen = true }
                             .semantics {
-                                contentDescription =
-                                    "Foto ${media.name} — zum Vergrößern antippen"
+                                contentDescription = photoTapA11y
                             },
                     )
                 } else {
@@ -152,7 +170,7 @@ internal fun MediaBubbleContent(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            "${MediaProtocol.kindLabel(media.kind)} · ${MediaProtocol.formatBytes(media.size)}",
+                            "$kindLabel · ${MediaProtocol.formatBytes(media.size)}",
                             style = MaterialTheme.typography.labelMedium,
                             color = subColor,
                         )
@@ -183,7 +201,7 @@ internal fun MediaBubbleContent(
 private fun MediaMetaLine(media: ChatMediaInfo, contentColor: Color, subColor: Color) {
     Column {
         Text(
-            "${MediaProtocol.kindGlyph(media.kind)} ${MediaProtocol.kindLabel(media.kind)}",
+            "${MediaProtocol.kindGlyph(media.kind)} ${mediaKindLabel(media.kind)}",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             color = contentColor,
@@ -244,8 +262,12 @@ private fun VoiceBubbleRow(
                 // Holen-Button: Tippen startet den Download des Mediums über
                 // den Koordinator-Hook; nach onDone(path) übernimmt ChatScreen
                 // die Bubble-Refill (Zeile wird zum normalen Player).
+                // W15: Button-/A11y-Texte als Ressource (DE/EN).
+                val fetchBtnA11y = if (fetching) stringResource(R.string.media_voice_fetching_a11y)
+                else stringResource(R.string.media_voice_fetch_a11y)
                 Text(
-                    if (fetching) "⏳ Holen …" else "⬇ Holen",
+                    if (fetching) stringResource(R.string.media_voice_fetching_btn)
+                    else stringResource(R.string.media_voice_fetch_btn),
                     style = MaterialTheme.typography.labelLarge,
                     color = if (fetching) FlipsiColors.TextSecondary else FlipsiColors.Ember,
                     fontWeight = FontWeight.SemiBold,
@@ -267,21 +289,20 @@ private fun VoiceBubbleRow(
                         }
                         .padding(horizontal = 14.dp, vertical = 12.dp)
                         .semantics {
-                            contentDescription = if (fetching) "Sprachnachricht wird geholt"
-                            else "Sprachnachricht auf das Gerät holen"
+                            contentDescription = fetchBtnA11y
                         },
                 )
                 Spacer(Modifier.width(10.dp))
                 Column {
                     Text(
-                        "Sprachnachricht",
+                        stringResource(R.string.media_voice_title),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = contentColor,
                     )
                     Text(
-                        if (durationMs < 0) "Nicht abrufbar — erneut holen"
-                        else "Noch nicht auf dem Gerät gespeichert",
+                        if (durationMs < 0) stringResource(R.string.media_voice_failed)
+                        else stringResource(R.string.media_voice_pending),
                         style = MaterialTheme.typography.labelMedium,
                         color = subColor,
                     )
@@ -290,8 +311,8 @@ private fun VoiceBubbleRow(
                 // Kein Dienst / keine mediaId: ehrlicher Hinweis statt
                 // totem Play-Button (Checkliste K: kein stiller Fehler).
                 Text(
-                    if (media.mediaId.isBlank()) "Sprachnachricht — Datei fehlt"
-                    else "Sprachnachricht — Hol-Dienst nicht verfügbar",
+                    if (media.mediaId.isBlank()) stringResource(R.string.media_voice_missing_file)
+                    else stringResource(R.string.media_voice_no_service),
                     style = MaterialTheme.typography.labelMedium,
                     color = subColor,
                 )
@@ -325,14 +346,16 @@ private fun VoiceBubbleRow(
         ) {
             Icon(
                 painterResource(if (playing) R.drawable.ic_close else R.drawable.ic_play),
-                contentDescription = if (playing) "Wiedergabe stoppen" else "Sprachnachricht abspielen",
+                // W15: Play/Stopp-A11y als Ressource (DE/EN).
+                contentDescription = if (playing) stringResource(R.string.media_voice_stop_a11y)
+                else stringResource(R.string.media_voice_play_a11y),
                 tint = contentColor,
             )
         }
         Spacer(Modifier.width(8.dp))
         Column {
             Text(
-                "Sprachnachricht",
+                stringResource(R.string.media_voice_title),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = contentColor,
@@ -351,10 +374,14 @@ private fun VoiceBubbleRow(
 private fun SaveToDownloadsRow(media: ChatMediaInfo, subColor: Color) {
     val context = LocalContext.current
     var saved by remember { mutableStateOf(false) }
+    // W15: Texte als Ressource (DE/EN) — A11y vorab gelöst (semantics-Lambda
+    // ist kein Composable-Kontext).
+    val saveA11y = if (saved) stringResource(R.string.media_saved_a11y)
+    else stringResource(R.string.media_save_a11y)
     Text(
-        if (saved) "✓ Gespeichert (Downloads)"
-        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) "⬇ In Downloads speichern"
-        else "Datei im App-Ordner: ${File(media.localPath).parent}",
+        if (saved) stringResource(R.string.media_saved_downloads)
+        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) stringResource(R.string.media_save_downloads)
+        else stringResource(R.string.media_saved_app_folder, File(media.localPath).parent),
         style = MaterialTheme.typography.labelMedium,
         color = if (saved) FlipsiColors.SignalGreen else subColor,
         modifier = Modifier
@@ -363,8 +390,7 @@ private fun SaveToDownloadsRow(media: ChatMediaInfo, subColor: Color) {
             }
             .padding(vertical = 4.dp)
             .semantics {
-                contentDescription =
-                    if (saved) "In Downloads gespeichert" else "Datei in Downloads speichern"
+                contentDescription = saveA11y
             },
     )
 }
@@ -388,7 +414,8 @@ internal fun FullscreenImageViewer(path: String, name: String, onDismiss: () -> 
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap.asImageBitmap(),
-                        contentDescription = "Foto $name (Vollbild)",
+                        // W15: Vollbild-A11y als Ressource (DE/EN).
+                        contentDescription = stringResource(R.string.media_photo_full_a11y, name),
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -397,14 +424,14 @@ internal fun FullscreenImageViewer(path: String, name: String, onDismiss: () -> 
                     )
                 } else {
                     Text(
-                        "Bild konnte nicht geladen werden.",
+                        stringResource(R.string.media_image_load_failed),
                         style = MaterialTheme.typography.bodyMedium,
                         color = FlipsiColors.TextPrimary,
                         modifier = Modifier.padding(24.dp),
                     )
                 }
                 Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onDismiss) { Text("Schließen") }
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) }
             }
         }
     }
@@ -423,11 +450,12 @@ internal fun AttachSheet(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Anhang senden") },
+        // W15: Zeilen-/Titel-Texte als Ressource (DE/EN).
+        title = { Text(stringResource(R.string.media_attach_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    "Foto oder Video",
+                    stringResource(R.string.media_attach_photo),
                     style = MaterialTheme.typography.bodyLarge,
                     color = FlipsiColors.TextPrimary,
                     modifier = Modifier
@@ -437,7 +465,7 @@ internal fun AttachSheet(
                         .padding(vertical = 12.dp),
                 )
                 Text(
-                    "Datei",
+                    stringResource(R.string.media_kind_file),
                     style = MaterialTheme.typography.bodyLarge,
                     color = FlipsiColors.TextPrimary,
                     modifier = Modifier
@@ -447,7 +475,7 @@ internal fun AttachSheet(
                         .padding(vertical = 12.dp),
                 )
                 Text(
-                    "Sprachnachricht aufnehmen",
+                    stringResource(R.string.media_attach_voice_record),
                     style = MaterialTheme.typography.bodyLarge,
                     color = FlipsiColors.TextPrimary,
                     modifier = Modifier
@@ -459,7 +487,7 @@ internal fun AttachSheet(
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Abbrechen") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
         },
     )
 }

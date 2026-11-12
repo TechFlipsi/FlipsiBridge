@@ -1,4 +1,5 @@
 package com.hermesandroid.bridge.ui.components
+import androidx.compose.ui.res.stringResource
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.selection.toggleable
@@ -44,6 +45,12 @@ fun MasterCapabilityCard(
     modifier: Modifier = Modifier,
 ) {
     val allOn = enabledCount == totalCount && totalCount > 0
+    // W15: Status-Beschreibung als Ressource (DE/EN live über das AppLanguageGate).
+    val stateDescriptionText = if (allOn) {
+        stringResource(R.string.caps_master_a11y_all)
+    } else {
+        stringResource(R.string.caps_master_a11y_count, enabledCount, totalCount)
+    }
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -60,9 +67,7 @@ fun MasterCapabilityCard(
                 .heightIn(min = FlipsiSpacing.RowMin)
                 .minimumInteractiveComponentSize()
                 .toggleable(value = allOn, role = Role.Switch, onValueChange = onCheckedChange)
-                .semantics {
-                    stateDescription = if (allOn) "Alle aktiviert" else "$enabledCount von $totalCount aktiviert"
-                }
+                .semantics { stateDescription = stateDescriptionText }
                 .padding(16.dp),
         ) {
             ResourceIcon(GroupIcons.master,
@@ -71,10 +76,10 @@ fun MasterCapabilityCard(
             )
             Spacer(Modifier.width(16.dp))
             Column(Modifier.weight(1f)) {
-                Text("Alle Fähigkeiten", style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
+                Text(stringResource(R.string.caps_master_title), style = MaterialTheme.typography.titleMedium, fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold)
                 Text(
-                    if (allOn) "Der Agent darf alles, was unten aufgeführt ist."
-                    else "Ein Schalter für alle $totalCount Fähigkeiten — invasive vorher bestätigen.",
+                    if (allOn) stringResource(R.string.caps_master_on)
+                    else stringResource(R.string.caps_master_off, totalCount),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                 )

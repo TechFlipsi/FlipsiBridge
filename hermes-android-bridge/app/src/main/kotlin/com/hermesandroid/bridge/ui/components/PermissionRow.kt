@@ -1,4 +1,6 @@
 package com.hermesandroid.bridge.ui.components
+import com.hermesandroid.bridge.R
+import androidx.compose.ui.res.stringResource
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -60,7 +62,7 @@ fun PermissionRow(
             .minimumInteractiveComponentSize()
             .then(
                 when (onAction) {
-                    is PermissionAction.SettingsSprung -> Modifier.clickable(onClickLabel = "Einstellung öffnen") { onOpen() }
+                    is PermissionAction.SettingsSprung -> Modifier.clickable(onClickLabel = stringResource(R.string.a11y_open_setting)) { onOpen() }
                     is PermissionAction.Toggle -> Modifier.toggleable(
                         value = onAction.checked,
                         role = Role.Switch,
@@ -86,7 +88,7 @@ fun PermissionRow(
         when (onAction) {
             is PermissionAction.SettingsSprung -> AssistChip(
                 onClick = onOpen,
-                label = { Text("Öffnen") },
+                label = { Text(stringResource(R.string.common_open)) },
                 modifier = Modifier.padding(start = 8.dp),
                 border = AssistChipDefaults.assistChipBorder(
                     borderColor = FlipsiColors.LineStrong,

@@ -34,11 +34,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.ui.FlipsiColors
 
 /**
@@ -65,6 +67,19 @@ fun effortGermanLabel(level: String?): String? = when (level) {
     "high" -> "hoch"
     "max" -> "max"
     else -> null
+}
+
+/**
+ * W15 (I18n): Denken-Stufen-Label als RESSOURCE statt deutschem Literal —
+ * auflöst unter dem AppLanguageGate live in DE/EN. null → composer_effort_off
+ * („Aus“/„Off“). [effortGermanLabel] bleibt als interne Kennung unberührt
+ * (Tests/Gate-Werte), nur die ANZEIGE läuft über den Resource-Umweg.
+ */
+fun effortLabelRes(level: String?): Int = when (level) {
+    "low" -> R.string.composer_effort_light
+    "high" -> R.string.composer_effort_high
+    "max" -> R.string.composer_effort_max
+    else -> R.string.composer_effort_off
 }
 
 object ChatComposerPrefs {
@@ -167,17 +182,22 @@ fun ChatModelSheet(
             // No-op), sagt aber ehrlich, dass die Auswahl nicht persistiert.
             if (agentId.isBlank()) {
                 Text(
-                    "Demo-Eintrag (nicht gekoppelt) — Auswahl wirkt nur lokal, " +
-                        "bis der Agent gekoppelt ist.",
+                    // W15: Ressource statt deutschem Literal (composer_demo_hint).
+                    stringResource(R.string.composer_demo_hint),
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.SignalAmber,
                 )
                 Spacer(Modifier.height(8.dp))
             }
-            Text("Modell", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            Text(stringResource(R.string.composer_title),
+                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
-            ChipRow(label = "Auto", sub = "Agenten-Standard", selected = currentModel == null) {
+            ChipRow(
+                label = stringResource(R.string.composer_auto),
+                sub = stringResource(R.string.composer_auto_sub),
+                selected = currentModel == null,
+            ) {
                 ChatComposerPrefs.setModel(context, agentId, null)
                 onPickModel(null)
             }
@@ -202,7 +222,7 @@ fun ChatModelSheet(
                     onValueChange = { addText = it },
                     modifier = Modifier.weight(1f),
                     singleLine = true,
-                    placeholder = { Text("Eigenes Modell hinzufügen …",
+                    placeholder = { Text(stringResource(R.string.composer_add_placeholder),
                                          color = FlipsiColors.TextSecondary) },
                 )
                 TextButton(
@@ -212,20 +232,26 @@ fun ChatModelSheet(
                         customRefresh++
                     },
                     enabled = addText.isNotBlank(),
-                ) { Text("Hinzu", color = if (addText.isNotBlank()) FlipsiColors.Ember
-                                         else FlipsiColors.TextSecondary) }
+                ) { Text(stringResource(R.string.composer_add),
+                         color = if (addText.isNotBlank()) FlipsiColors.Ember
+                         else FlipsiColors.TextSecondary) }
             }
 
             Spacer(Modifier.height(16.dp))
-            Text("Denken", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            Text(stringResource(R.string.composer_thinking_title),
+                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(10.dp))
-            val stageLabels = THINK_STAGES.map { it.first }
+            // W15: Stufen-Labels als Ressource (DE/EN) statt THINK_STAGES-Literalen.
+            val stageLabels = THINK_STAGES.map { stringResource(effortLabelRes(it.second)) }
+            val effortA11y = stringResource(R.string.composer_effort_a11y)
+            val effortState = stageLabels.getOrNull(stageIndex)
+                ?: stringResource(R.string.composer_effort_off)
             Slider(
                 value = stageIndex.toFloat(),
                 modifier = Modifier.semantics {
-                    this.contentDescription = "Denkstufe"
-                    stateDescription = stageLabels.getOrNull(stageIndex) ?: "Aus"
+                    this.contentDescription = effortA11y
+                    stateDescription = effortState
                 },
                 onValueChange = { idx ->
                     val stage = THINK_STAGES[idx.toInt().coerceIn(0, THINK_STAGES.size - 1)]
@@ -241,9 +267,9 @@ fun ChatModelSheet(
                 ),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                THINK_STAGES.forEachIndexed { idx, (de, _) ->
+                THINK_STAGES.forEachIndexed { idx, (_, _) ->
                     Text(
-                        de.replaceFirstChar { it.uppercase() },
+                        stageLabels[idx],
                         style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
                         color = if (idx == stageIndex) FlipsiColors.Ember
                                 else FlipsiColors.TextSecondary,
@@ -254,7 +280,8 @@ fun ChatModelSheet(
 
             // ── WELLE-13 P9: Vorlesen-Regler (pro Agent, „wie Denken“) ────────
             Spacer(Modifier.height(16.dp))
-            Text("Vorlesen", style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            Text(stringResource(R.string.composer_read_aloud_title),
+                 style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(4.dp))
             Row(
@@ -263,7 +290,7 @@ fun ChatModelSheet(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "Agenten-Antworten vom Gerät vorlesen",
+                        stringResource(R.string.composer_read_aloud),
                         style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
                     )
@@ -308,6 +335,9 @@ private fun ChipRow(
     onRemove: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    // W15: A11y- und Aktiv-Texte als Ressource (DE/EN) statt deutscher Literale.
+    val removeModelA11y = stringResource(R.string.composer_remove_a11y, label)
+    val activeLabel = stringResource(R.string.badge_active)
     Row(
         Modifier
             .fillMaxWidth()
@@ -324,7 +354,7 @@ private fun ChipRow(
             horizontalArrangement = Arrangement.Start) {
             if (onRemove != null) {
                 IconButton(onClick = onRemove, modifier = Modifier.height(28.dp)) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Modell $label entfernen",
+                    Icon(Icons.Filled.Delete, contentDescription = removeModelA11y,
                          tint = FlipsiColors.TextSecondary)
                 }
             }
@@ -342,7 +372,7 @@ private fun ChipRow(
         }
         if (selected) {
             Spacer(Modifier.weight(1f))
-            Text("aktiv", style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
+            Text(activeLabel, style = androidx.compose.material3.MaterialTheme.typography.labelSmall,
                  color = FlipsiColors.SignalGreen, fontWeight = FontWeight.SemiBold)
         }
     }

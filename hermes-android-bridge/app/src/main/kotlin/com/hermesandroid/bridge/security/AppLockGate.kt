@@ -1,4 +1,6 @@
 package com.hermesandroid.bridge.security
+import com.hermesandroid.bridge.R
+import androidx.compose.ui.res.stringResource
 
 import android.app.Activity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -105,14 +107,14 @@ private fun AppLockScreen(manager: AppLockManager) {
             is PinVerifyResult.LockedOut -> {
                 entered = ""
                 lockSeconds = r.remainingSeconds
-                errorText = "Zu viele Fehlversuche — für ${r.remainingSeconds} s gesperrt"
+                errorText = context.getString(R.string.lock_error_locked, r.remainingSeconds)
             }
             is PinVerifyResult.Failure -> {
                 entered = ""
                 errorText = if (r.remainingAttempts > 1) {
-                    "Falsche PIN — noch ${r.remainingAttempts} Versuche"
+                    context.getString(R.string.lock_error_attempts, r.remainingAttempts)
                 } else {
-                    "Falsche PIN — der nächste Fehlversuch sperrt kurzzeitig"
+                    context.getString(R.string.lock_error_final)
                 }
             }
             PinVerifyResult.NoPinSet -> Unit
@@ -132,12 +134,12 @@ private fun AppLockScreen(manager: AppLockManager) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            "FlipsiBridge ist gesperrt",
+            stringResource(R.string.lock_title),
             fontWeight = FontWeight.SemiBold,
             style = MaterialTheme.typography.titleLarge,
         )
         Text(
-            "PIN eingeben, um Chat und Einstellungen zu öffnen",
+            stringResource(R.string.lock_subtitle),
             style = MaterialTheme.typography.bodyMedium,
             color = FlipsiColors.TextSecondary,
         )
@@ -160,7 +162,7 @@ private fun AppLockScreen(manager: AppLockManager) {
         Spacer(Modifier.height(12.dp))
 
         if (lockSeconds > 0) {
-            Text("Gesperrt — noch $lockSeconds s", color = FlipsiColors.TextSecondary)
+            Text(stringResource(R.string.lock_locked, lockSeconds), color = FlipsiColors.TextSecondary)
         }
         errorText?.let {
             Spacer(Modifier.height(8.dp))
@@ -216,7 +218,7 @@ private fun AppLockScreen(manager: AppLockManager) {
                     manager.deviceCredentialIntent(context)?.let { credentialLauncher.launch(it) }
                 },
                 modifier = Modifier.height(48.dp),
-            ) { Text("Mit Geräte-Sperre entsperren") }
+            ) { Text(stringResource(R.string.lock_device_unlock)) }
         }
     }
 }
@@ -265,12 +267,12 @@ fun AppLockSettingsCard() {
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("PIN-Sperre", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.lock_settings_title), fontWeight = FontWeight.SemiBold)
             Text(
                 if (pinSet)
-                    "Aktiv — Chat-Inhalte sind erst nach PIN-/Geräte-Sperre-Eingabe sichtbar."
+                    stringResource(R.string.lock_active_desc)
                 else
-                    "Aus — die App öffnet ohne Sperre. Mit PIN schützt du Chat und Einstellungen.",
+                    stringResource(R.string.lock_inactive_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -285,14 +287,14 @@ fun AppLockSettingsCard() {
                             containerColor = FlipsiColors.Ember,
                             contentColor = FlipsiColors.OnEmber,
                         ),
-                    ) { Text("PIN setzen") }
+                    ) { Text(stringResource(R.string.lock_set)) }
                 } else {
                     OutlinedButton(
                         onClick = { dialog = SecurityDialog.ChangePin },
                         modifier = Modifier.height(48.dp),
-                    ) { Text("PIN ändern") }
+                    ) { Text(stringResource(R.string.lock_change)) }
                     TextButton(onClick = { dialog = SecurityDialog.RemovePin }) {
-                        Text("PIN löschen")
+                        Text(stringResource(R.string.lock_remove))
                     }
                 }
             }
@@ -309,13 +311,12 @@ fun AppLockSettingsCard() {
             // ── Biometrie-/Geräte-Sperre-Toggle ────────────────────────────
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Mit Geräte-Sperre öffnen", style = MaterialTheme.typography.bodyLarge)
+                    Text(stringResource(R.string.lock_biometric_title), style = MaterialTheme.typography.bodyLarge)
                     Text(
                         when {
-                            !pinSet -> "Zuerst eine PIN setzen."
-                            !deviceCredentialOk ->
-                                "Keine Geräte-Sperre eingerichtet — erst eine Bildschirmsperre im System anlegen."
-                            else -> "Fingerabdruck/Gesicht/Geräte-PIN statt der App-PIN."
+                            !pinSet -> stringResource(R.string.lock_biometric_need_pin)
+                            !deviceCredentialOk -> stringResource(R.string.lock_biometric_no_credential)
+                            else -> stringResource(R.string.lock_biometric_hint)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
@@ -337,9 +338,9 @@ fun AppLockSettingsCard() {
             Spacer(Modifier.height(14.dp))
 
             // ── Auto-Sperre nach Hintergrund (30 s / 3 min / Nie) ───────────
-            Text("Automatisch sperren", style = MaterialTheme.typography.bodyLarge)
+            Text(stringResource(R.string.lock_auto_title), style = MaterialTheme.typography.bodyLarge)
             Text(
-                "Sperrt die App, wenn sie so lange im Hintergrund war.",
+                stringResource(R.string.lock_auto_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
@@ -352,14 +353,14 @@ fun AppLockSettingsCard() {
                             manager.setAutoLockOption(option)
                             autoLock = option
                         },
-                        label = { Text(option.label) },
+                        label = { Text(stringResource(option.labelRes)) },
                     )
                 }
             }
 
             Spacer(Modifier.height(12.dp))
             Text(
-                "PIN und Salt bleiben lokal auf dem Gerät (Android-Keystore-versiegelt) — kein Netz-Sync.",
+                stringResource(R.string.lock_privacy_note),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )
@@ -402,6 +403,9 @@ private fun PinEntryDialog(
     onDismiss: () -> Unit,
     onResult: (String?) -> Unit,
 ) {
+    // W15: Dialog-Meldungen laufen über Callbacks — context.getString löst
+    // über den AppLanguageGate-Wrapped-Context in der AKTUELLEN App-Sprache auf.
+    val context = LocalContext.current
     val manager = remember { AppLockManager.get() }
     var step by remember { mutableStateOf(if (dialog == SecurityDialog.SetPin) 0 else 1) }
     var first by remember { mutableStateOf("") }
@@ -416,20 +420,20 @@ private fun PinEntryDialog(
     fun commitSetPin() {
         when (val r = manager.setPin(first)) {
             PinChangeResult.Ok ->
-                done(if (dialog == SecurityDialog.ChangePin) "PIN geändert." else "PIN gesetzt — die App sperrt ab jetzt.")
-            PinChangeResult.InvalidFormat -> message = "4–6 Ziffern nötig."
+                done(if (dialog == SecurityDialog.ChangePin) context.getString(R.string.lock_msg_changed) else context.getString(R.string.lock_msg_set))
+            PinChangeResult.InvalidFormat -> message = context.getString(R.string.lock_msg_format)
             PinChangeResult.KeystoreUnavailable ->
-                message = "Keystore nicht verfügbar — PIN konnte nicht gespeichert werden."
-            else -> message = "Fehler (${r.javaClass.simpleName}) — erneut versuchen."
+                message = context.getString(R.string.lock_msg_keystore)
+            else -> message = context.getString(R.string.lock_msg_generic, r.javaClass.simpleName)
         }
     }
 
     val fieldLabel = when {
-        dialog == SecurityDialog.RemovePin -> "Aktuelle PIN eingeben"
-        dialog == SecurityDialog.ChangePin && step == 1 -> "Aktuelle PIN eingeben"
-        dialog == SecurityDialog.ChangePin && step == 2 -> "Neue PIN (4–6 Ziffern)"
-        step == 3 -> "Neue PIN wiederholen"
-        else -> "Neue PIN (4–6 Ziffern)"
+        dialog == SecurityDialog.RemovePin -> stringResource(R.string.lock_field_current)
+        dialog == SecurityDialog.ChangePin && step == 1 -> stringResource(R.string.lock_field_current)
+        dialog == SecurityDialog.ChangePin && step == 2 -> stringResource(R.string.lock_field_new)
+        step == 3 -> stringResource(R.string.lock_field_repeat)
+        else -> stringResource(R.string.lock_field_new)
     }
 
     AlertDialog(
@@ -437,9 +441,9 @@ private fun PinEntryDialog(
         title = {
             Text(
                 when (dialog) {
-                    SecurityDialog.SetPin -> "PIN setzen"
-                    SecurityDialog.ChangePin -> "PIN ändern"
-                    SecurityDialog.RemovePin -> "PIN löschen"
+                    SecurityDialog.SetPin -> stringResource(R.string.lock_set)
+                    SecurityDialog.ChangePin -> stringResource(R.string.lock_change)
+                    SecurityDialog.RemovePin -> stringResource(R.string.lock_remove)
                 }
             )
         },
@@ -470,13 +474,13 @@ private fun PinEntryDialog(
                         SecurityDialog.RemovePin -> when (manager.verifyPin(pin)) {
                             is PinVerifyResult.Success -> {
                                 if (manager.clearPin(pin)) {
-                                    done("App-Sperre entfernt — die App öffnet wieder ohne PIN.")
+                                    done(context.getString(R.string.lock_msg_removed))
                                 } else {
-                                    message = "Löschen fehlgeschlagen — bitte erneut versuchen."
+                                    message = context.getString(R.string.lock_msg_remove_failed)
                                 }
                             }
-                            is PinVerifyResult.LockedOut -> message = "Zu viele Fehlversuche — später erneut versuchen."
-                            else -> message = "Falsche PIN."
+                            is PinVerifyResult.LockedOut -> message = context.getString(R.string.lock_msg_locked_retry)
+                            else -> message = context.getString(R.string.lock_msg_wrong)
                         }
 
                         SecurityDialog.ChangePin -> when (step) {
@@ -485,11 +489,11 @@ private fun PinEntryDialog(
                                     step = 2
                                     input = ""
                                 }
-                                is PinVerifyResult.LockedOut -> message = "Zu viele Fehlversuche — später erneut versuchen."
-                                else -> message = "Falsche PIN."
+                                is PinVerifyResult.LockedOut -> message = context.getString(R.string.lock_msg_locked_retry)
+                                else -> message = context.getString(R.string.lock_msg_wrong)
                             }
                             2 -> if (!manager.isValidPinFormat(pin)) {
-                                message = "4–6 Ziffern nötig."
+                                message = context.getString(R.string.lock_msg_format)
                             } else {
                                 first = pin
                                 step = 3
@@ -498,7 +502,7 @@ private fun PinEntryDialog(
                             else -> if (pin != first) {
                                 first = ""
                                 input = ""
-                                message = "PINs stimmen nicht überein — neu eingeben."
+                                message = context.getString(R.string.lock_msg_mismatch)
                             } else {
                                 commitSetPin()
                             }
@@ -506,7 +510,7 @@ private fun PinEntryDialog(
 
                         SecurityDialog.SetPin -> when (step) {
                             0 -> if (!manager.isValidPinFormat(pin)) {
-                                message = "4–6 Ziffern nötig."
+                                message = context.getString(R.string.lock_msg_format)
                             } else {
                                 first = pin
                                 step = 3
@@ -515,15 +519,15 @@ private fun PinEntryDialog(
                             else -> if (pin != first) {
                                 first = ""
                                 input = ""
-                                message = "PINs stimmen nicht überein — neu eingeben."
+                                message = context.getString(R.string.lock_msg_mismatch)
                             } else {
                                 commitSetPin()
                             }
                         }
                     }
                 },
-            ) { Text(if (step == 3) "Bestätigen" else "Weiter") }
+            ) { Text(if (step == 3) stringResource(R.string.lock_confirm) else stringResource(R.string.lock_next)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) } },
     )
 }

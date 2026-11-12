@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+    W15: deutsche Kopie des Defaults (Konvention wie strings.xml — Werte identisch).
+--> Welle 4 / App-Lane D — Onboarding (Erststart) + Multi-Server-Liste.
+         Keys sauber getrennt: onb_* = Erststart-Wizard, ms_* = Multi-Server,
+         legal_* = Rechtliches (Welle 13, P7).
+         EN-Spiegel: res/values-en/onboarding_multi_server.xml (werte-de/en).
+
+         Welle 13 (P3/P4/P7) — Schrittreihenfolge des Assistenten (UX-Begründung):
+           0 SPRACHE       — zuerst, damit JEDE Folgetext verständlich ist
+           1 RECHTLICHES   — Accept-Gate VOR jeder Datenübermittlung (Checkliste C:
+                             „Keine Datenabfragen vor dem Rechtliches-Accept“ —
+                             die Kopplung sendet Relay-Adresse + Code)
+           2 RELAY_URL     — Kopplung, Teil 1 (Adresse)
+           3 BRIDGE_CODE   — Kopplung, Teil 2 (Code + Verbindungsaufbau)
+           4 FINGERPRINT   — E2E-Bestätigung (nur mit stehender Session)
+           5 BERECHTIGUNGEN — optionale Feature-Rechte + „Fertigstellen“
+                             (bewusst LETZT: alle Rechte sind freiwillig, die App
+                             ist ohne jedes Recht vollständig nutzbar) -->
+
+    <!-- ── Schritt 0: Sprache (Welle 13, P3 — Sprache = erster Schritt) ──────── -->
+    <!-- Doppeltitel bewusst: vor der Wahl ist unklar, was der Nutzer liest. -->
+    <string name="onb_lang_title">Sprache / Language</string>
+    <string name="onb_lang_text">Wähle deine Sprache — sie gilt sofort für die gesamte App. / Choose your language — it applies to the whole app immediately.</string>
+    <string name="onb_lang_de">Deutsch</string>
+    <string name="onb_lang_en">English</string>
+    <string name="onb_lang_system">Systemsprache verwenden</string>
+
+    <!-- ── Schritt 1: Rechtliches (Welle 13, P7 — Accept-Gate) ───────────────── -->
+    <string name="onb_step_header_legal">Schritt 2 von 6 — Rechtliches</string>
+    <string name="onb_step_text_legal">Klappe die Dokumente auf und lies sie kurz durch. Die Einrichtung lässt sich erst fortsetzen, wenn du akzeptierst — vorher werden keine Daten übertragen.</string>
+
+    <!-- Rechtstexte (Welle 13, P7): österreichrechtliche Kurzform. Anbieter-
+         Angabe bewusst im Impressum-Text (ECG § 5, Medieninhaber) UND im
+         Datenschutz als DSGVO-Verantwortlicher — beides TechFlipsi, Fabian
+         Kirchweger, Marktplatz 11/3, 4625 Offenhausen. Datenverarbeitung der
+         App = NUR Kopplungsdaten (Sir-Spec, Fixplan P7). -->
+    <string name="onb_title">FlipsiBridge koppeln</string>
+    <string name="onb_step_header_url">Schritt 3 von 6 — Relay-Adresse</string>
+    <string name="onb_step_text_url">Trage die Adresse des Relays ein, das auf deinem Server läuft. Danach fragt die App den Kopplungscode ab.</string>
+    <string name="onb_url_label">Relay-URL</string>
+    <string name="onb_url_hint">https://dein-relay.example</string>
+    <string name="onb_url_blank_error">Adresse fehlt — Format: https://dein-relay.example</string>
+    <string name="onb_next">Weiter</string>
+    <string name="onb_step_header_code">Schritt 4 von 6 — Bridge-Code</string>
+    <string name="onb_step_text_code">Tippe den Kopplungscode ein, den dein Relay verlangt — das Relay-Setup zeigt ihn an (Token am Server).</string>
+    <string name="onb_code_label">Bridge-Code</string>
+    <string name="onb_code_blank_error">Code fehlt — das Relay-Setup zeigt ihn an</string>
+    <string name="onb_connect">Verbinden</string>
+    <string name="onb_connecting">Verbinde mit dem Relay …</string>
+    <string name="onb_back">Zurück</string>
+    <string name="onb_skip">Einrichtung überspringen</string>
+    <string name="ms_resume_title">Einrichtung übersprungen</string>
+    <string name="ms_resume_hint">Der Einrichtungsassistent wurde übersprungen. Du kannst ihn jederzeit wieder aufrufen.</string>
+    <string name="ms_resume_cta">Assistent später fortsetzen</string>
+    <string name="onb_reveal">Code einblenden</string>
+    <string name="onb_hide">Code verbergen</string>
+    <string name="onb_help_code_title">Code ist falsch (401)</string>
+    <string name="onb_help_code_text">Das Relay hat den Code abgelehnt. Tippe ihn erneut ein — der Code steht im Relay-Setup am Server.</string>
+    <string name="onb_help_unreachable_title">Relay nicht erreichbar</string>
+    <string name="onb_help_unreachable_text">Zeitüberschreitung oder Netz weg. Prüfe Adresse und Netz und ob das Relay läuft — der Versuch kehrt automatisch zurück.</string>
+    <string name="onb_help_blocked_title">Relay kurzzeitig gesperrt</string>
+    <string name="onb_help_blocked_text">Zu viele Fehlversuche: das Relay sperrt die Adresse für einige Minuten. Warte kurz, dann mit dem richtigen Code erneut verbinden.</string>
+    <string name="onb_step_header_fp">Schritt 5 von 6 — Fingerprint bestätigen</string>
+    <string name="onb_step_text_fp">Vergleiche den Sitzungs-Fingerprint deines Telefons mit dem Agent-Fingerprint. Gleich = Ende-zu-Ende gesichert.</string>
+    <string name="onb_fp_phone_label">Telefon-Fingerprint (Sitzung)</string>
+    <string name="onb_fp_agent_label">Agent-Identity-Fingerprint</string>
+    <string name="onb_fp_waiting">Warte auf den E2E-Handshake — der Fingerprint erscheint beim ersten Agent-Kontakt.</string>
+    <string name="onb_help_prekey_title">Agent-Prekey fehlt am Relay</string>
+    <string name="onb_fp_hint">Die Bestätigung öffnet den Berechtigungs-Schritt — der Abgleich bleibt im Chat möglich.</string>
+    <string name="onb_confirm">Bestätigen</string>
+    <string name="ms_title">Relay-Server</string>
+    <string name="ms_hint">Gespeicherte Relays. Ein Eintrag ist aktiv — das Umschalten trennt die alte Verbindung bewusst.</string>
+    <string name="ms_add">+ Server hinzufügen</string>
+    <string name="ms_active_chip">Aktiv</string>
+    <string name="ms_inactive_chip">Getrennt</string>
+    <string name="ms_last_connected">Letzter Verbindungsaufbau</string>
+    <string name="ms_last_never">Noch nie verbunden</string>
+    <string name="ms_last_now">Gerade eben</string>
+    <string name="ms_last_minutes">vor %1$d Min.</string>
+    <string name="ms_last_hours">vor %1$d Std.</string>
+    <string name="ms_switch">Wechseln</string>
+    <string name="ms_edit">Bearbeiten</string>
+    <string name="ms_remove">Löschen</string>
+    <string name="ms_switch_title">Verbindung wechseln?</string>
+    <string name="ms_switch_text">Die Verbindung zu „%1$s“ wird getrennt, danach verbindet „%2$s“. Der Chat ist bis zum Neuaufbau nicht erreichbar.</string>
+    <string name="ms_switch_confirm">Trennen und wechseln</string>
+    <string name="ms_cancel">Abbrechen</string>
+    <string name="ms_remove_title">Serverprofil löschen?</string>
+    <string name="ms_remove_text">„%1$s“ samt hinterlegtem Code entfernen?</string>
+    <string name="ms_remove_confirm">Entfernen</string>
+    <string name="ms_add_title">Server hinzufügen</string>
+    <string name="ms_edit_title">Server bearbeiten</string>
+    <string name="ms_label_label">Name (freiwillig)</string>
+    <string name="ms_url_label">Relay-URL</string>
+    <string name="ms_code_label">Bridge-Code</string>
+    <string name="ms_code_note">Der Code liegt je Profil im App-Vault — er ist hier bewusst verborgen.</string>
+    <string name="ms_save">Speichern</string>
+    <string name="ms_url_blank_error">URL-Format: https://dein-relay.example</string>
+    <string name="onb_perm_purpose_camera">Für Fotos/Videos im Chat: Aufnahmen werden als Medien gesendet.</string>
+    <string name="onb_perm_purpose_contacts">Kontakt-Funktion: Agent kann Kontakte lesen, wenn du ihn beauftragst.</string>
+    <string name="onb_perm_purpose_location">Standort: der Agent kann Positionen liefern, wenn du es anfragst.</string>
+    <string name="onb_perm_purpose_mic">Für Sprachnachrichten: deine Stimme wird aufgenommen und an deinen Agenten gesendet.</string>
+    <string name="onb_perm_purpose_notifications">Benachrichtigungen: Agenten-Antworten erreichen dich, auch wenn die App zu ist.</string>
+    <string name="onb_perm_settings">In Systemeinstellungen öffnen</string>
+    <string name="onb_perm_status_denied">Verweigert</string>
+    <string name="onb_perm_status_granted">Erteilt</string>
+    <string name="onb_perm_title_camera">Kamera</string>
+    <string name="onb_perm_title_contacts">Kontakte</string>
+    <string name="onb_perm_title_location">Standort</string>
+    <string name="onb_perm_title_mic">Mikrofon</string>
+    <string name="onb_perm_title_notifications">Benachrichtigungen</string>
+    <string name="onb_step_header_perm">Berechtigungen</string>
+    <string name="onb_step_text_perm">Prüfe die Zugriffsrechte der App — je Berechtigung steht dort, wofür sie gebraucht wird.</string>
+    <string name="onb_finish">Fertigstellen</string>
+</resources>

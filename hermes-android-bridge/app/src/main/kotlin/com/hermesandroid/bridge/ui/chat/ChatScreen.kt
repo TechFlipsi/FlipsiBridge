@@ -139,7 +139,8 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
     var sendErrors by remember { mutableStateOf(mapOf<String, String>()) }
 
     var selectedAgentId by rememberSaveable { mutableStateOf(-1) }
-    var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(sampleMessages()) }
+    // W15: Demo-Verlauf mit Ressource-Texten (DE/EN) — context = Gate-Wrap.
+    var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(sampleMessages(context)) }
     var inputText by rememberSaveable { mutableStateOf("") }
 
     // PH-FIX-CHAT-A (F1/J1): Bereits in `messages` übernommene chatEvents als
@@ -462,7 +463,10 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
                         agent.agentId to
-                            "Chat: Senden fehlgeschlagen — ${error ?: "unbekannter Fehler"}"
+                            context.getString(
+                                R.string.chat_send_failed,
+                                error ?: context.getString(R.string.chat_send_failed_unknown),
+                            )
                         )
                 } else if (msgId != null) {
                     msgIdByLocalId = msgIdByLocalId + (nextId to msgId)
@@ -513,7 +517,8 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
     fun submitMedia(agent: ChatAgent, kind: String, name: String, mime: String, bytes: ByteArray) {
         val sentAtMs = System.currentTimeMillis()
         val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
-        val label = MediaProtocol.kindLabel(kind)
+        // W15: Label über Ressource (DE/EN) — Gate-Wrap-Context löst in der App-Sprache.
+        val label = context.getString(mediaKindRes(kind))
         val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
         val bubbleText = "[$label] $name ($sizeText)"
         // WELLE-13 P8: EIGENE Medien persistieren — vorher localPath="" und
@@ -603,10 +608,13 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
             }.getOrNull()
             withContext(Dispatchers.Main) {
                 if (bytes == null || bytes.isEmpty()) {
-                    sendErrors = sendErrors + (agent.agentId to "Media: Datei nicht lesbar")
+                    sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_unreadable))
                 } else if (bytes.size.toLong() > MediaProtocol.MAX_BYTES) {
                     sendErrors = sendErrors + (
-                        agent.agentId to "Media: zu groß (max ${MediaProtocol.formatBytes(MediaProtocol.MAX_BYTES)})"
+                        agent.agentId to context.getString(
+                            R.string.chat_media_too_large,
+                            MediaProtocol.formatBytes(MediaProtocol.MAX_BYTES),
+                        )
                         )
                 } else {
                     submitMedia(agent, kind, name, mime, bytes)
@@ -696,7 +704,9 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
         if (fresh.isEmpty()) return@LaunchedEffect
         var nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
         val appended = fresh.map { event ->
-            val label = MediaProtocol.kindLabel(event.kind)
+            // W15: Label über Ressource (DE/EN) — im Effekt-Kontext kein
+            // stringResource möglich, context.getString am Gate-Wrap.
+            val label = context.getString(mediaKindRes(event.kind))
             ChatMessage(
                 id = nextId++,
                 agentId = event.agentId.hashCode(),
@@ -832,7 +842,7 @@ fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
                 if (fp == null) {
                     sendErrors = sendErrors + (
                         agent.agentId to
-                            "Chat: keine aktive E2E-Sitzung — Fingerprint-Abgleich erst nach dem Verbinden möglich"
+                            context.getString(R.string.chat_e2e_missing)
                         )
                 } else {
                     val fpLocalId = submitText(agent, "FP-ABGLEICH: $fp")
@@ -939,8 +949,8 @@ private fun AgentListBody(
     ) {
         item {
             SectionTitle(
-                "Agenten",
-                sub = "Direkt-Chat mit den gekoppelten Agenten — live über das Relay.",
+                stringResource(R.string.chat_list_title),
+                sub = stringResource(R.string.chat_list_title_sub),
             )
         }
         // WELLE-13 P11b (Sirs Wunschbild): Such-Kapsel + Filter-Chips. Nur
@@ -977,7 +987,7 @@ private fun AgentListBody(
                         decorationBox = { inner ->
                             if (listQuery.isEmpty()) {
                                 Text(
-                                    "Agenten durchsuchen",
+                                    stringResource(R.string.chat_list_search_hint),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = FlipsiColors.TextSecondary,
                                 )
@@ -989,17 +999,17 @@ private fun AgentListBody(
                 Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     FilterChipFlipsi(
-                        label = "Alle",
+                        label = stringResource(R.string.chat_filter_all),
                         active = listFilter == "alle",
                         onClick = { listFilter = "alle" },
                     )
                     FilterChipFlipsi(
-                        label = "Online",
+                        label = stringResource(R.string.chat_filter_online),
                         active = listFilter == "online",
                         onClick = { listFilter = "online" },
                     )
                     FilterChipFlipsi(
-                        label = "Offline",
+                        label = stringResource(R.string.chat_filter_offline),
                         active = listFilter == "offline",
                         onClick = { listFilter = "offline" },
                     )
@@ -1023,7 +1033,7 @@ private fun AgentListBody(
             }
             if (filteredAgents.isEmpty()) {
                 Text(
-                    "Kein Agent passt zur Suche.",
+                    stringResource(R.string.chat_list_empty_result),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
@@ -1032,7 +1042,7 @@ private fun AgentListBody(
             filteredAgents.forEach { agent ->
                 // Vorschau-Zeile = letzte Nachricht dieses Agenten (oder Hinweis).
                 val preview = messages.lastOrNull { it.agentId == agent.id }?.text
-                    ?: "Noch keine Nachrichten"
+                    ?: stringResource(R.string.chat_list_no_messages)
                 AgentRow(
                     agent = agent,
                     preview = preview,
@@ -1394,7 +1404,8 @@ private fun ConversationBody(
                     voiceRecording = voiceRecording,
                     onVoiceToggle = onVoiceToggle,
                     modelLabel = composerModel ?: "Auto",
-                    effortLabel = effortGermanLabel(composerEffort),
+                    // W15: Denken-Label als Ressource (DE/EN) statt deutschem Literal.
+                    effortLabel = composerEffort?.let { stringResource(effortLabelRes(it)) },
                     onOpenPicker = { composerPickerOpen = true },
                 )
             }
@@ -1484,7 +1495,7 @@ private fun ConversationHeader(
         IconButton(onClick = onBack) {
             Icon(
                 Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Zurück zur Agenten-Liste",
+                contentDescription = stringResource(R.string.chat_list_back_a11y),
                 tint = FlipsiColors.TextPrimary,
             )
         }
@@ -1610,7 +1621,7 @@ private fun SendErrorBanner(message: String?, onDismiss: () -> Unit) {
         IconButton(onClick = onDismiss) {
             Icon(
                 Icons.Filled.Close,
-                contentDescription = "Fehlermeldung schließen",
+                contentDescription = stringResource(R.string.chat_error_close_a11y),
                 tint = FlipsiColors.SignalRedText,
             )
         }
@@ -1632,30 +1643,46 @@ private fun sampleAgents() = listOf(
     ChatAgent(id = 3, name = "Agent 3", online = true),
 )
 
-/** Beispiel-Verlauf — echte Verläufe kommen mit PH-2-Main. */
-private fun sampleMessages() = listOf(
+/**
+ * Beispiel-Verlauf — echte Verläufe kommen mit PH-2-Main.
+ * W15: Texte via Ressourcen (DE/EN) — der context ist der Gate-Wrap der
+ * Komposition, getString löst also in der gewählten App-Sprache auf.
+ */
+private fun sampleMessages(context: android.content.Context) = listOf(
     ChatMessage(
         id = 1L,
         agentId = 1,
         fromAgent = true,
-        text = "Beispiel-Antwort des Agenten (KI) — Backend-Anbindung folgt in PH-2-Main.",
+        text = context.getString(R.string.chat_demo_reply),
         time = "14:02",
     ),
     ChatMessage(
         id = 2L,
         agentId = 1,
         fromAgent = false,
-        text = "Beispiel-Eingabe — der Verlauf bleibt lokal gespeichert.",
+        text = context.getString(R.string.chat_demo_input),
         time = "14:03",
     ),
     ChatMessage(
         id = 3L,
         agentId = 3,
         fromAgent = true,
-        text = "Beispiel-Begrüßung von Agent 3.",
+        text = context.getString(R.string.chat_demo_greeting),
         time = "09:41",
     ),
 )
+
+/**
+ * W15 (I18n): Media-Art → String-Ressource (DE/EN) für Bubble-Platzhalter
+ * („[Datei] name (Größe)“). UI-Spiegel von MediaProtocol.kindLabel — jenes
+ * bleibt als stabile Protokoll-/Test-Kennung bestehen.
+ */
+internal fun mediaKindRes(kind: String): Int = when (kind) {
+    "image" -> R.string.media_kind_image
+    "video" -> R.string.media_kind_video
+    "voice" -> R.string.media_voice_title
+    else -> R.string.media_kind_file
+}
 
 /** Aktuelle Uhrzeit als Anzeige-Zeitstempel „HH:mm“. */
 private fun nowTime(): String = SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date())
