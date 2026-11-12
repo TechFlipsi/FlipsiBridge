@@ -1206,6 +1206,11 @@ private fun ConversationBody(
             .fillMaxSize()
             .padding(padding),
     ) {
+        var supportDialogOpen by remember { mutableStateOf(false) }
+        // WELLE 13: BillingFlow braucht eine Activity-Referenz (startForeground-Regel).
+        val chatActivity = remember {
+            (androidx.compose.ui.platform.LocalContext.current as? android.app.Activity)
+        }
         ConversationHeader(
             agent = agent,
             working = working,
@@ -1227,12 +1232,7 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
-        // WELLE 13 (Sir): Herz-Knopf oeffnet den Support/IAP-Dialog (2,99-Perk).
-        var supportDialogOpen by remember { mutableStateOf(false) }
-        // WELLE 13: BillingFlow braucht eine Activity-Referenz (startForeground-Regel).
-        val chatActivity = remember {
-            (androidx.compose.ui.platform.LocalContext.current as? android.app.Activity)
-        }
+        // WELLE 13: Support/IAP-Klappstuhl als Dialog.
         if (supportDialogOpen) {
             SupporterDialog(activity = chatActivity, onDismiss = { supportDialogOpen = false })
         }
