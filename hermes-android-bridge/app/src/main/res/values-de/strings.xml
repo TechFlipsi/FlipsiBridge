@@ -149,6 +149,7 @@
     <string name="common_chat">Chat</string>
     <string name="common_legal_title">Impressum &amp; Datenschutz</string>
     <string name="common_e2e_title">E2E-Verschlüsselung</string>
+    <string name="common_sprache">Sprache</string>
     <string name="nav_tab_dashboard">Dashboard</string>
     <string name="nav_tab_e2e">E2E</string>
     <string name="badge_active">aktiv</string>

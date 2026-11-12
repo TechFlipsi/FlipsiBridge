@@ -68,7 +68,7 @@ fun AppearanceSettingsCard(
     val scheme = rememberFlipsiScheme()
 
     SettingsCard(
-        title = stringResource(R.string.settings_appearance_title),
+        titleRes = R.string.settings_appearance_title,
         subtitle = stringResource(R.string.settings_appearance_desc),
         iconRes = SettingsIcons.appearance, // Palette-Drawable (haus-eigen, Apache-2.0-Pfad)
         expanded = expanded,

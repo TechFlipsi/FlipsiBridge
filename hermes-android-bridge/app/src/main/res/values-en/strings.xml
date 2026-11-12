@@ -155,6 +155,7 @@
     <string name="common_chat">Chat</string>
     <string name="common_legal_title">Legal &amp; privacy</string>
     <string name="common_e2e_title">E2E encryption</string>
+    <string name="common_sprache">Language</string>
     <string name="nav_tab_dashboard">Dashboard</string>
     <string name="nav_tab_e2e">E2E</string>
     <string name="badge_active">active</string>

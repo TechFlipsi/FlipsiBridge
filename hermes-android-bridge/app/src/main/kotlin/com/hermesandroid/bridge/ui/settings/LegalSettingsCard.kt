@@ -50,7 +50,7 @@ fun LegalSettingsCard(
     modifier: Modifier = Modifier,
 ) {
     SettingsCard(
-        title = stringResource(R.string.settings_legal_title),
+        titleRes = R.string.settings_legal_title,
         subtitle = stringResource(R.string.settings_legal_desc),
         iconRes = SettingsIcons.legal,
         expanded = expanded,

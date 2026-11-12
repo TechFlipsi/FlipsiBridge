@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.ui.settings
 
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -23,6 +24,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -45,7 +47,10 @@ import com.hermesandroid.bridge.ui.components.ResourceIcon
  */
 @Composable
 fun SettingsCard(
-    title: String,
+    // W15b (Fix D): Titel als @StringRes — SettingsNav speichert die ID statt
+    // eines lokalisierten Strings, der Top-Bar-Pfad löst live auf (kein
+    // eingefrorenes „Language“ mehr, wenn die App-Sprache wechselt).
+    @StringRes titleRes: Int,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
@@ -53,6 +58,7 @@ fun SettingsCard(
     @DrawableRes iconRes: Int? = null,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val title = stringResource(titleRes)
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -70,7 +76,8 @@ fun SettingsCard(
                         onValueChange = {
                             // W15/P7: Top-Bar-Pfad („Einstellungen › <Sektion>“) —
                             // die zuletzt aufgeklappte Sektion gewinnt.
-                            SettingsNav.onSectionToggle(title, it)
+                            // W15b: ID statt Text (Fix D, siehe SettingsNav).
+                            SettingsNav.onSectionToggle(titleRes, it)
                             onExpandedChange(it)
                         },
                     )

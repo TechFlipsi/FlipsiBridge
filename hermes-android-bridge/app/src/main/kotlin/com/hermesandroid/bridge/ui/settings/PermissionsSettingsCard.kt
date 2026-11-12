@@ -87,7 +87,7 @@ fun PermissionsSettingsCard(
     val requested = remember(refreshTick) { requestedPermissions(context) }
 
     SettingsCard(
-        title = stringResource(R.string.settings_permissions_title),
+        titleRes = R.string.settings_permissions_title,
         subtitle = stringResource(R.string.settings_permissions_desc),
         iconRes = SettingsIcons.permissions,
         expanded = expanded,

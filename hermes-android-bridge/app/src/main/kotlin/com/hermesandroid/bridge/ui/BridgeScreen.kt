@@ -17,6 +17,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -458,7 +459,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode, mTLS) ──
             
                 AccordionCard(
-                    title = stringResource(R.string.settings_group_server),
+                    titleRes = R.string.settings_group_server,
                     iconRes = SettingsIcons.server,
                     expanded = settingsServerOpen,
                     onExpandedChange = { settingsServerOpen = it },
@@ -507,7 +508,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 2: App (Berechtigungen, Termux, Selbst-Update) ──────
             
                 AccordionCard(
-                    title = stringResource(R.string.settings_group_app),
+                    titleRes = R.string.settings_group_app,
                     iconRes = SettingsIcons.app,
                     expanded = settingsAppOpen,
                     onExpandedChange = { settingsAppOpen = it },
@@ -578,7 +579,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 4: App-Sperre (PH-2X X-1) — APPEND-ONLY am Ende ────
             
                 AccordionCard(
-                    title = stringResource(R.string.settings_group_lock),
+                    titleRes = R.string.settings_group_lock,
                     iconRes = SettingsIcons.security,
                     expanded = settingsSecurityOpen,
                     onExpandedChange = { settingsSecurityOpen = it },
@@ -598,7 +599,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // Activity-Recreate), alle stringResource-Auflösungen wechseln.
             
                 AccordionCard(
-                    title = stringResource(R.string.settings_language_title),
+                    // W15b (Fix D): Sektions-Label als eigene String-Ressource
+                    // (common_sprache) — der Top-Bar-Pfad löst sie live auf,
+                    // settings_language_title bleibt Titel der Karte darin.
+                    titleRes = R.string.common_sprache,
                     iconRes = SettingsIcons.language,
                     expanded = settingsLanguageOpen,
                     onExpandedChange = { settingsLanguageOpen = it },
@@ -1294,13 +1298,17 @@ private fun navTabColors(): NavigationBarItemColors {
  */
 @Composable
 private fun AccordionCard(
-    title: String,
+    // W15b (Fix D): Titel als @StringRes — SettingsNav speichert die ID, der
+    // Top-Bar-Pfad löst das Sektions-Label live auf (kein eingefrorener
+    // englischer Titel mehr nach Sprach-Rückwechsel, siehe SettingsNav).
+    @StringRes titleRes: Int,
     @DrawableRes iconRes: Int,
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val title = stringResource(titleRes)
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -1316,7 +1324,8 @@ private fun AccordionCard(
                         onValueChange = {
                             // W15/P7: Top-Bar-Pfad — die zuletzt aufgeklappte
                             // Sektion gewinnt (gleicher Vertrag wie SettingsCard).
-                            SettingsNav.onSectionToggle(title, it)
+                            // W15b: ID statt Text (Fix D, siehe SettingsNav).
+                            SettingsNav.onSectionToggle(titleRes, it)
                             onExpandedChange(it)
                         },
                     )

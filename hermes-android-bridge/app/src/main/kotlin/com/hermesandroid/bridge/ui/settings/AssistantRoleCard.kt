@@ -83,7 +83,7 @@ fun AssistantRoleCard(
     val status = coordinator?.let { Triple(it.supported, it.isRoleAvailable(), it.isHeld()) }
 
     SettingsCard(
-        title = stringResource(R.string.settings_assistant_title),
+        titleRes = R.string.settings_assistant_title,
         subtitle = stringResource(R.string.settings_assistant_desc),
         iconRes = SettingsIcons.assistant,
         expanded = expanded,
