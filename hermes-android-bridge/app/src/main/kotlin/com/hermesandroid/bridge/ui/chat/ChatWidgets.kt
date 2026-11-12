@@ -717,140 +717,147 @@ fun MessageBubble(
                         BorderStroke(2.dp, FlipsiColors.Ember)
                     } else null,
                 ) {
-                    // W4-B (Zitieren): Vertrag — die zitierte Nachricht erscheint
-                    // ÜBER der Sende-/Empfangs-Bubble (Messenger-Muster).
-                    message.quoted?.let { quote -> ChatQuoteBlock(quote = quote) }
-                    if (message.media != null) {
-                        // MEDIA-T1: Media-Bubble je Art (Bild/Voice/Datei/Video).
-                        // WELLE-13 P8: Holen-Verband für eingehende Medien
-                        // durchgereicht (localPath leer + mediaId vorhanden).
-                        MediaBubbleContent(
-                            media = message.media,
-                            fromAgent = message.fromAgent,
-                            text = message.text,
-                            onDownloadMedia = onDownloadMedia,
-                        )
-                    } else {
-                        Text(
-                            message.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (message.fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC),
-                            // PH-FIX-CHAT-A (F2): 14/10 dp Text-Padding (vorher 12/8) —
-                            // Luft zwischen Text und Bildschirmrand, Messenger-Muster.
-                            modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp),
-                        )
-                    }
-                    // ── WELLE-13 P11: Meta-Zeile INSIDE der Bubble (unten-rechts) ──
-                    // Sirs Bauvorlage: Zeitstempel labelSmall/TextSecondary steht
-                    // IN der Bubble, der Status-Chip direkt daneben — gleiches
-                    // Silhouette-Bild für Text- UND Medien-Bubbles (die Zeile
-                    // liegt in der Surface, nicht mehr unter der Bubble).
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        // WELLE-13 P9: Speaking-Chip — diese Agenten-Antwort wird
-                        // gerade vorgelesen; Tap auf den Chip = Stopp (Queue leer).
-                        if (message.fromAgent && speaking) {
-                            Row(
-                                Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(FlipsiColors.EmberDim)
-                                    .clickable(onClick = onStopSpeaking)
-                                    .padding(horizontal = 8.dp, vertical = 2.dp)
-                                    .semantics { contentDescription = stopReadAloudA11y },
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text(
-                                    stringResource(R.string.chat_tts_chip),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = FlipsiColors.Ember,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                            Spacer(Modifier.width(6.dp))
-                        }
-                        // PH2-T11: Agenten-Antwort mit Antwort-Latenz ('Antwort nach X s').
-                        // SIRS-04: unter 100 ms bleibt die Zeile WEG — 'Antwort nach
-                        // 0.0 s' war eine Anzeige unter der Messauflösung (kein echtes
-                        // Timing), darüber steht die echte Zeit.
-                        val replySeconds = replyAfterSeconds(replyAfterMs)
-                        if (message.fromAgent && replySeconds != null) {
-                            // W15: Text als Ressource — "%.1f".format folgt dem
-                            // App-Locale (AppLanguageGate setzt Locale.setDefault).
-                            val replyText = "%.1f".format(replySeconds)
-                            // W15: Long-Press-Beschreibung VOR das semantics-
-                            // Lambda ziehen — stringResource ist @Composable und
-                            // darf nicht im Non-Composable-Lambda laufen.
-                            val replyLongText = stringResource(
-                                R.string.chat_reply_after_long_s, replyText,
-                            )
-                            Text(
-                                stringResource(R.string.chat_reply_after_s, replyText),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = FlipsiColors.TextSecondary,
-                                modifier = Modifier
-                                    .padding(end = 4.dp)
-                                    .semantics {
-                                        contentDescription = replyLongText
-                                    },
-                            )
-                        }
-                        // PH2-T10: Zustell-/Lese-Chip je EIGENER Nachricht (rechts
-                        // neben der Zeit). PH2-FIX (Jäger B7): Demo-Eintrag → gar
-                        // kein Chip (kein Backend).
-                        if (!message.fromAgent && showStatusChip) {
-                            val chip = statusChip(status)
-                        DeliveryChecks(
-                            status = status,
-                            tint = chip.color,
-                            description = chip.description,
-                        )
-                        }
-                        Text(
-                            message.time,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = FlipsiColors.TextSecondary,
-                        )
-                        // MEDIA-T1 + W15 (Sir-Fixliste 10): Upload-Fortschritt
-                        // eigener Medien als kleines Icon OHNE sichtbaren Text
-                        // (⏳ läuft, rotes ✕ fehlgeschlagen). FERTIGER Upload
-                        // zeigt NICHTS — die Zustell-Häkchen übernehmen (kein
-                        // doppelter Haken). A11y: TalkBack liest die volle
-                        // Info über contentDescription, nie nur Farbe/Form.
-                        val uploadFailed = !message.fromAgent && message.media != null &&
-                            mediaUpload?.failed != null
-                        val uploadRunning = !message.fromAgent && message.media != null &&
-                            mediaUpload != null && mediaUpload.failed == null && !mediaUpload.done
-                        // i18n: TalkBack-Texte aus String-Ressourcen (stringResource
-                        // ist nicht im semantics-Lambda aufrufbar → vorher hoisten).
-                        val uploadDesc = if (uploadFailed) {
-                            stringResource(
-                                R.string.chat_upload_failed_desc,
-                                mediaUpload?.failed?.take(40) ?: "",
+                    // W15b (Fix A, Sir-Befund): die M3-Surface stapelt ihren
+                    // Inhalt in einer BOX — die Meta-Zeile als weiteres Kind
+                    // lag OBEN ueber der ersten Textzeile statt unten. Column:
+                    // Zitat/Text/Medien oben, Metareihe ALS LETZTES Element
+                    // unten (WhatsApp-Stil, rechtsbuendig klein).
+                    Column {
+                        // W4-B (Zitieren): Vertrag — die zitierte Nachricht erscheint
+                        // ÜBER der Sende-/Empfangs-Bubble (Messenger-Muster).
+                        message.quoted?.let { quote -> ChatQuoteBlock(quote = quote) }
+                        if (message.media != null) {
+                            // MEDIA-T1: Media-Bubble je Art (Bild/Voice/Datei/Video).
+                            // WELLE-13 P8: Holen-Verband für eingehende Medien
+                            // durchgereicht (localPath leer + mediaId vorhanden).
+                            MediaBubbleContent(
+                                media = message.media,
+                                fromAgent = message.fromAgent,
+                                text = message.text,
+                                onDownloadMedia = onDownloadMedia,
                             )
                         } else {
-                            stringResource(
-                                R.string.chat_upload_progress_desc,
-                                mediaUpload?.ackedChunks ?: 0,
-                                mediaUpload?.totalChunks ?: 0,
+                            Text(
+                                message.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (message.fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC),
+                                // PH-FIX-CHAT-A (F2): 14/10 dp Text-Padding (vorher 12/8) —
+                                // Luft zwischen Text und Bildschirmrand, Messenger-Muster.
+                                modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp),
                             )
                         }
-                        if (uploadFailed || uploadRunning) {
-                            Spacer(Modifier.width(6.dp))
-                            Text(
-                                if (uploadFailed) "✕" else "⏳",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (uploadFailed) FlipsiColors.SignalRedText
-                                        else FlipsiColors.TextSecondary,
-                                fontWeight = if (uploadFailed) FontWeight.Bold else null,
-                                modifier = Modifier.semantics {
-                                    contentDescription = uploadDesc
-                                },
+                        // ── WELLE-13 P11: Meta-Zeile INSIDE der Bubble (unten-rechts) ──
+                        // Sirs Bauvorlage: Zeitstempel labelSmall/TextSecondary steht
+                        // IN der Bubble, der Status-Chip direkt daneben — gleiches
+                        // Silhouette-Bild für Text- UND Medien-Bubbles (die Zeile
+                        // liegt in der Surface, nicht mehr unter der Bubble).
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // WELLE-13 P9: Speaking-Chip — diese Agenten-Antwort wird
+                            // gerade vorgelesen; Tap auf den Chip = Stopp (Queue leer).
+                            if (message.fromAgent && speaking) {
+                                Row(
+                                    Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(FlipsiColors.EmberDim)
+                                        .clickable(onClick = onStopSpeaking)
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .semantics { contentDescription = stopReadAloudA11y },
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        stringResource(R.string.chat_tts_chip),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = FlipsiColors.Ember,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                                Spacer(Modifier.width(6.dp))
+                            }
+                            // PH2-T11: Agenten-Antwort mit Antwort-Latenz ('Antwort nach X s').
+                            // SIRS-04: unter 100 ms bleibt die Zeile WEG — 'Antwort nach
+                            // 0.0 s' war eine Anzeige unter der Messauflösung (kein echtes
+                            // Timing), darüber steht die echte Zeit.
+                            val replySeconds = replyAfterSeconds(replyAfterMs)
+                            if (message.fromAgent && replySeconds != null) {
+                                // W15: Text als Ressource — "%.1f".format folgt dem
+                                // App-Locale (AppLanguageGate setzt Locale.setDefault).
+                                val replyText = "%.1f".format(replySeconds)
+                                // W15: Long-Press-Beschreibung VOR das semantics-
+                                // Lambda ziehen — stringResource ist @Composable und
+                                // darf nicht im Non-Composable-Lambda laufen.
+                                val replyLongText = stringResource(
+                                    R.string.chat_reply_after_long_s, replyText,
+                                )
+                                Text(
+                                    stringResource(R.string.chat_reply_after_s, replyText),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = FlipsiColors.TextSecondary,
+                                    modifier = Modifier
+                                        .padding(end = 4.dp)
+                                        .semantics {
+                                            contentDescription = replyLongText
+                                        },
+                                )
+                            }
+                            // PH2-T10: Zustell-/Lese-Chip je EIGENER Nachricht (rechts
+                            // neben der Zeit). PH2-FIX (Jäger B7): Demo-Eintrag → gar
+                            // kein Chip (kein Backend).
+                            if (!message.fromAgent && showStatusChip) {
+                                val chip = statusChip(status)
+                            DeliveryChecks(
+                                status = status,
+                                tint = chip.color,
+                                description = chip.description,
                             )
+                            }
+                            Text(
+                                message.time,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = FlipsiColors.TextSecondary,
+                            )
+                            // MEDIA-T1 + W15 (Sir-Fixliste 10): Upload-Fortschritt
+                            // eigener Medien als kleines Icon OHNE sichtbaren Text
+                            // (⏳ läuft, rotes ✕ fehlgeschlagen). FERTIGER Upload
+                            // zeigt NICHTS — die Zustell-Häkchen übernehmen (kein
+                            // doppelter Haken). A11y: TalkBack liest die volle
+                            // Info über contentDescription, nie nur Farbe/Form.
+                            val uploadFailed = !message.fromAgent && message.media != null &&
+                                mediaUpload?.failed != null
+                            val uploadRunning = !message.fromAgent && message.media != null &&
+                                mediaUpload != null && mediaUpload.failed == null && !mediaUpload.done
+                            // i18n: TalkBack-Texte aus String-Ressourcen (stringResource
+                            // ist nicht im semantics-Lambda aufrufbar → vorher hoisten).
+                            val uploadDesc = if (uploadFailed) {
+                                stringResource(
+                                    R.string.chat_upload_failed_desc,
+                                    mediaUpload?.failed?.take(40) ?: "",
+                                )
+                            } else {
+                                stringResource(
+                                    R.string.chat_upload_progress_desc,
+                                    mediaUpload?.ackedChunks ?: 0,
+                                    mediaUpload?.totalChunks ?: 0,
+                                )
+                            }
+                            if (uploadFailed || uploadRunning) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    if (uploadFailed) "✕" else "⏳",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (uploadFailed) FlipsiColors.SignalRedText
+                                            else FlipsiColors.TextSecondary,
+                                    fontWeight = if (uploadFailed) FontWeight.Bold else null,
+                                    modifier = Modifier.semantics {
+                                        contentDescription = uploadDesc
+                                    },
+                                )
+                            }
                         }
                     }
                 }
