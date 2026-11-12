@@ -253,6 +253,24 @@ internal fun replyAfterSeconds(ms: Long?): Double? =
     if (ms == null || ms < ChatBubbleRules.MIN_REPLY_AFTER_MS) null else ms / 1000.0
 
 /**
+ * SIRS-04: Anzeige-Zeile „Antwort nach X s“ — null = nicht anzeigen (unter
+ * 100 ms = unter der Anzeige-Auflösung). Reiner JVM-Vertrag (ChatBubbleRulesTest
+ * ruft ihn direkt); die Bubble selbst rendert den Text über die RESSOURCE
+ * chat_reply_after_s (W15/i18n: löst live in DE/EN auf) — diese Funktion ist
+ * Format- und Schwellwert-Pinne + Fallback-Template, keine zweite UI-Quelle.
+ */
+internal fun replyAfterLabel(ms: Long?): String? =
+    if (ms == null || ms < ChatBubbleRules.MIN_REPLY_AFTER_MS) null
+    else "Antwort nach ${"%.1f".format(ms / 1000.0)} s"
+
+/**
+ * SIRS-04: TalkBack-Beschreibung der Antwort-Latenz („Sekunden“ ausgeschrieben)
+ * — reiner JVM-Vertrag wie [replyAfterLabel]; die UI nutzt chat_reply_after_long_s.
+ */
+internal fun replyAfterDescription(ms: Long): String =
+    "Antwort nach ${"%.1f".format(ms / 1000.0)} Sekunden"
+
+/**
  * SIRS-05 (Volltest): Senden nur bei nicht-leerem Text — leer/Whitespace =
  * kein Versand; der Button ist disabled statt enabled zu bleiben und nur
  * still nichts zu tun. (Der Volltest-Dump empty-field-state.xml traf die
