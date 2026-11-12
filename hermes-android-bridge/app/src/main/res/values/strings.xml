@@ -144,6 +144,9 @@
     <string name="common_settings">Einstellungen</string>
     <string name="common_chat">Chat</string>
     <string name="common_legal_title">Impressum &amp; Datenschutz</string>
+    <string name="common_e2e_title">E2E-Verschlüsselung</string>
+    <string name="nav_tab_dashboard">Dashboard</string>
+    <string name="nav_tab_e2e">E2E</string>
     <string name="badge_active">aktiv</string>
     <string name="badge_missing">fehlt</string>
     <string name="badge_needed">nötig</string>
@@ -198,7 +201,7 @@
     <string name="caps_dialog_sensitive_github">Standort, SMS, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen.</string>
     <string name="caps_dialog_without_invasive">Ohne invasive einschalten</string>
     <string name="caps_dialog_enable_all">Alle einschalten</string>
-    <string name="caps_compact_desc">%1$d von %2$d Fähigkeiten aktiv — ein- und ausschalten unter Einstellungen → Agenten.</string>
+    <string name="caps_compact_desc">%1$d von %2$d Fähigkeiten aktiv — ein- und ausschalten im Agenten-Tab.</string>
     <string name="countbadge_a11y">%1$d von %2$d Fähigkeiten aktiviert</string>
     <string name="caps_group_view">Ansehen &amp; Zustände</string>
     <string name="caps_group_control">Gerät bedienen</string>
@@ -254,7 +257,7 @@
     <string name="banner_broken_text">Kopplung abgelehnt — Code in den Einstellungen neu erzeugen bzw. am Server hinterlegen, dann wieder verbinden.</string>
     <string name="banner_broken_badge">KOPPLUNG</string>
     <string name="banner_connected_title">Verbunden — Brücke steht</string>
-    <string name="banner_connected_text">Der Agent kann das Gerät nutzen — Fähigkeiten in den Einstellungen anpassen.</string>
+    <string name="banner_connected_text">Der Agent kann das Gerät nutzen — Fähigkeiten im Agenten-Tab anpassen.</string>
     <string name="banner_connected_badge">AKTIV</string>
     <string name="banner_connecting_title">Verbinde …</string>
     <string name="banner_connecting_text">Die Wiederverbindungs-Schleife läuft (1–30 s Abstand, danach alle 5 min).</string>
@@ -327,6 +330,14 @@
     <string name="legal_placeholder_text">Dieser Abschnitt wird mit den rechtlichen Angaben hinterlegt.</string>
     <string name="chat_list_title">Agenten</string>
     <string name="chat_list_title_sub">Direkt-Chat mit den gekoppelten Agenten — live über das Relay.</string>
+    <string name="dash_agents_sub">Live-Status der gekoppelten Agenten.</string>
+    <string name="dash_no_agents">Noch keine Agenten</string>
+    <string name="dash_no_agents_desc">Nach dem Verbinden mit dem Relay erscheinen hier alle gekoppelten Agenten mit Live-Status — wer online ist, wer gerade arbeitet und woran.</string>
+    <string name="dash_no_messages">Noch keine Nachrichten</string>
+    <string name="dash_last_active">Zuletzt aktiv %1$s</string>
+    <string name="dash_no_activity">Noch keine Aktivität</string>
+    <string name="dash_working">arbeitet … (%1$s)</string>
+    <string name="a11y_open_agent_chat">Chat mit %1$s öffnen</string>
     <string name="chat_list_search_hint">Agenten durchsuchen</string>
     <string name="chat_filter_all">Alle</string>
     <string name="chat_filter_online">Online</string>

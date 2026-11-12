@@ -107,6 +107,11 @@ import com.hermesandroid.bridge.ui.FlipsiType
  * kein Paarung → Onboarding-Screen). Der „Fertigstellen“-Knopf (Schritt 5)
  * ruft onComplete → Flag → App mit initialRoute=2 = direkt im Chat.
  *
+ * W15 (Sir-Fixliste 8): „Setup überspringen“ ruft den EIGENEN [onSkip]-
+ * Callback (nicht onComplete) → die App startet IMMER auf dem STATUS-
+ * DASHBOARD (Route 0), nie im Chat. Nur der Wizard-Abschluss (Fingerprint-
+ * Bestätigung + „Fertigstellen“) geht wie gehabt direkt in den Chat.
+ *
  * REDUCED-PASS-FASER: der Code läuft in beiden Eingaben-Kontexten (Wizard +
  * Profil-Dialog) über [PassCodeField] — verborgen, mit Einblenden-Schalter.
  *
@@ -248,6 +253,9 @@ private val ONB_PERMISSIONS = listOf(
 @Composable
 fun OnboardingScreens(
     onComplete: () -> Unit,
+    // W15 (Sir-Fixliste 8): „Setup überspringen“ — eigener Callback; der
+    // Aufrufer startet danach auf dem Dashboard (Route 0), nie im Chat.
+    onSkip: () -> Unit = onComplete,
 ) {
     val context = LocalContext.current
     val status by BridgeStatus.state.collectAsState()
@@ -643,7 +651,10 @@ fun OnboardingScreens(
             }
             TextButton(onClick = {
                 ServerProfiles.skipOnboarding()
-                onComplete()
+                // W15 (Sir-Fixliste 8): Skip ≠ Abschluss — der EIGENE onSkip-
+                // Callback startet auf dem STATUS-DASHBOARD (Route 0), nie
+                // im Chat; nur der Wizard-Abschluss geht über onComplete.
+                onSkip()
             }) {
                 Text(
                     stringResource(R.string.onb_skip),

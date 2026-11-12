@@ -130,6 +130,11 @@ class MainActivity : ComponentActivity() {
                                 onComplete = {
                                     onboardingJustDone = true
                                 },
+                                // W15 (Sir-Fixliste 8): „Setup überspringen“
+                                // startet auf dem STATUS-DASHBOARD (Route 0),
+                                // NICHT im Chat — onboardingJustDone bleibt
+                                // false, nur der Wizard-Abschluss setzt ihn.
+                                onSkip = { },
                             )
                         } else {
                             BridgeScreen(
