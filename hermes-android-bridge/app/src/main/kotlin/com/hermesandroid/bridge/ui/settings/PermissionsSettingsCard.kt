@@ -111,7 +111,11 @@ fun PermissionsSettingsCard(
     }
 }
 
-/** Zeile je Berechtigung: Icon + Zweck (AutoWrap) + StatusBadge + Sprung-Chip. */
+/**
+ * Kachel je Berechtigung (W15/P6, Sir): Zweck-Text oben volle Breite,
+ * darunter ZENTRIERT der Status (erteilt/fehlt) mit dem „Systemeinstellungen“-
+ * Sprung-Chip daneben — nicht mehr alles in einer gedrängten Zeile.
+ */
 @Composable
 private fun PermissionSettingsRow(
     iconRes: Int,
@@ -120,39 +124,49 @@ private fun PermissionSettingsRow(
     granted: Boolean,
     onOpenSystemSettings: () -> Unit,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
+    Column(
+        // W15/P6: Abstand Textblock ↔ Statuszeile.
+        verticalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier
             .fillMaxWidth()
-            // Apple-Pass: Zeilen-Mindesthöhe 48 dp (keine Mini-Touchfelder).
+            // Apple-Pass: Kachel-Mindesthöhe 48 dp (keine Mini-Touchfelder).
             .heightIn(min = 48.dp),
     ) {
-        ResourceIcon(iconRes, tint = FlipsiColors.TextSecondary, size = 24.dp)
-        Spacer(Modifier.width(12.dp))
-        // Zwecke brechen mehrzeilig um (P2a: kein Text-Stacking mehr).
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            Text(
-                description,
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-            )
+        // Zeile 1: Icon + Zweck (AutoWrap, P2a: kein Text-Stacking mehr).
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            ResourceIcon(iconRes, tint = FlipsiColors.TextSecondary, size = 24.dp)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    description,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.TextSecondary,
+                )
+            }
+        }
+        // Zeile 2 (W15/P6, Sir): Status zentriert, Öffnen-Button daneben.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             StatusBadge(
                 text = stringResource(
                     if (granted) R.string.perm_status_granted else R.string.perm_status_missing
                 ),
                 state = if (granted) BadgeState.OK else BadgeState.OFF,
             )
+            Spacer(Modifier.width(8.dp))
+            AssistChip(
+                onClick = onOpenSystemSettings,
+                label = { Text(stringResource(R.string.perm_open_system_settings)) },
+                border = AssistChipDefaults.assistChipBorder(
+                    borderColor = FlipsiColors.LineStrong,
+                    enabled = true,
+                ),
+            )
         }
-        Spacer(Modifier.width(8.dp))
-        AssistChip(
-            onClick = onOpenSystemSettings,
-            label = { Text(stringResource(R.string.perm_open_system_settings)) },
-            border = AssistChipDefaults.assistChipBorder(
-                borderColor = FlipsiColors.LineStrong,
-                enabled = true,
-            ),
-        )
     }
 }
 

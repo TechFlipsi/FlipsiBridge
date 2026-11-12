@@ -78,7 +78,6 @@
 
     <!-- ── Welle 13 / Settings-Lane: Settings-Redesign (P2) — DE-Spiegel ─────── -->
     <string name="settings_home_title">Einstellungen</string>
-    <string name="settings_home_subtitle">Abschnitte antippen zum Auf- und Zuklappen.</string>
     <string name="settings_info_a11y">Über FlipsiBridge öffnen</string>
     <string name="about_sheet_title">Über FlipsiBridge</string>
     <string name="about_version_label">Version</string>
