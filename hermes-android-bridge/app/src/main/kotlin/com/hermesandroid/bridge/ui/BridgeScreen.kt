@@ -1249,12 +1249,16 @@ private fun AdvancedCard(configVersion: Int) {
  * Titel der Top-Bar je Route (W15/P7: Route 1 = Einstellungen wird NICHT hier
  * behandelt — sie zeigt den Sektions-Pfad via SettingsNav, „Einstellungen › …“).
  * 0 = Dashboard mit dem App-Namen; unbekannte Werte fallen darauf zurück.
+ * W15b (Fix B, Sir-Befund): Route 4 (Agenten-Tab) bleibt TITELLOS — das
+ * Tab-Label unten trägt den Namen, ein doppelter Titel oben wirkte wie
+ * ein Festhängen des Screens.
  */
 @Composable
 private fun topBarTitle(route: Int): String = when (route) {
     2 -> stringResource(R.string.common_chat)
     3 -> stringResource(R.string.common_legal_title)
-    4 -> stringResource(R.string.chat_list_title)
+    // W15b: Route 4 bewusst leer — Tab-Label reicht (kein Doppel-Titel).
+    4 -> ""
     5 -> stringResource(R.string.common_e2e_title)
     // 0 = Dashboard; unbekannte Werte fallen auf den App-Namen zurück.
     else -> "FlipsiBridge"
