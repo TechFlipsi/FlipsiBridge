@@ -29,7 +29,7 @@ import androidx.compose.ui.res.stringResource
 object SettingsNav {
 
     /** @StringRes-ID der zuletzt aufgeklappten Sektion (null = nur „Einstellungen“). */
-    @StringRes
+    @get:StringRes
     var openSectionRes: Int? by mutableStateOf(null)
         private set
 
