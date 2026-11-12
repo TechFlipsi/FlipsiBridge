@@ -145,7 +145,12 @@ private fun PermissionSettingsRow(
                 )
             }
         }
-        // Zeile 2 (W15/P6, Sir): Status zentriert, Öffnen-Button daneben.
+        // Zeile 2 (W15b Fix C, Sir): GLEICHE Logik wie PermissionRow — Status-
+        // Badge + kurzer „Öffnen“-Chip darunter zentriert. Die langen Labels
+        // („Nicht erteilt“ + „Systemeinstellungen“) sprengten die Zeile fast
+        // über die volle Breite → Status wirkte links, Button rechts (Beweis
+        // fix06a). Kurze Badge-Wörter (aktiv/fehlt) + „Öffnen“ halten das
+        // Paar kompakt mittig — identisches Bild wie die Settings-Zeilen.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -153,14 +158,14 @@ private fun PermissionSettingsRow(
         ) {
             StatusBadge(
                 text = stringResource(
-                    if (granted) R.string.perm_status_granted else R.string.perm_status_missing
+                    if (granted) R.string.badge_active else R.string.badge_missing
                 ),
-                state = if (granted) BadgeState.OK else BadgeState.OFF,
+                state = if (granted) BadgeState.OK else BadgeState.ERROR,
             )
-            Spacer(Modifier.width(8.dp))
             AssistChip(
                 onClick = onOpenSystemSettings,
-                label = { Text(stringResource(R.string.perm_open_system_settings)) },
+                label = { Text(stringResource(R.string.common_open)) },
+                modifier = Modifier.padding(start = 8.dp),
                 border = AssistChipDefaults.assistChipBorder(
                     borderColor = FlipsiColors.LineStrong,
                     enabled = true,
