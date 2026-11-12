@@ -1268,16 +1268,16 @@ private fun topBarTitle(route: Int): String = when (route) {
  */
 @Composable
 private fun navTabColors(): NavigationBarItemColors {
-    // remember vermeidet Neuaufbau je Frame — die Werte sind konstant.
-    return remember {
-        NavigationBarItemDefaults.colors(
-            selectedIconColor = FlipsiColors.Ember,
-            selectedTextColor = FlipsiColors.Ember,
-            unselectedIconColor = FlipsiColors.TextSecondary,
-            unselectedTextColor = FlipsiColors.TextSecondary,
-            indicatorColor = FlipsiColors.EmberDim,
-        )
-    }
+    // Die Werte sind konstant; NavigationBarItemDefaults.colors ist selbst
+    // @Composable — ein remember { }-Block darum wäre ein Composable-Aufruf
+    // im Non-Composable-Lambda (Compile-Fehler).
+    return NavigationBarItemDefaults.colors(
+        selectedIconColor = FlipsiColors.Ember,
+        selectedTextColor = FlipsiColors.Ember,
+        unselectedIconColor = FlipsiColors.TextSecondary,
+        unselectedTextColor = FlipsiColors.TextSecondary,
+        indicatorColor = FlipsiColors.EmberDim,
+    )
 }
 
 // ── PH1-T2: Einstellungen-Bausteine (Accordion-Gruppenkarten) ──────────────
@@ -1354,6 +1354,7 @@ private fun AccordionCard(
  */
 @Composable
 private fun MtlsCard(configVersion: Int, activity: Activity?) {
+    val context = LocalContext.current
     val configured = remember(configVersion) { MtlsSupport.isConfigured() }
     Card(
         colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),

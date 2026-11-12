@@ -764,6 +764,12 @@ fun MessageBubble(
                             // W15: Text als Ressource — "%.1f".format folgt dem
                             // App-Locale (AppLanguageGate setzt Locale.setDefault).
                             val replyText = "%.1f".format(replySeconds)
+                            // W15: Long-Press-Beschreibung VOR das semantics-
+                            // Lambda ziehen — stringResource ist @Composable und
+                            // darf nicht im Non-Composable-Lambda laufen.
+                            val replyLongText = stringResource(
+                                R.string.chat_reply_after_long_s, replyText,
+                            )
                             Text(
                                 stringResource(R.string.chat_reply_after_s, replyText),
                                 style = MaterialTheme.typography.labelSmall,
@@ -771,9 +777,7 @@ fun MessageBubble(
                                 modifier = Modifier
                                     .padding(end = 4.dp)
                                     .semantics {
-                                        contentDescription = stringResource(
-                                            R.string.chat_reply_after_long_s, replyText,
-                                        )
+                                        contentDescription = replyLongText
                                     },
                             )
                         }
