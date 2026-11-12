@@ -36,24 +36,6 @@ import com.android.billingclient.api.Purchase
 import com.android.billingclient.api.QueryProductDetailsParams
 import com.android.billingclient.api.QueryPurchasesParams
 
-/**
- * WELLE 13 (Sir 12.11.2026, Herz-Knopf): der Support-Verband als DIALOG —
- * gleiche Billing-Maschine wie die Settings-Karte (PH-9-Route, Produkt
- * `supporter`, 2,99 €, keine Sperre, Acknowledge-Pflicht), aber ohne doppelte
- * Wahrheit: die Settings-Karte bleibt, der Chat-Herz-Knopf öffnet NUR den
- * gleichwertigen Dialog und nutzt dieselben Keys/Prefs. GitHub-Edition kennt
- * dieses Composable nicht (Stub-Signatur in src/github/ bleibt identisch).
- */
-object SupporterKeys {
-    const val PRODUCT_ID = "supporter"
-    const val PREFS = "hermes_bridge_prefs"
-    const val KEY_BADGE = "supporter_badge"
-
-    fun isBadgeActive(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_BADGE, false)
-}
-
 @Composable
 fun SupporterDialog(activity: Activity?, onDismiss: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current

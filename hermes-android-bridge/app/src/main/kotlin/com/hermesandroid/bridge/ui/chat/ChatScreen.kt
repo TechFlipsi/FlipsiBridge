@@ -1228,6 +1228,11 @@ private fun ConversationBody(
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
         // WELLE 13 (Sir): Herz-Knopf oeffnet den Support/IAP-Dialog (2,99-Perk).
+        var supportDialogOpen by remember { mutableStateOf(false) }
+        // WELLE 13: BillingFlow braucht eine Activity-Referenz (startForeground-Regel).
+        val chatActivity = remember {
+            (androidx.compose.ui.platform.LocalContext.current as? android.app.Activity)
+        }
         if (supportDialogOpen) {
             SupporterDialog(activity = chatActivity, onDismiss = { supportDialogOpen = false })
         }
