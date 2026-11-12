@@ -701,7 +701,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 // Standard-Assistent).
                 legacyGroups = { LegacySettingsGroups() },
             )
-            2 -> ChatScreen(padding)
+            2 -> ChatScreen(padding, onOpenSettings = { route = 1 }) // Welle 13: Herz = Einstellungen (Supporter-Karte)
             3 -> LegalScreenPlaceholder(padding)
             else -> HomeContent(padding)
         }

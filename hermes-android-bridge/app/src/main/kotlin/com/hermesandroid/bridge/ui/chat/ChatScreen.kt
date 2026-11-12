@@ -92,7 +92,7 @@ import java.util.Locale
  * bleibt der Demo-Fallback mit den Beispiel-Einträgen (siehe sampleAgents).
  */
 @Composable
-fun ChatScreen(padding: PaddingValues) {
+fun ChatScreen(padding: PaddingValues, onOpenSettings: () -> Unit = {}) {
     // PH2-MERGE: echte Agenten-Liste vom Relay; leer = Demo-Fallback.
     val relayAgents by RelayClient.agents.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
@@ -1206,11 +1206,8 @@ private fun ConversationBody(
             .fillMaxSize()
             .padding(padding),
     ) {
-        var supportDialogOpen by remember { mutableStateOf(false) }
-        // WELLE 13: BillingFlow braucht eine Activity-Referenz (startForeground-Regel).
-        val chatActivity = remember {
-            (androidx.compose.ui.platform.LocalContext.current as? android.app.Activity)
-        }
+        // WELLE 13 (Sir): Herz-Knopf öffnet die Einstellungen (dort lebt die
+        // Supporter-Billing-Karte — Maschine in play/github je Edition).
         ConversationHeader(
             agent = agent,
             working = working,
@@ -1222,7 +1219,7 @@ private fun ConversationBody(
                 searchOpen = !searchOpen
                 if (!searchOpen) searchQuery = ""
             },
-            onSupport = { supportDialogOpen = true },
+            onSupport = onOpenSettings,
         )
         HorizontalDivider(color = FlipsiColors.LineStrong)
         // PH2-FIX (E2E P1): dismissbare Fehler-Zeile direkt unter dem Kopf —
@@ -1232,10 +1229,6 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
-        // WELLE 13: Support/IAP-Klappstuhl als Dialog.
-        if (supportDialogOpen) {
-            SupporterDialog(activity = chatActivity, onDismiss = { supportDialogOpen = false })
-        }
         // ── W4 (App-Lane C): Tab-Verband [Chat | Mediathek] am Chatscreen ────
         // Der Mediathek-Tab lebt NEBEN dem Chat in derselben Conversation
         // (gemeinsamer Kopf). Zustand je Agent: Agent-Wechsel setzt auf Chat
