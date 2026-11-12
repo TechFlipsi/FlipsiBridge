@@ -1068,6 +1068,7 @@ private fun AgentListBody(
 private fun ConversationBody(
     padding: PaddingValues,
     agent: ChatAgent,
+    onOpenSettings: () -> Unit = {},
     conversation: List<ChatMessage>,
     working: RelayClient.AgentActivity?,
     errorBanner: String?,
