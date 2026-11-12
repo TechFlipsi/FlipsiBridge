@@ -1239,6 +1239,7 @@ private fun AdvancedCard(configVersion: Int) {
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 8.dp),
             )
+        }
     }
 }
 
