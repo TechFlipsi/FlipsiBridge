@@ -1,4 +1,6 @@
 package com.hermesandroid.bridge.ui.components
+import com.hermesandroid.bridge.R
+import androidx.compose.ui.res.stringResource
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.padding
@@ -19,6 +21,8 @@ import com.hermesandroid.bridge.ui.FlipsiColors
 @Composable
 fun CountBadge(enabled: Int, total: Int, invasive: Boolean, modifier: Modifier = Modifier) {
     val all = enabled == total && total > 0
+    // W15: TalkBack-Beschreibung als Ressource (DE/EN live über das AppLanguageGate).
+    val badgeA11y = stringResource(R.string.countbadge_a11y, enabled, total)
     val fg = when {
         invasive && enabled > 0 -> FlipsiColors.SignalRedText
         all -> FlipsiColors.SignalGreen
@@ -31,6 +35,6 @@ fun CountBadge(enabled: Int, total: Int, invasive: Boolean, modifier: Modifier =
         modifier = modifier
             .background(fg.copy(alpha = 0.16f), RoundedCornerShape(percent = 50))
             .padding(horizontal = 10.dp, vertical = 3.dp)
-            .semantics { contentDescription = "$enabled von $total Fähigkeiten aktiviert" },
+            .semantics { contentDescription = badgeA11y },
     )
 }

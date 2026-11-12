@@ -92,9 +92,21 @@ object AppLanguage {
      * SYSTEM → unverändert; DE/EN → createConfigurationContext + Locale.setDefault
      * (richtet auch String.format-Dezimaltrenner — z. B. „Antwort nach 1,3 s“
      * — in der App-UI; Systemprozesse bleiben unberührt).
+     *
+     * W15 (Rückwechsel-Fix): bei SYSTEM wird Locale.setDefault auf die
+     * System-Locale ZURÜCKgestellt — ein vorheriger DE/EN-Lauf hätte sonst
+     * den Dezimaltrenner („%.1f“.format in ChatWidgets) weiter auf der alten
+     * Wahl gelassen („Antwort nach 1.3 s“ statt „1,3 s“ am deutschen System).
      */
     fun wrap(base: Context, tag: String): Context {
-        if (!isOption(tag) || tag == SYSTEM) return base
+        if (!isOption(tag)) return base
+        if (tag == SYSTEM) {
+            runCatching {
+                val sysLocale = base.resources.configuration.locales[0]
+                if (!sysLocale.language.isNullOrBlank()) Locale.setDefault(sysLocale)
+            }
+            return base
+        }
         return runCatching {
             val locale = Locale.forLanguageTag(tag)
             val config = Configuration(base.resources.configuration)

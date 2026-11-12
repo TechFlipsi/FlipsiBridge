@@ -252,9 +252,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
         val ok = result.resultCode == Activity.RESULT_OK
         if (ok && result.data != null) {
             ScreenRecorder.setProjectionPermission(result.resultCode, result.data!!)
-            Toast.makeText(context, "Bildschirmaufnahme freigegeben", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.toast_record_granted), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "Bildschirmaufnahme nicht freigegeben", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.toast_record_denied), Toast.LENGTH_SHORT).show()
         }
         BridgeStatus.refreshConfig()
     }
@@ -265,7 +265,8 @@ fun BridgeScreen(initialRoute: Int = 0) {
     ) { granted ->
         Toast.makeText(
             context,
-            if (granted) "Benachrichtigungen erlaubt" else "Benachrichtigungen verweigert",
+            if (granted) context.getString(R.string.toast_notifications_granted)
+            else context.getString(R.string.toast_notifications_denied),
             Toast.LENGTH_SHORT,
         ).show()
         BridgeStatus.refreshConfig()
@@ -280,13 +281,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
             granted.containsAll(requested) ->
                 Toast.makeText(
                     context,
-                    "Health-Berechtigungen erteilt (${granted.size})",
+                    context.getString(R.string.toast_health_granted, granted.size),
                     Toast.LENGTH_SHORT,
                 ).show()
             granted.isNotEmpty() -> {
                 val fehlt = requested.filter { it !in granted }
                     .joinToString { HealthDataBridge.metricLabel(it) }
-                Toast.makeText(context, "Nur teilweise erteilt — fehlt: $fehlt", Toast.LENGTH_LONG).show()
+                Toast.makeText(context, context.getString(R.string.toast_health_partial, fehlt), Toast.LENGTH_LONG).show()
             }
             // Leerer Grant = abgelehnt/abgebrochen ODER still blockiert
             // (HyperOS) — Ursache + Auswege als Dialog, nicht als Blind-Toast.
@@ -310,15 +311,15 @@ fun BridgeScreen(initialRoute: Int = 0) {
             target -> {
                 CapabilityMaster.enableAll(allCaps.map { it.id }, includeInvasive = true, INVASIVE_CAPS::contains)
                 BridgeStatus.refreshConfig()
-                snack("Alle ${allCaps.size} Fähigkeiten aktiv")
+                snack(context.getString(R.string.snack_caps_all_on, allCaps.size))
             }
             else -> {
                 masterUndoSnapshot = CapabilityMaster.disableAll(allCaps.map { it.id })
                 BridgeStatus.refreshConfig()
                 scope.launch {
                     val r = snackbarHostState.showSnackbar(
-                        message = "Alle Fähigkeiten ausgeschaltet",
-                        actionLabel = "Rückgängig",
+                        message = context.getString(R.string.snack_caps_all_off),
+                        actionLabel = context.getString(R.string.action_undo),
                         duration = SnackbarDuration.Long,
                     )
                     if (r == SnackbarResult.ActionPerformed && masterUndoSnapshot.isNotEmpty()) {
@@ -355,7 +356,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // sind in die EINSTELLUNGEN gewandert (Sir-Idee: Home schlank —
             // die langen Listen leben in Route 1). Der Kopplungszustand bleibt
             // über das Statusbanner sichtbar (NEUER CODE / KOPPLUNG).
-            item(key = "step1label") { StepLabel(1, "Verbindung herstellen") }
+            item(key = "step1label") { StepLabel(1, stringResource(R.string.home_step_connect)) }
             item(key = "step2card") {
                 ConnectionCard(
                     status,
@@ -365,7 +366,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     onConnect = {
                         val url = serverUrlText.trim()
                         if (url.isBlank()) {
-                            snack("Server-Adresse eintragen")
+                            snack(context.getString(R.string.snack_url_missing))
                         } else {
                             // W4-D (A7): die Schnellverbindung folgt dem AKTIVEN
                             // Profil — die Liste bleibt wahr (URL+Vault-Spiegel
@@ -378,7 +379,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     },
                     onDisconnect = {
                         RelayClient.disconnect()
-                        snack("Verbindung getrennt")
+                        snack(context.getString(R.string.snack_disconnected))
                     },
                 )
             }
@@ -418,7 +419,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode, mTLS) ──
             
                 AccordionCard(
-                    title = "Server",
+                    title = stringResource(R.string.settings_group_server),
                     iconRes = SettingsIcons.server,
                     expanded = settingsServerOpen,
                     onExpandedChange = { settingsServerOpen = it },
@@ -435,16 +436,16 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         onValueChange = { serverUrlText = it },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
-                        label = { Text("Server-Adresse (Relay-URL)") },
+                        label = { Text(stringResource(R.string.conn_url_label)) },
                         // Bewusst generisch — keine private Domain im Quellcode.
-                        placeholder = { Text("https://dein-relay.example") },
+                        placeholder = { Text(stringResource(R.string.conn_url_placeholder)) },
                     )
                     // Kopplungscode: die bestehende PairingCard (Anzeige,
                     // Kopieren mit SENSITIVE-Markierung, Neu-Erzeugen-Dialog).
                     PairingCard(
                         onCopy = { code ->
                             val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            val data = ClipData.newPlainText("FlipsiBridge Kopplungscode", code)
+                            val data = ClipData.newPlainText(context.getString(R.string.pairing_card_title), code)
                             // SENSITIVE-Markierung (API 33+) — die Clipboard-Vorschau
                             // /Klartext-Anzeige unterbleibt.
                             if (Build.VERSION.SDK_INT >= 33) {
@@ -453,7 +454,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                                 }
                             }
                             cm.setPrimaryClip(data)
-                            snack("Kopplungscode kopiert")
+                            snack(context.getString(R.string.snack_code_copied))
                         },
                         onRegenerateRequest = { showRegenDialog = true },
                     )
@@ -467,7 +468,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 2: App (Berechtigungen, Termux, Selbst-Update) ──────
             
                 AccordionCard(
-                    title = "App",
+                    title = stringResource(R.string.settings_group_app),
                     iconRes = SettingsIcons.app,
                     expanded = settingsAppOpen,
                     onExpandedChange = { settingsAppOpen = it },
@@ -487,7 +488,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         onScreenRecord = {
                             val service = BridgeAccessibilityService.instance
                             if (service == null) {
-                                snack("Zuerst die Eingabehilfe aktivieren (Bedienung & Lesen)")
+                                snack(context.getString(R.string.snack_a11y_first))
                             } else {
                                 val mpm = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
                                 screenRecordLauncher.launch(mpm.createScreenCaptureIntent())
@@ -504,7 +505,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                                         healthLauncher.launch(HealthDataBridge.readPermissions)
                                     }.onFailure {
                                         BridgeStatus.showText(
-                                            "Health-Dialog nicht geöffnet (${it.javaClass.simpleName}) — Health Connect installieren/öffnen",
+                                            context.getString(R.string.toast_health_dialog_error, it.javaClass.simpleName),
                                         )
                                     }
                                 }
@@ -532,7 +533,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 3: Agenten (Master + 4 Fähigkeiten-Gruppen, PH1-T5) ─
             
                 AccordionCard(
-                    title = "Agenten",
+                    title = stringResource(R.string.settings_group_agents),
                     iconRes = SettingsIcons.agent,
                     expanded = settingsAgentOpen,
                     onExpandedChange = { settingsAgentOpen = it },
@@ -543,12 +544,12 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         onCheckedChange = onMasterCheckedChange,
                     )
                     SectionTitle(
-                        "Fähigkeiten des Agenten",
-                        sub = "Was der Agent am Gerät darf — je Gruppe auf- und zuklappbar (PH1-T5).",
+                        stringResource(R.string.caps_section_title),
+                        sub = stringResource(R.string.caps_section_sub),
                     )
-                    groups.forEachIndexed { index, (title, caps) ->
+                    groups.forEachIndexed { index, (titleRes, caps) ->
                         CapabilityGroupCard(
-                            title = title,
+                            title = stringResource(titleRes),
                             caps = caps,
                             enabledIds = enabledIds,
                             onToggle = { cap, on ->
@@ -596,7 +597,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 4: App-Sperre (PH-2X X-1) — APPEND-ONLY am Ende ────
             
                 AccordionCard(
-                    title = "App-Sperre",
+                    title = stringResource(R.string.settings_group_lock),
                     iconRes = SettingsIcons.security,
                     expanded = settingsSecurityOpen,
                     onExpandedChange = { settingsSecurityOpen = it },
@@ -608,7 +609,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             // ── Gruppe 5: Verschlüsselung (PH-3 Welle 2) — APPEND-ONLY ─────
             
                 AccordionCard(
-                    title = "Verschlüsselung",
+                    title = stringResource(R.string.settings_group_crypto),
                     iconRes = SettingsIcons.crypto,
                     expanded = settingsCryptoOpen,
                     onExpandedChange = { settingsCryptoOpen = it },
@@ -676,21 +677,21 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     IconButton(onClick = { route = 1 }) {
                         Icon(
                             Icons.Outlined.Settings,
-                            contentDescription = "Einstellungen",
+                            contentDescription = stringResource(R.string.common_settings),
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
                     IconButton(onClick = { route = 2 }) {
                         Icon(
                             painterResource(NavIcons.chat),
-                            contentDescription = "Chat",
+                            contentDescription = stringResource(R.string.common_chat),
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
                     IconButton(onClick = { route = 3 }) {
                         Icon(
                             Icons.Outlined.Info,
-                            contentDescription = "Impressum und Datenschutz",
+                            contentDescription = stringResource(R.string.common_legal_title),
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
@@ -724,12 +725,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
     if (showRegenDialog) {
         AlertDialog(
             onDismissRequest = { showRegenDialog = false },
-            title = { Text("Kopplungscode neu erzeugen?") },
+            title = { Text(stringResource(R.string.pairing_regen_title)) },
             text = {
                 Text(
-                    "Der Server kennt nur den eingerichteten Code. " +
-                        "Erst den neuen Code am Server hinterlegen, " +
-                        "dann kommt die Verbindung wieder zustande.",
+                    stringResource(R.string.pairing_regen_text),
                 )
             },
             confirmButton = {
@@ -742,12 +741,12 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         // Profil-Wechsel darf den alten Code nicht beleben).
                         ServerProfiles.writeActiveCode(PairingManager.getCode())
                         BridgeStatus.refreshConfig()
-                        snack("Neuer Code erzeugt — am Server eintragen")
+                        snack(context.getString(R.string.snack_code_regen))
                     }
-                ) { Text("Erzeugen") }
+                ) { Text(stringResource(R.string.pairing_regen_confirm)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRegenDialog = false }) { Text("Abbrechen") }
+                TextButton(onClick = { showRegenDialog = false }) { Text(stringResource(R.string.common_cancel)) }
             },
         )
     }
@@ -757,11 +756,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
             onDismissRequest = { showMasterDialog = false },
             // Bestätigungs-Button nennt, was passiert („Alle einschalten",
             // nie „OK") — invasive kommen NAMENTLICH in die Liste.
-            title = { Text("Alle Fähigkeiten einschalten?") },
+            title = { Text(stringResource(R.string.caps_dialog_title)) },
             text = {
                 Column {
                     Text(
-                        "Damit werden auch diese invasiven Fähigkeiten aktiviert:",
+                        stringResource(R.string.caps_dialog_text),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(Modifier.height(12.dp))
@@ -769,18 +768,15 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             CapIcon(cap.id, tint = FlipsiColors.SignalAmber, size = 18.dp)
                             Spacer(Modifier.width(10.dp))
-                            Text(cap.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(stringResource(cap.labelRes), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                     Spacer(Modifier.height(12.dp))
                     Text(
                         if (BuildConfig.EDITION_PLAY) {
-                            "Standort, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. " +
-                                "Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen. " +
-                                "Der SMS-Entwurf öffnet nur die SMS-App — kein Direktversand."
+                            stringResource(R.string.caps_dialog_sensitive_play)
                         } else {
-                            "Standort, SMS, Anrufe, Kontakte und Mikrofon geben der Agent Zugriff auf sensible Daten. " +
-                                "Android-Freigaben (z. B. Health-Consent) bleiben davon unberührt und sind separat zu erteilen."
+                            stringResource(R.string.caps_dialog_sensitive_github)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
@@ -793,10 +789,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                             // v0.12.0 QA-Fix (SK-11): ECHTE Zahl nach dem Write,
                             // statt Stur-Annahme (invasive können schon an sein).
                             val n = allCaps.count { CapabilityGate.isEnabled(it.id) }
-                            snack("$n von ${allCaps.size} Fähigkeiten aktiv — invasive bleiben aus")
+                            snack(context.getString(R.string.snack_caps_partial, n, allCaps.size))
                         },
                         modifier = Modifier.fillMaxWidth().padding(top = 12.dp).height(48.dp),
-                    ) { Text("Ohne invasive einschalten") }
+                    ) { Text(stringResource(R.string.caps_dialog_without_invasive)) }
                 }
             },
             confirmButton = {
@@ -804,13 +800,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     showMasterDialog = false
                     CapabilityMaster.enableAll(allCaps.map { it.id }, includeInvasive = true, INVASIVE_CAPS::contains)
                     BridgeStatus.refreshConfig()
-                    snack("Alle ${allCaps.size} Fähigkeiten aktiv")
+                    snack(context.getString(R.string.snack_caps_all_on, allCaps.size))
                 }) {
-                    Text("Alle einschalten", color = FlipsiColors.Ember, fontWeight = FontWeight.SemiBold)
+                    Text(stringResource(R.string.caps_dialog_enable_all), color = FlipsiColors.Ember, fontWeight = FontWeight.SemiBold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showMasterDialog = false }) { Text("Abbrechen") }
+                TextButton(onClick = { showMasterDialog = false }) { Text(stringResource(R.string.common_cancel)) }
             },
             containerColor = FlipsiColors.PanelElev,
         )
@@ -819,17 +815,17 @@ fun BridgeScreen(initialRoute: Int = 0) {
     showHealthDialog?.let { cause ->
         val (title, text) = when (cause) {
             HealthDialogCause.NOT_INSTALLED ->
-                "Health Connect fehlt" to
-                    "Auf diesem Gerät ist Health Connect nicht installiert oder nicht aktiv. Nach der Installation aus dem Play Store die Zeile „Health-Daten erlauben\" erneut antippen."
+                stringResource(R.string.health_missing_title) to
+                    stringResource(R.string.health_missing_text)
             HealthDialogCause.NEEDS_UPDATE ->
-                "Health Connect veraltet" to
-                    "Die Health-Connect-Komponente braucht ein Update (Play Store). Danach erneut versuchen."
+                stringResource(R.string.health_update_title) to
+                    stringResource(R.string.health_update_text)
             HealthDialogCause.DENIED_OR_SILENT ->
-                "Keine Health-Berechtigungen erteilt" to
+                stringResource(R.string.health_denied_title) to
                     if (Build.VERSION.SDK_INT >= 34)
-                        "Der Systemdialog wurde abgebrochen, abgelehnt oder still blockiert. Öffne die Health-Connect-Einstellungen und setze die Rechte für FlipsiBridge dort."
+                        stringResource(R.string.health_denied_text_v34)
                     else
-                        "Der Berechtigungsdialog wurde abgebrochen oder abgelehnt. Bitte erneut versuchen oder die Rechte in Health Connect manuell setzen."
+                        stringResource(R.string.health_denied_text_old)
         }
         AlertDialog(
             onDismissRequest = { showHealthDialog = null },
@@ -853,10 +849,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                             ),
                         )
                     }
-                }) { Text("Health Connect öffnen") }
+                }) { Text(stringResource(R.string.health_open)) }
             },
             dismissButton = {
-                TextButton(onClick = { showHealthDialog = null }) { Text("Später") }
+                TextButton(onClick = { showHealthDialog = null }) { Text(stringResource(R.string.common_later)) }
             },
             containerColor = FlipsiColors.PanelElev,
         )
@@ -891,48 +887,48 @@ private fun screenStateBanner(
     ) {
         StateBanner(
             tint = FlipsiColors.SignalAmber,
-            title = "Kopplungscode wurde neu erstellt",
-            text = "Schritt: Code in den Einstellungen kopieren → am Server eintragen → dann verbinden.",
-            badge = "NEUER CODE" to BadgeState.WARN,
+            title = stringResource(R.string.banner_regen_title),
+            text = stringResource(R.string.banner_regen_text),
+            badge = stringResource(R.string.banner_regen_badge) to BadgeState.WARN,
         )
         return
     }
     val visual = when (state) {
         is BridgeStatus.ConnectionState.PAIRING_BROKEN -> BannerVisual(
             tint = FlipsiColors.SignalRedText,
-            title = "Kopplungscode wurde abgelehnt",
+            title = stringResource(R.string.banner_broken_title),
             // PH1-T4: Ursache + Handlung in Nutzbar-Deutsch (generisch).
-            text = "Kopplung abgelehnt — Code in den Einstellungen neu erzeugen bzw. am Server hinterlegen, dann wieder verbinden.",
+            text = stringResource(R.string.banner_broken_text),
             busy = false,
-            badge = "KOPPLUNG" to BadgeState.ERROR,
+            badge = stringResource(R.string.banner_broken_badge) to BadgeState.ERROR,
         )
         is BridgeStatus.ConnectionState.CONNECTED -> BannerVisual(
             tint = FlipsiColors.SignalGreen,
-            title = "Verbunden — Brücke steht",
-            text = "Der Agent kann das Gerät nutzen — Fähigkeiten in den Einstellungen anpassen.",
+            title = stringResource(R.string.banner_connected_title),
+            text = stringResource(R.string.banner_connected_text),
             busy = false,
-            badge = "AKTIV" to BadgeState.OK,
+            badge = stringResource(R.string.banner_connected_badge) to BadgeState.OK,
         )
         is BridgeStatus.ConnectionState.CONNECTING -> connectingVisual()
         is BridgeStatus.ConnectionState.RECONNECTING -> reconnectingVisual(state.ursache)
         is BridgeStatus.ConnectionState.FAILED -> BannerVisual(
             tint = FlipsiColors.SignalAmber,
-            title = "Nicht verbunden",
+            title = stringResource(R.string.banner_failed_title),
             // PH1-T4: Banner sagt Ursache + Handlung (generisch) — die rohe
             // Ursache bleibt in der Detailzeile der Verbindungskarte sichtbar.
             text = ursacheHinweis(state.ursache),
             busy = false,
-            badge = "GETRENNT" to BadgeState.OFF,
+            badge = stringResource(R.string.banner_failed_badge) to BadgeState.OFF,
         )
         is BridgeStatus.ConnectionState.IDLE -> BannerVisual(
             tint = FlipsiColors.TextSecondary,
-            title = "Nicht verbunden",
+            title = stringResource(R.string.banner_failed_title),
             text = if (!serverUrl.isNullOrBlank())
-                "Adresse unten eintragen und verbinden. Die Wiederverbindung läuft im 5-Min-Modus."
+                stringResource(R.string.banner_idle_url)
             else
-                "Kopplungscode in den Einstellungen am Server einrichten, dann unten verbinden.",
+                stringResource(R.string.banner_idle_no_url),
             busy = false,
-            badge = "GETRENNT" to BadgeState.OFF,
+            badge = stringResource(R.string.banner_failed_badge) to BadgeState.OFF,
         )
     }
     StateBanner(
@@ -954,12 +950,13 @@ private data class BannerVisual(
 )
 
 /** Verbindungsaufbau (erstmalig oder in der Schleife): Spinner-Visual. */
+@Composable
 private fun connectingVisual(): BannerVisual = BannerVisual(
     tint = FlipsiColors.SignalAmber,
-    title = "Verbinde …",
-    text = "Die Wiederverbindungs-Schleife läuft (1–30 s Abstand, danach alle 5 min).",
+    title = stringResource(R.string.banner_connecting_title),
+    text = stringResource(R.string.banner_connecting_text),
     busy = true,
-    badge = "VERBINDE" to BadgeState.WARN,
+    badge = stringResource(R.string.banner_connecting_badge) to BadgeState.WARN,
 )
 
 /**
@@ -968,20 +965,21 @@ private fun connectingVisual(): BannerVisual = BannerVisual(
  * sichtbar, der Banner sagt, was der Nutzer tun kann (generisch, ohne
  * private Daten).
  */
+@Composable
 private fun reconnectingVisual(ursache: String): BannerVisual {
     val hint = when {
         // Eigene RelayClient-Meldung (Termux-Revival-Auslösung).
         ursache.startsWith("Stack nicht erreichbar") ->
-            "Server nicht erreichbar — der Hilfsstack wird gestartet, weitere Versuche laufen automatisch."
+            stringResource(R.string.hint_stack_unreachable)
         else ->
-            "Server nicht erreichbar — neue Versuche laufen automatisch. URL in den Einstellungen prüfen, falls es dauerhaft nicht klappt."
+            stringResource(R.string.hint_retry_generic)
     }
     return BannerVisual(
         tint = FlipsiColors.SignalAmber,
-        title = "Verbinde …",
+        title = stringResource(R.string.banner_connecting_title),
         text = hint,
         busy = true,
-        badge = "VERBINDE" to BadgeState.WARN,
+        badge = stringResource(R.string.banner_connecting_badge) to BadgeState.WARN,
     )
 }
 
@@ -992,15 +990,16 @@ private fun reconnectingVisual(ursache: String): BannerVisual {
  * generischen Hinweis. Die Detailzeile der Verbindungskarte bleibt die
  * rohe Ursache-Auskunft für Fortgeschrittene.
  */
+@Composable
 private fun ursacheHinweis(ursache: String): String = when {
     ursache.startsWith("Server-Adresse ungültig") ->
-        "Server-Adresse ist ungültig — URL in den Einstellungen prüfen und erneut verbinden."
+        stringResource(R.string.hint_url_invalid)
     ursache.startsWith("Verbindungsfehler") ->
-        "Server nicht erreichbar — URL in den Einstellungen prüfen und Verbindung wiederherstellen."
+        stringResource(R.string.hint_connect_error)
     ursache.startsWith("Revival") ->
-        "Termux-Hilfsstack konnte nicht gestartet werden — Termux öffnen und die Erlaubnis dafür prüfen."
+        stringResource(R.string.hint_revival_failed)
     else ->
-        "Verbindung fehlgeschlagen — Server-Adresse prüfen und erneut verbinden."
+        stringResource(R.string.hint_connect_failed)
 }
 
 /** Schritt-Kennzeichnung — der Ablaufläufer: 1 = Code am Server, 2 = Verbinden. */
@@ -1046,17 +1045,17 @@ private fun ConnectionCard(
     // die frühere Text-Grep-Route („Verbinde"/„Neuverbindung") ist raus.
     val (dotColor, stateLabel) = when (state) {
         is BridgeStatus.ConnectionState.CONNECTED ->
-            FlipsiColors.SignalGreen to "Verbunden"
+            FlipsiColors.SignalGreen to stringResource(R.string.home_state_connected)
         is BridgeStatus.ConnectionState.PAIRING_BROKEN ->
-            FlipsiColors.SignalRed to "Kopplung nötig"
+            FlipsiColors.SignalRed to stringResource(R.string.home_state_pairing_needed)
         is BridgeStatus.ConnectionState.CONNECTING ->
-            FlipsiColors.SignalAmber to "Verbinde …"
+            FlipsiColors.SignalAmber to stringResource(R.string.home_state_connecting)
         is BridgeStatus.ConnectionState.RECONNECTING ->
-            FlipsiColors.SignalAmber to "Verbinde …"
+            FlipsiColors.SignalAmber to stringResource(R.string.home_state_connecting)
         is BridgeStatus.ConnectionState.FAILED ->
-            FlipsiColors.SignalAmber to "Getrennt"
+            FlipsiColors.SignalAmber to stringResource(R.string.home_state_disconnected)
         is BridgeStatus.ConnectionState.IDLE ->
-            FlipsiColors.SignalAmber to "Getrennt"
+            FlipsiColors.SignalAmber to stringResource(R.string.home_state_disconnected)
     }
     Card(
         colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
@@ -1077,7 +1076,7 @@ private fun ConnectionCard(
             // PH1-T3: Sichtbarkeit über den Zustand statt Text-Präfix-Check.
             if (state !is BridgeStatus.ConnectionState.CONNECTED) {
                 Text(
-                    message.ifBlank { "Zustand der Bridge" },
+                    message.ifBlank { stringResource(R.string.home_state_fallback) },
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(top = 4.dp),
@@ -1089,9 +1088,9 @@ private fun ConnectionCard(
                 onValueChange = onUrlChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("Server-Adresse") },
+                label = { Text(stringResource(R.string.conn_url_label_short)) },
                 // Bewusst generisch — keine private Domain im Quellcode (GitHub-Hygiene)!
-                placeholder = { Text("https://dein-relay.example") },
+                placeholder = { Text(stringResource(R.string.conn_url_placeholder)) },
             )
             Row(
                 Modifier.fillMaxWidth().padding(top = 12.dp),
@@ -1107,14 +1106,14 @@ private fun ConnectionCard(
                         disabledContainerColor = FlipsiColors.PanelElev,
                         disabledContentColor = FlipsiColors.TextSecondary,
                     ),
-                ) { Text("Verbinden") }
+                ) { Text(stringResource(R.string.conn_connect)) }
                 if (state is BridgeStatus.ConnectionState.CONNECTED) {
                     OutlinedButton(
                         onClick = onDisconnect,
                         modifier = Modifier.height(48.dp),
                         // Destruktive Aktion = kenntlich dezent rot
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.SignalRedText),
-                    ) { Text("Trennen", fontWeight = FontWeight.Medium) }
+                    ) { Text(stringResource(R.string.conn_disconnect), fontWeight = FontWeight.Medium) }
                 }
             }
         }
@@ -1134,9 +1133,9 @@ private fun PairingCard(
         shape = MaterialTheme.shapes.large,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Kopplungscode", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.pairing_card_title), fontWeight = FontWeight.SemiBold)
             Text(
-                "Authentifizierung: Bridge und App am Server.",
+                stringResource(R.string.pairing_card_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )
@@ -1145,10 +1144,10 @@ private fun PairingCard(
                 style = FlipsiType.Code,
                 modifier = Modifier
                     .padding(top = 10.dp)
-                    .clickable(onClickLabel = "Kopplungscode kopieren") { onCopy(code) },
+                    .clickable(onClickLabel = stringResource(R.string.pairing_copy_a11y)) { onCopy(code) },
             )
             Text(
-                "Nur ändern zusammen mit der Serverseite (neuer Code dort).",
+                stringResource(R.string.pairing_change_hint),
                 style = MaterialTheme.typography.labelSmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 6.dp),
@@ -1156,13 +1155,13 @@ private fun PairingCard(
             // Code-Ereignis = graue Info (Grün = NUR Erfolg, Rot = NUR Ablehnung)
             when (lastEvent) {
                 PairingManager.CodeEvent.RESTORED -> Text(
-                    "Speicher wurde geleert — Code automatisch wiederhergestellt (keine Aktion nötig)",
+                    stringResource(R.string.pairing_event_restored),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(top = 8.dp),
                 )
                 PairingManager.CodeEvent.REGENERATED -> Text(
-                    "Code ist neu — am Server eintragen (Banner oben zeigt den Schritt)",
+                    stringResource(R.string.pairing_event_regenerated),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(top = 8.dp),
@@ -1173,7 +1172,7 @@ private fun PairingCard(
                 onClick = onRegenerateRequest,
                 modifier = Modifier.padding(top = 10.dp).height(48.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-            ) { Text("Neuen Code erzeugen") }
+            ) { Text(stringResource(R.string.pairing_regen)) }
         }
     }
 }
@@ -1233,16 +1232,16 @@ private fun PermissionsSections(
         ) {
             Column(Modifier.fillMaxWidth()) {
                 Text(
-                    "Grundlage der Fernsteuerung",
+                    stringResource(R.string.perm_basis_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp),
                 )
                 PermissionRow(
                     iconRes = PermissionIcons.accessibility,
-                    title = "Eingabehilfe (Bedienung & Lesen)",
-                    description = "Fernbedienung, Screen-Abfragen, Texterkennung",
-                    badge = if (a11yOk) ("aktiv" to BadgeState.OK) else ("fehlt" to BadgeState.ERROR),
+                    title = stringResource(R.string.perm_a11y_row_title),
+                    description = stringResource(R.string.perm_a11y_row_desc),
+                    badge = if (a11yOk) (stringResource(R.string.badge_active) to BadgeState.OK) else (stringResource(R.string.badge_missing) to BadgeState.ERROR),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     // PH-7/PS-G-2 (play): prominente A11y-Disclosure + Consent
@@ -1253,16 +1252,16 @@ private fun PermissionsSections(
                                 listOf(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)),
                             )
                         ) {
-                            BridgeStatus.showText("Eingabehilfe-Einstellungen nicht erreichbar")
+                            BridgeStatus.showText(context.getString(R.string.perm_a11y_fallback))
                         }
                     }
                 }
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
                     iconRes = PermissionIcons.battery,
-                    title = "Akku: keine Einschränkung",
-                    description = "HAUPTGRUND für die stabile Verbindung — HyperOS/Doze dürfen die Brücke nicht stilllegen",
-                    badge = if (batteryOk) ("aktiv" to BadgeState.OK) else ("nötig" to BadgeState.WARN),
+                    title = stringResource(R.string.perm_battery_row_title),
+                    description = stringResource(R.string.perm_battery_row_desc),
+                    badge = if (batteryOk) (stringResource(R.string.badge_active) to BadgeState.OK) else (stringResource(R.string.badge_needed) to BadgeState.WARN),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     // PH-2X X-2: Akku-Weg über den OEM-Resolver — erster
@@ -1276,9 +1275,9 @@ private fun PermissionsSections(
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
                     iconRes = PermissionIcons.notifications,
-                    title = "Benachrichtigungen zeigen",
-                    description = "Damit Verbindungs-/Hinweis-Meldungen erscheinen (Android 13+)",
-                    badge = if (notificationsOk) ("aktiv" to BadgeState.OK) else ("fehlt" to BadgeState.ERROR),
+                    title = stringResource(R.string.perm_notifications_row_title),
+                    description = stringResource(R.string.perm_notifications_row_desc),
+                    badge = if (notificationsOk) (stringResource(R.string.badge_active) to BadgeState.OK) else (stringResource(R.string.badge_missing) to BadgeState.ERROR),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     if (!notificationsOk) onRequestNotifications()
@@ -1291,9 +1290,9 @@ private fun PermissionsSections(
                 // Leit-Zeile je OEM, KEIN Crash (K5/Play-Regel).
                 PermissionRow(
                     iconRes = PermissionIcons.autostart,
-                    title = "Autostart",
-                    description = "Damit die Brücke nach Handy-Neustart von allein startet — öffnet die Autostart-Freigabe deines Herstellers (${DeviceIntentResolver.currentProfile().oemLabel}).",
-                    badge = "prüfen" to BadgeState.WARN,
+                    title = stringResource(R.string.perm_autostart_row_title),
+                    description = stringResource(R.string.perm_autostart_row_desc, DeviceIntentResolver.currentProfile().oemLabel),
+                    badge = stringResource(R.string.badge_check) to BadgeState.WARN,
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     DeviceIntentResolver.launchFeature(context, activity, DeviceFeature.AUTOSTART) { hint ->
@@ -1309,16 +1308,16 @@ private fun PermissionsSections(
         ) {
             Column(Modifier.fillMaxWidth()) {
                 Text(
-                    "Daten & Anzeige",
+                    stringResource(R.string.perm_data_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(start = 16.dp, top = 16.dp),
                 )
                 PermissionRow(
                     iconRes = PermissionIcons.allFiles,
-                    title = "Alle Dateien zugreifen",
-                    description = "Voller Lese-/Schreibzugriff auf Downloads & Ordner",
-                    badge = if (allFilesOk) ("aktiv" to BadgeState.OK) else ("fehlt" to BadgeState.ERROR),
+                    title = stringResource(R.string.perm_files_row_title),
+                    description = stringResource(R.string.perm_files_row_desc),
+                    badge = if (allFilesOk) (stringResource(R.string.badge_active) to BadgeState.OK) else (stringResource(R.string.badge_missing) to BadgeState.ERROR),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     // PH-7/PS-G-2 (play): All-Files-Disclosure VOR dem Special-
@@ -1344,7 +1343,7 @@ private fun PermissionsSections(
                         )
                         if (!opened) {
                             BridgeStatus.showText(
-                                "Einstellung nicht erreichbar — bitte manuell: Einstellungen → Apps → FlipsiBridge → Berechtigungen",
+                                context.getString(R.string.perm_files_fallback),
                             )
                         }
                     }
@@ -1352,9 +1351,9 @@ private fun PermissionsSections(
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
                     iconRes = PermissionIcons.screenCapture,
-                    title = "Bildschirmaufnahme (MediaProjection)",
-                    description = "Der Android-Dialog erscheint pro Sitzung erneut",
-                    badge = if (recordOk) ("aktiv" to BadgeState.OK) else ("nicht aktiv" to BadgeState.OFF),
+                    title = stringResource(R.string.perm_record_row_title),
+                    description = stringResource(R.string.perm_record_row_desc),
+                    badge = if (recordOk) (stringResource(R.string.badge_active) to BadgeState.OK) else (stringResource(R.string.badge_not_active) to BadgeState.OFF),
                     onAction = PermissionAction.SettingsSprung,
                 ) {
                     if (!recordOk) onScreenRecord()
@@ -1362,15 +1361,15 @@ private fun PermissionsSections(
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
                     iconRes = PermissionIcons.health,
-                    title = "Health-Daten erlauben",
-                    description = "Health-Connect-Berechtigungen (Schritte/Puls/Schlaf …) — Capability wird mit angeschaltet",
+                    title = stringResource(R.string.perm_health_row_title),
+                    description = stringResource(R.string.perm_health_row_desc),
                     badge = when {
-                        !healthCapOn -> "Standard AUS" to BadgeState.OFF
-                        healthGrantState == null -> "prüfen" to BadgeState.WARN
-                        healthGrantState == -1 -> "Health Connect fehlt" to BadgeState.ERROR
+                        !healthCapOn -> stringResource(R.string.badge_health_default_off) to BadgeState.OFF
+                        healthGrantState == null -> stringResource(R.string.badge_check) to BadgeState.WARN
+                        healthGrantState == -1 -> stringResource(R.string.badge_health_missing) to BadgeState.ERROR
                         else -> {
                             val n = healthGrantState ?: 0
-                            "${n} / ${HealthDataBridge.readPermissions.size} Rechte" to
+                            stringResource(R.string.badge_health_rights, n, HealthDataBridge.readPermissions.size) to
                                 if (n == HealthDataBridge.readPermissions.size) BadgeState.OK else BadgeState.WARN
                         }
                     },
@@ -1385,9 +1384,9 @@ private fun PermissionsSections(
                 androidx.compose.material3.HorizontalDivider(color = FlipsiColors.LineStrong, modifier = Modifier.padding(start = 52.dp))
                 PermissionRow(
                     iconRes = PermissionIcons.overlay,
-                    title = "HUD-Overlay",
-                    description = "Kleines Status-Zeichen über allem (Optional)",
-                    badge = if (overlayOk) ("möglich" to BadgeState.OK) else ("fehlt" to BadgeState.OFF),
+                    title = stringResource(R.string.perm_overlay_row_title),
+                    description = stringResource(R.string.perm_overlay_row_desc),
+                    badge = if (overlayOk) (stringResource(R.string.badge_possible) to BadgeState.OK) else (stringResource(R.string.badge_missing) to BadgeState.OFF),
                     onAction = PermissionAction.Toggle(checked = overlayOk),
                     onToggle = { show ->
                         // PH-7/PS-G-2 (play): ehrliche HUD-Disclosure VOR dem
@@ -1439,9 +1438,9 @@ private fun AdvancedCard(configVersion: Int) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             PermissionRow(
                 iconRes = PermissionIcons.autostart,
-                title = "Termux-Wiederanlauf (Spezialfall)",
-                description = "Nur bei einem Termux-Hilfsstack am Gerät — standardmäßig AUS",
-                badge = if (enabled) ("AN" to BadgeState.OK) else ("AUS" to BadgeState.OFF),
+                title = stringResource(R.string.termux_title),
+                description = stringResource(R.string.termux_desc),
+                badge = if (enabled) (stringResource(R.string.badge_on) to BadgeState.OK) else (stringResource(R.string.badge_off) to BadgeState.OFF),
                 onAction = PermissionAction.Toggle(checked = enabled),
                 onToggle = { on ->
                     context.getSharedPreferences("hermes_bridge_prefs", Context.MODE_PRIVATE)
@@ -1450,7 +1449,7 @@ private fun AdvancedCard(configVersion: Int) {
                 },
             )
             Text(
-                "Wiederverbindungs-Schleife: 1–30 s Abstand, danach endlos alle 5 min mit Weckalarm. Bei Kopplungsproblemen stoppt die Schleife — keine Spam-Warnungen.",
+                stringResource(R.string.termux_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 8.dp),
@@ -1468,9 +1467,9 @@ private fun FooterCard() {
         shape = MaterialTheme.shapes.large,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Lokale Steuerung (USB/LAN)", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.footer_title), fontWeight = FontWeight.SemiBold)
             Text(
-                "http://$ip:8765 — nur im Heim-WLAN",
+                stringResource(R.string.footer_url, ip),
                 style = MaterialTheme.typography.bodySmall.copy(
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
                 ),
@@ -1478,7 +1477,7 @@ private fun FooterCard() {
                 modifier = Modifier.padding(top = 4.dp),
             )
             Text(
-                "Regelbetrieb läuft über den Relay-Server (oben) — damit der Agent auch unterwegs Zugriff hat.",
+                stringResource(R.string.footer_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -1503,9 +1502,11 @@ private fun localIpOf(context: Context): String {
  * behandelt — sie zeigt den Sektions-Pfad via SettingsNav, „Einstellungen › …“).
  * 0 = Home mit dem App-Namen; unbekannte Werte fallen darauf zurück.
  */
+@Composable
 private fun topBarTitle(route: Int): String = when (route) {
-    2 -> "Chat"
-    3 -> "Impressum & Datenschutz"
+    2 -> stringResource(R.string.common_chat)
+    3 -> stringResource(R.string.common_legal_title)
+    // 0 = Home; unbekannte Werte fallen auf den App-Namen zurück.
     else -> "FlipsiBridge"
 }
 
@@ -1591,14 +1592,14 @@ private fun MasterCompactCard(enabledCount: Int, totalCount: Int) {
                 ResourceIcon(GroupIcons.master, tint = FlipsiColors.TextSecondary, size = 20.dp)
                 Spacer(Modifier.width(12.dp))
                 Text(
-                    "Fähigkeiten des Agenten",
+                    stringResource(R.string.caps_section_title),
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )
                 CountBadge(enabled = enabledCount, total = totalCount, invasive = false)
             }
             Text(
-                "$enabledCount von $totalCount Fähigkeiten aktiv — ein- und ausschalten unter Einstellungen → Agenten.",
+                stringResource(R.string.caps_compact_desc, enabledCount, totalCount),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -1620,12 +1621,12 @@ private fun MtlsCard(configVersion: Int, activity: Activity?) {
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("mTLS-Zertifikat", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.mtls_title), fontWeight = FontWeight.SemiBold)
             Text(
                 if (configured)
-                    "Client-Zertifikat gewählt — die Verbindung legt es dem Relay vor."
+                    stringResource(R.string.mtls_configured)
                 else
-                    "Kein Client-Zertifikat gewählt. Nur nötig, wenn der Relay-Server Client-Zertifikate verlangt.",
+                    stringResource(R.string.mtls_not_configured),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -1635,12 +1636,12 @@ private fun MtlsCard(configVersion: Int, activity: Activity?) {
                     if (activity != null) {
                         MtlsSupport.chooseCertificate(activity)
                     } else {
-                        BridgeStatus.showText("Zertifikat-Auswahl hier nicht verfügbar")
+                        BridgeStatus.showText(context.getString(R.string.mtls_unavailable))
                     }
                 },
                 modifier = Modifier.padding(top = 10.dp).height(48.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-            ) { Text(if (configured) "Anderes Zertifikat wählen" else "Zertifikat wählen") }
+            ) { Text(if (configured) stringResource(R.string.mtls_choose_other) else stringResource(R.string.mtls_choose)) }
         }
     }
 }
@@ -1661,12 +1662,12 @@ private fun SelfUpdateCard() {
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text("Selbst-Update", fontWeight = FontWeight.SemiBold)
+            Text(stringResource(R.string.update_title), fontWeight = FontWeight.SemiBold)
             Text(
                 if (BuildConfig.FLAG_FULL_EDITION)
-                    "Sucht auf dem Relay nach einer neueren APK und zeigt den Installationsdialog (SHA-geprüft)."
+                    stringResource(R.string.update_github_desc)
                 else
-                    "Nur in der GitHub-Edition — die Play-Edition aktualisiert sich über den Play Store.",
+                    stringResource(R.string.update_play_desc),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
@@ -1687,7 +1688,7 @@ private fun SelfUpdateCard() {
                     disabledContainerColor = FlipsiColors.PanelElev,
                     disabledContentColor = FlipsiColors.TextSecondary,
                 ),
-            ) { Text("Nach Update suchen") }
+            ) { Text(stringResource(R.string.update_search)) }
         }
     }
 }
@@ -1710,13 +1711,14 @@ private fun CryptoSettingsCard() {
         // closed — CryptoEngine.xdhAvailable ist derselbe Feature-Check,
         // der auch den Handshake blockt). Warn-Zeile statt stiller Legacy-
         // Klartext-Läuferei.
-        E2eUi.settingsWarning(CryptoEngine.xdhAvailable)?.let { warning ->
+        // W15: Text als Ressource (DE/EN) statt E2eUi-Konstante.
+        if (!CryptoEngine.xdhAvailable) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = FlipsiColors.SignalRed.copy(alpha = 0.16f)),
                 shape = MaterialTheme.shapes.large,
             ) {
                 Text(
-                    warning,
+                    stringResource(R.string.e2e_xdh_unavailable),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.SignalRedText,
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -1742,7 +1744,7 @@ private fun CryptoSettingsCard() {
                     IconButton(onClick = { RelayClient.clearE2eBanner() }) {
                         Icon(
                             Icons.Filled.Close,
-                            contentDescription = "Hinweis schließen",
+                            contentDescription = stringResource(R.string.crypto_banner_close_a11y),
                             tint = FlipsiColors.SignalRedText,
                         )
                     }
@@ -1754,12 +1756,12 @@ private fun CryptoSettingsCard() {
             shape = MaterialTheme.shapes.large,
         ) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Text("Ende-zu-Ende-Verschlüsselung", fontWeight = FontWeight.SemiBold)
+                Text(stringResource(R.string.crypto_title), fontWeight = FontWeight.SemiBold)
                 Text(
                     if (e2eSessions.isEmpty())
-                        "Noch keine aktive E2E-Sitzung — der Handshake läuft beim Agenten-Verbinden automatisch."
+                        stringResource(R.string.crypto_no_session)
                     else
-                        "Aktive Sitzung je Agent: Fingerprints vergleichen (Chat → FP-Abgleich-Button).",
+                        stringResource(R.string.crypto_active_session),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(top = 4.dp),
@@ -1770,7 +1772,7 @@ private fun CryptoSettingsCard() {
                         color = FlipsiColors.LineStrong,
                     )
                     Text(
-                        "Sitzungs-Fingerprint (${session.agentId})",
+                        stringResource(R.string.crypto_session_fp, session.agentId),
                         style = MaterialTheme.typography.labelMedium,
                         color = FlipsiColors.TextSecondary,
                     )
@@ -1781,7 +1783,7 @@ private fun CryptoSettingsCard() {
                         modifier = Modifier.padding(top = 6.dp),
                     )
                     Text(
-                        "Agent-Identity-Fingerprint",
+                        stringResource(R.string.crypto_agent_fp),
                         style = MaterialTheme.typography.labelMedium,
                         color = FlipsiColors.TextSecondary,
                         modifier = Modifier.padding(top = 10.dp),
@@ -1792,7 +1794,7 @@ private fun CryptoSettingsCard() {
                         modifier = Modifier.padding(top = 6.dp),
                     )
                     Text(
-                        "Abgleich: im Chat den FP-Abgleich-Button tippen — der Agent bestätigt automatisch (✓ gleich / ✗ Abweichung = rot).",
+                        stringResource(R.string.crypto_compare_hint),
                         style = MaterialTheme.typography.labelSmall,
                         color = FlipsiColors.TextSecondary,
                         modifier = Modifier.padding(top = 8.dp),
@@ -1823,11 +1825,11 @@ private fun ChatScreenPlaceholder(padding: PaddingValues) {
 @Composable
 private fun LegalScreenPlaceholder(padding: PaddingValues) {
     ScreenPlaceholderBody(padding) {
-        SectionTitle("Impressum")
+        SectionTitle(stringResource(R.string.legal_imprint_title))
         LegalSectionCard()
-        SectionTitle("Datenschutz")
+        SectionTitle(stringResource(R.string.legal_privacy_title))
         LegalSectionCard()
-        SectionTitle("Nutzungsbedingungen")
+        SectionTitle(stringResource(R.string.legal_terms_title))
         LegalSectionCard()
     }
 }
@@ -1845,7 +1847,7 @@ private fun LegalSectionCard() {
     ) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(
-                "Inhalte folgen in Phase 8",
+                stringResource(R.string.legal_placeholder_title),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = FlipsiColors.TextSecondary,
@@ -1855,7 +1857,7 @@ private fun LegalSectionCard() {
                 color = FlipsiColors.LineStrong,
             )
             Text(
-                "Dieser Abschnitt wird mit den rechtlichen Angaben hinterlegt.",
+                stringResource(R.string.legal_placeholder_text),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )

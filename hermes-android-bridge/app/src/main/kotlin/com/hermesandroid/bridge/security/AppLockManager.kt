@@ -1,4 +1,5 @@
 package com.hermesandroid.bridge.security
+import com.hermesandroid.bridge.R
 
 import android.app.KeyguardManager
 import android.content.Context
@@ -119,10 +120,16 @@ class AndroidKeystoreEngine : LockCryptoEngine {
 }
 
 /** Auto-Sperr-Optionen (Settings, Gruppe 4). Default: 3 Minuten. */
-enum class AutoLockOption(val prefValue: String, val label: String, val millis: Long) {
-    AFTER_30_SECONDS("30s", "Nach 30 Sekunden", 30_000L),
-    AFTER_3_MINUTES("3m", "Nach 3 Minuten", 180_000L),
-    NEVER("never", "Nie", Long.MAX_VALUE),
+enum class AutoLockOption(
+    val prefValue: String,
+    @androidx.annotation.StringRes val labelRes: Int,
+    val millis: Long,
+) {
+    // W15 (I18n-Fix): Label als @StringRes statt hartkodiert — stringResource
+    // unter dem AppLanguageGate löst live in der App-Sprache auf (DE/EN).
+    AFTER_30_SECONDS("30s", R.string.lock_auto_30s, 30_000L),
+    AFTER_3_MINUTES("3m", R.string.lock_auto_3m, 180_000L),
+    NEVER("never", R.string.lock_auto_never, Long.MAX_VALUE),
 }
 
 /** Ergebnis eines PIN-Prüfungs-/Setzungs-Vorgangs für die UI-Texte. */
@@ -376,7 +383,10 @@ class AppLockManager internal constructor(
     @Suppress("DEPRECATION")
     fun deviceCredentialIntent(context: Context): Intent? = runCatching {
         val km = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
-        km?.createConfirmDeviceCredentialIntent("FlipsiBridge", "Geräte-Sperre bestätigen")
+        km?.createConfirmDeviceCredentialIntent(
+            "FlipsiBridge",
+            context.getString(R.string.lock_device_confirm),
+        )
     }.getOrNull()
 
     // ── Internes ───────────────────────────────────────────────────────────
