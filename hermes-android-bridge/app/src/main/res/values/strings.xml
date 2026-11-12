@@ -338,6 +338,24 @@
     <string name="dash_last_active">Zuletzt aktiv %1$s</string>
     <string name="dash_no_activity">Noch keine Aktivität</string>
     <string name="dash_working">arbeitet … (%1$s)</string>
+    <!-- W15c (Jäger B5/A): Dashboard-Labels als Ressourcen — DashboardRules
+         gibt LabelRes (R-Konstante + Args) zurück, die UI löst live auf.
+         Tage/Agenten-Zahlwörter sind Plural-Ressourcen („vor 1 Tag“/
+         „1 Agent“ bleibt Singular-richtig, DE wie EN). -->
+    <string name="dash_busy">Beschäftigt</string>
+    <string name="dash_just_now">gerade eben</string>
+    <string name="dash_minutes_ago">vor %1$d min</string>
+    <string name="dash_hours_ago">vor %1$d Std.</string>
+    <string name="dash_online_count">%1$d online</string>
+    <string name="dash_busy_count">%1$d beschäftigt</string>
+    <plurals name="dash_days_ago">
+        <item quantity="one">vor %1$d Tag</item>
+        <item quantity="other">vor %1$d Tagen</item>
+    </plurals>
+    <plurals name="dash_agent_count">
+        <item quantity="one">%1$d Agent</item>
+        <item quantity="other">%1$d Agenten</item>
+    </plurals>
     <string name="a11y_open_agent_chat">Chat mit %1$s öffnen</string>
     <string name="chat_list_search_hint">Agenten durchsuchen</string>
     <string name="chat_filter_all">Alle</string>

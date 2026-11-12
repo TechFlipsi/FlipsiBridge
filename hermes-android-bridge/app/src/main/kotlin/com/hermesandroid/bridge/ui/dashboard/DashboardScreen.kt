@@ -37,6 +37,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -98,9 +99,12 @@ fun DashboardScreen(
 
     // ── Live-Uhr: 1 s bei Beschäftigung, sonst 30 s (relative Zeiten) ───────
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    // W15c (KLEIN B): Online-Gate auch am Ticker — ein OFFLINE-Agent mit
+    // altem working-Frame zeigt nie eine Busy-Zeile (statusOf: Offline
+    // schlägt working), darf die 1-s-Uhr also auch nicht am Laufen halten.
     val anyBusy = agents.any { entry ->
         val w = agentWorking[entry.agentId]
-        w != null && w.working && !DashboardRules.workingTimedOut(w.startedAt, nowMs)
+        entry.online && w != null && w.working && !DashboardRules.workingTimedOut(w.startedAt, nowMs)
     }
     LaunchedEffect(anyBusy) {
         while (isActive) {
@@ -123,16 +127,25 @@ fun DashboardScreen(
 
         // ── Agenten-Slots (W15-Kern: wer arbeitet, woran) ────────────────────
         item(key = "agentsTitle") {
+            // W15c (Jäger B5/A): Zusammenfassung als LabelRes-Liste aus den
+            // Regeln — Auflösung erst HIER per stringResource/getQuantityString
+            // (kein deutsches Literal mehr im Rule-Code), Teile mit „ · “.
+            val summary = DashboardRules.summaryLine(
+                total = agents.size,
+                online = agents.count { it.online },
+                // W15c (KLEIN B): Busy-Zähler MIT Online-Gate — Offline schlägt
+                // working (statusOf-Regel), sonst zählt die Zeile Beschäftigte,
+                // die gar nicht arbeiten können.
+                busy = agents.count { entry ->
+                    val w = agentWorking[entry.agentId]
+                    entry.online && w != null && w.working &&
+                        !DashboardRules.workingTimedOut(w.startedAt, nowMs)
+                },
+            )
             SectionTitle(
                 stringResource(R.string.chat_list_title),
-                sub = DashboardRules.summaryLine(
-                    total = agents.size,
-                    online = agents.count { it.online },
-                    busy = agents.count { entry ->
-                        val w = agentWorking[entry.agentId]
-                        w != null && w.working && !DashboardRules.workingTimedOut(w.startedAt, nowMs)
-                    },
-                ).ifEmpty { stringResource(R.string.dash_agents_sub) },
+                sub = if (summary.isEmpty()) stringResource(R.string.dash_agents_sub)
+                else summary.map { labelRes(it) }.joinToString(" · "),
             )
         }
         if (agents.isEmpty()) {
@@ -173,6 +186,20 @@ fun DashboardScreen(
 }
 
 // ── Agenten-Slot ─────────────────────────────────────────────────────────────
+
+/**
+ * W15c (Jäger B5/A): LabelRes → Text — Strings per stringResource, Plural-
+ * Ressourcen (count != null) per getQuantityString (die Zahl ist zugleich
+ * die Mengen-Zahl). Auflösung erst bei der Anzeige: ein Sprachwechsel wirkt
+ * sofort, kein eingefrorener Text mehr (Muster wie SettingsNav.topBarPath).
+ */
+@Composable
+private fun labelRes(label: DashboardRules.LabelRes): String =
+    if (label.count != null)
+        LocalContext.current.resources
+            .getQuantityString(label.res, label.count, *label.args.toTypedArray())
+    else
+        stringResource(label.res, *label.args.toTypedArray())
 
 /**
  * EIN Agent-Slot: Avatar mit Anfangsbuchstaben (Zustandsfarbe), Name +
@@ -284,8 +311,15 @@ private fun AgentSlotCard(
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
+                    // W15c: relative Zeit kommt als LabelRes aus den Regeln —
+                    // Auflösung hier; ts <= 0 (kein brauchbarer Zeitstempel)
+                    // bleibt der ehrliche Em-dash, nie eine Fake-Uhrzeit.
                     if (lastEvent != null)
-                        stringResource(R.string.dash_last_active, DashboardRules.relativeTime(lastEvent.ts, nowMs))
+                        stringResource(
+                            R.string.dash_last_active,
+                            DashboardRules.relativeTime(lastEvent.ts, nowMs)
+                                ?.let { labelRes(it) } ?: "—",
+                        )
                     else
                         stringResource(R.string.dash_no_activity),
                     style = MaterialTheme.typography.labelSmall,
@@ -293,7 +327,12 @@ private fun AgentSlotCard(
                 )
             }
             Spacer(Modifier.width(10.dp))
-            StatusPill(label = DashboardRules.statusLabel(status), tint = tint, busy = status == DashboardRules.AgentStatus.BUSY)
+            StatusPill(
+                // W15c: Status-Wort als LabelRes — Auflösung hier (DE/EN live).
+                label = labelRes(DashboardRules.statusLabel(status)),
+                tint = tint,
+                busy = status == DashboardRules.AgentStatus.BUSY,
+            )
         }
     }
 }

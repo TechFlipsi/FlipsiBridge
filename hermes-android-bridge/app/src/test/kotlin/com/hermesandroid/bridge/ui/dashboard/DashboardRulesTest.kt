@@ -1,5 +1,6 @@
 package com.hermesandroid.bridge.ui.dashboard
 
+import com.hermesandroid.bridge.R
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -7,6 +8,11 @@ import org.junit.Test
  * W15 (Sir-Fixliste 9): Regeln des Status-Dashboards — Status-Ableitung
  * (Online/Beschäftigt/Offline inkl. 10-Minuten-Deckel), mm:ss-Live-Label,
  * relative Zeit der letzten Aktivität und die Zusammenfassungs-Zeile.
+ *
+ * W15c (Jäger B5/A): die Text-Funktionen geben LabelRes (R-Konstante +
+ * Args) zurück statt deutscher Literale — die Tests vergleichen die
+ * Verweise; die Worte leben in den values-Dateien (DE/EN, Strings +
+ * Plurals). R-Konstanten sind plain Ints — JVM-Test ohne Android-Laufzeit.
  */
 class DashboardRulesTest {
 
@@ -90,32 +96,75 @@ class DashboardRulesTest {
         assertEquals("10:00", DashboardRules.workingElapsedLabel(t0, t0 + 45 * 60_000L))
     }
 
-    // ── relativeTime ───────────────────────────────────────────────────────
+    // ── relativeTime (W15c: LabelRes je Zeit-Eimer) ──────────────────────────
 
     @Test
     fun relativeTimeBuckets() {
-        assertEquals("—", DashboardRules.relativeTime(0L, t0))
-        assertEquals("gerade eben", DashboardRules.relativeTime(t0 - 30_000L, t0))
-        assertEquals("vor 4 min", DashboardRules.relativeTime(t0 - 4 * 60_000L - 1_000L, t0))
-        assertEquals("vor 2 Std.", DashboardRules.relativeTime(t0 - 2 * 3_600_000L, t0))
-        assertEquals("vor 1 Tag", DashboardRules.relativeTime(t0 - 24 * 3_600_000L, t0))
-        assertEquals("vor 3 Tagen", DashboardRules.relativeTime(t0 - 3 * 24 * 3_600_000L, t0))
+        // ts <= 0 = kein brauchbarer Event → null (UI zeigt Em-dash).
+        assertEquals(null, DashboardRules.relativeTime(0L, t0))
+        assertEquals(
+            DashboardRules.LabelRes(R.string.dash_just_now),
+            DashboardRules.relativeTime(t0 - 30_000L, t0),
+        )
+        assertEquals(
+            DashboardRules.LabelRes(R.string.dash_minutes_ago, args = listOf(4)),
+            DashboardRules.relativeTime(t0 - 4 * 60_000L - 1_000L, t0),
+        )
+        assertEquals(
+            DashboardRules.LabelRes(R.string.dash_hours_ago, args = listOf(2)),
+            DashboardRules.relativeTime(t0 - 2 * 3_600_000L, t0),
+        )
+        // Tage = Plural-Ressource: „vor 1 Tag“ vs. „vor 3 Tagen“ (one/other).
+        assertEquals(
+            DashboardRules.LabelRes(R.plurals.dash_days_ago, count = 1, args = listOf(1)),
+            DashboardRules.relativeTime(t0 - 24 * 3_600_000L, t0),
+        )
+        assertEquals(
+            DashboardRules.LabelRes(R.plurals.dash_days_ago, count = 3, args = listOf(3)),
+            DashboardRules.relativeTime(t0 - 3 * 24 * 3_600_000L, t0),
+        )
     }
 
-    // ── summaryLine / agentCountLabel ──────────────────────────────────────
+    // ── summaryLine / agentCountLabel (W15c: LabelRes-Liste) ────────────────
 
     @Test
     fun summaryLineDropsEmptyPartsAndUsesSingular() {
-        assertEquals("", DashboardRules.summaryLine(total = 0, online = 0, busy = 0))
-        assertEquals("1 Agent", DashboardRules.summaryLine(total = 1, online = 0, busy = 0))
-        assertEquals("3 Agenten · 2 online · 1 beschäftigt",
-            DashboardRules.summaryLine(total = 3, online = 2, busy = 1))
-        assertEquals("2 Agenten · 2 online", DashboardRules.summaryLine(total = 2, online = 2, busy = 0))
+        assertEquals(
+            emptyList<DashboardRules.LabelRes>(),
+            DashboardRules.summaryLine(total = 0, online = 0, busy = 0),
+        )
+        // „1 Agent“: die Singular-Rettung lebt in der Plural-Ressource (one).
+        assertEquals(
+            listOf(DashboardRules.LabelRes(R.plurals.dash_agent_count, count = 1, args = listOf(1))),
+            DashboardRules.summaryLine(total = 1, online = 0, busy = 0),
+        )
+        assertEquals(
+            listOf(
+                DashboardRules.LabelRes(R.plurals.dash_agent_count, count = 3, args = listOf(3)),
+                DashboardRules.LabelRes(R.string.dash_online_count, args = listOf(2)),
+                DashboardRules.LabelRes(R.string.dash_busy_count, args = listOf(1)),
+            ),
+            DashboardRules.summaryLine(total = 3, online = 2, busy = 1),
+        )
+        // 0 beschäftigt → Teil entfällt (nur ehrliche Teile).
+        assertEquals(
+            listOf(
+                DashboardRules.LabelRes(R.plurals.dash_agent_count, count = 2, args = listOf(2)),
+                DashboardRules.LabelRes(R.string.dash_online_count, args = listOf(2)),
+            ),
+            DashboardRules.summaryLine(total = 2, online = 2, busy = 0),
+        )
     }
 
     @Test
     fun agentCountSingularAndPlural() {
-        assertEquals("1 Agent", DashboardRules.agentCountLabel(1))
-        assertEquals("5 Agenten", DashboardRules.agentCountLabel(5))
+        assertEquals(
+            DashboardRules.LabelRes(R.plurals.dash_agent_count, count = 1, args = listOf(1)),
+            DashboardRules.agentCountLabel(1),
+        )
+        assertEquals(
+            DashboardRules.LabelRes(R.plurals.dash_agent_count, count = 5, args = listOf(5)),
+            DashboardRules.agentCountLabel(5),
+        )
     }
 }

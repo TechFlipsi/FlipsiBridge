@@ -348,6 +348,24 @@
     <string name="dash_last_active">Last active %1$s</string>
     <string name="dash_no_activity">No activity yet</string>
     <string name="dash_working">working … (%1$s)</string>
+    <!-- W15c (hunter B5/A): dashboard labels as resources — DashboardRules
+         returns LabelRes (R constant + args), the UI resolves them live.
+         Days/agent counts are plural resources (“1 day ago”/“1 agent”
+         stays correct in singular, DE and EN alike). -->
+    <string name="dash_busy">Busy</string>
+    <string name="dash_just_now">just now</string>
+    <string name="dash_minutes_ago">%1$d min ago</string>
+    <string name="dash_hours_ago">%1$d h ago</string>
+    <string name="dash_online_count">%1$d online</string>
+    <string name="dash_busy_count">%1$d busy</string>
+    <plurals name="dash_days_ago">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <plurals name="dash_agent_count">
+        <item quantity="one">%1$d agent</item>
+        <item quantity="other">%1$d agents</item>
+    </plurals>
     <string name="a11y_open_agent_chat">Open chat with %1$s</string>
     <string name="chat_list_search_hint">Search agents</string>
     <string name="chat_filter_all">All</string>
