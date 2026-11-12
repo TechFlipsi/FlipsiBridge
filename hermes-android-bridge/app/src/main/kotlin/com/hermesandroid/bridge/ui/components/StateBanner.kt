@@ -48,7 +48,11 @@ fun StateBanner(
         Column(
             Modifier
                 .fillMaxWidth()
-                .background(tint.copy(alpha = 0.14f))
+                // W15c (KLEIN A, Jäger): Tint-Fläche MIT Form — ohne shape
+                // läuft der 14%-Hintergrund als Rechteck hart über die Karten-
+                // Rundung (die Card-Ecken blitzen durch), MaterialTheme.shapes
+                // .large hält die Fläche in der Karten-Silhouette.
+                .background(tint.copy(alpha = 0.14f), MaterialTheme.shapes.large)
                 .padding(14.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

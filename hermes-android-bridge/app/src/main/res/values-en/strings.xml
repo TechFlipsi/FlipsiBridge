@@ -308,6 +308,13 @@
     <string name="perm_overlay_row_desc">Small status sign above everything (optional)</string>
     <string name="health_missing_title">Health Connect missing</string>
     <string name="health_missing_text">Health Connect is not installed or not active on this device. After installing it from the Play Store, tap the “Allow health data” row again.</string>
+    <!-- W15c (MIT, hunter finding): Health rationale texts moved from the
+         activity into resources — resolved live under the AppLanguageGate. -->
+    <string name="health_rationale_title">Why FlipsiBridge reads health data</string>
+    <string name="health_rationale_intro">FlipsiBridge is the bridge for my voice assistant — the agent with its own server. From Health Connect it may — ONLY with my consent here in Health Connect — READ these values: steps, distance, calories burned, heart rate, sleep and weight.</string>
+    <string name="health_rationale_usage">The data feeds the daily overview (e.g. report pulse, steps over the day, sleep window). Nothing is WRITTEN to Health Connect, nothing is deleted without permission, no data sharing with third parties — the server runs in the home network.</string>
+    <string name="health_rationale_change">Change anytime: Health Connect → Data and access → FlipsiBridge → toggle each permission on/off.</string>
+    <string name="health_rationale_ok">Got it</string>
     <string name="health_update_title">Health Connect outdated</string>
     <string name="health_update_text">The Health Connect component needs an update (Play Store). Then try again.</string>
     <string name="health_denied_title">No health permissions granted</string>

@@ -33,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.BuildConfig
@@ -286,6 +287,12 @@ private fun RelayProfileRow(
                     profile.label,
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
+                    // W15c (KLEIN A, Jäger): Name + Chip teilen sich die Zeile —
+                    // ein langer Profil-Name drückte den Chip raus (kein
+                    // weight, Row lief über). maxLines=1 + Ellipsis halten
+                    // die Zeile einzeilig ehrlich.
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.padding(start = 10.dp, end = 8.dp),
                 )
                 Text(
@@ -304,6 +311,11 @@ private fun RelayProfileRow(
             Text(
                 profile.url,
                 style = FlipsiType.Code,
+                // W15c (KLEIN A, Jäger): lange Server-URLs liefen als
+                // Mehrzeiler in die Karte — maxLines=1 + Ellipsis (die volle
+                // URL bleibt im Bearbeiten-Dialog sichtbar).
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 8.dp),
             )
             LetztVerbundenRow(profile.lastConnectedMs)

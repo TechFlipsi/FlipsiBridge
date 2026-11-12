@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -684,7 +685,11 @@ private fun OnbLanguageTile(
         ),
         shape = MaterialTheme.shapes.large,
         modifier = modifier
-            .height(72.dp)
+            // W15c (KLEIN A, Jäger): heightIn statt height — die Sprach-Kachel
+            // war auf exakt 72 dp NAGELT; mit großer Systemschrift (Schrift-
+            // Skalierung) floss der Inhalt über. min = Grundgröße bleibt,
+            // mehr Inhalt darf die Kachel wachsen lassen.
+            .heightIn(min = 72.dp)
             .then(
                 if (selected) {
                     Modifier.border(2.dp, FlipsiColors.Ember, MaterialTheme.shapes.large)

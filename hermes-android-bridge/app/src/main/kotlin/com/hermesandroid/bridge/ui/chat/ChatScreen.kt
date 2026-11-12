@@ -413,17 +413,22 @@ fun ChatScreen(
     // W15 (Sir-Fixliste 9): Dashboard-Tap auf einen Agenten-Slot → direkt
     // die Conversation dieses Agenten öffnen (echte Relay-IDs matchen; der
     // Demo-Fallback hat leere agentId und matcht bewusst nie). onOpenedAgent
-    // räumt den Pending-Merker sofort ab → der nächste Tab-Besuch startet
-    // wieder normal auf der Liste. Eingabe/Zitat starten je Conversation neu
+    // räumt den Pending-Merker ab → der nächste Tab-Besuch startet wieder
+    // normal auf der Liste. Eingabe/Zitat starten je Conversation neu
     // (gleicher Verband wie der normale Listen-Tap).
+    // W15c (KLEIN B, Jäger): onOpenedAgent NUR bei echtem Match — vorher
+    // verbrannte der Aufruf den Pending-Merker AUCH ohne Treffer, der Tap
+    // versprach also eine Conversation und lief ins Leere. Ohne Match bleibt
+    // der Merker bewusst stehen (der nächste Tab-Besuch startet dann MIT
+    // der Öffnung statt auf der Liste — bewusst, kein Verlust des Taps).
     LaunchedEffect(openAgentId) {
         if (openAgentId != null) {
             agents.firstOrNull { it.agentId == openAgentId }?.let { match ->
                 selectedAgentId = match.id
                 inputText = ""
                 replyQuote = null
+                onOpenedAgent()
             }
-            onOpenedAgent()
         }
     }
 
