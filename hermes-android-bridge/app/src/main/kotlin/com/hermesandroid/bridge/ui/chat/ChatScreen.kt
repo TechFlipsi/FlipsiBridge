@@ -1548,7 +1548,27 @@ private fun ConversationHeader(
                 start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp,
             ),
         ) {
-            Text("FP-Abgleich", style = MaterialTheme.typography.labelSmall)
+            // W13-SENDFIX (Komposer-Meta-Reihe-Render-Bug): Label NIE
+            // umbrechen lassen. Auf schmalen Flächen (Drill-Emulator =
+            // sw262dp/440dpi) läuft die Kopf-Zeile über — die festen Kinder
+            // vor dem Knopf fressen die Breite, der FP-Knopf als LETZTES
+            // Row-Kind bekommt ~0 px Breite, und der auf 11 Zeilen umbrochene
+            // Label blähte den Knopf auf exakt 184 dp (506 px = 11 Zeilen
+            // labelSmall) auf. Die Kopf-Zeile wuchs damit auf ~192 dp und
+            // stahl der Column den Platz: Nachrichten-Box (weight 1f) = 0 px,
+            // InputBar-Box nur noch ~280 px — das Pill-Panel (.clip!) schnitt
+            // die Meta-Reihe (Anhang/Modell-Chip/Mikro/Send-Kreis) unterhalb
+            // der Panel-Grenze weg: A11y-Geistknoten ohne Pixel, Send-Tap
+            // scheinbar tot, Relay 0× POST /chat. Einzeilig bleibt der
+            // Knopf ~40 dp hoch — das Layout heilt sich komplett (Panel
+            // wieder 114 dp, Meta-Reihe sichtbar). Kein Feature-Rewrite:
+            // Verhalten auf breiten Flächen (Sirs Handy, sw360dp) unberührt.
+            Text(
+                "FP-Abgleich",
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                softWrap = false,
+            )
         }
     }
 }
