@@ -215,7 +215,7 @@ object MtlsSupport {
         }
 
         /** PKCS#10-CSR hand-codieren (DER, EC+SHA256, kein BouncyCastle-Dep). */
-        private fun buildCsr(cn: String, keyPair: java.security.KeyPair): ByteArray {
+        private fun buildCsrDer(cn: String, keyPair: java.security.KeyPair): ByteArray {
             val spki = keyPair.public.encoded // X.509 SubjectPublicKeyInfo (DER)
             val cnSeq = Der.seq(Der.oid("2.5.4.3") + Der.utf8(cn))
             val name = Der.seq(cnSeq)
@@ -229,6 +229,18 @@ object MtlsSupport {
             signer.update(tbs)
             val sig = signer.sign()
             return Der.seq(tbs + alg + Der.bitString(sig))
+        }
+
+        /** Roh-DER-CSR in PEM einpacken (Relay-Ketten = openssl-Pfad PEM). */
+        private fun pemFromDer(der: ByteArray): String {
+            val b64 = Base64.getEncoder().encodeToString(der)
+            val sb = StringBuilder("-----BEGIN CERTIFICATE REQUEST-----\n")
+            for (i in 0 until b64.length step 64) {
+                val end = minOf(i + 64, b64.length)
+                sb.append(b64, i, end).append('\n')
+            }
+            sb.append("-----END CERTIFICATE REQUEST-----")
+            return sb.toString()
         }
 
         /**
@@ -261,11 +273,11 @@ object MtlsSupport {
                     signer.initSign(kp.private)
                     signer.update(nonce.toByteArray(Charsets.UTF_8))
                     val popSig = signer.sign()
-                    val csr = buildCsr("flipsibridge-$devId", kp)
+                    val csrPem = pemFromDer(buildCsrDer("flipsibridge-$devId", kp))
                     // 3) Enrollment
                     val payload = org.json.JSONObject()
                         .put("device_id", devId)
-                        .put("csr", Base64.getEncoder().encodeToString(csr))
+                        .put("csr", csrPem)
                         .put("sig", Base64.getEncoder().encodeToString(popSig))
                         .put("nonce", nonce)
                     val req2 = Request.Builder()

@@ -212,7 +212,9 @@ def _csr_pubkey_verify_pop(csr_pem: bytes, nonce: str, sig_b64: str) -> Tuple[bo
     if not (48 <= len(sig) <= 512):
         return False, f"sig-laenge/{len(sig)}"
     nonce_bytes = nonce.encode("utf-8")
-    ok, pub, err = _openssl(["req", "-pubkey", "-noout"], data=csr_pem)
+    is_pem = b"-----BEGIN" in csr_pem
+    req_args = ["req", "-pubkey", "-noout"] + ([] if is_pem else ["-inform", "DER"])
+    ok, pub, err = _openssl(req_args, data=csr_pem)
     if not ok:
         return False, f"pubkey-extract: {err.strip()[:120]}"
     pub_pem = pub
@@ -252,10 +254,13 @@ def _sign_csr(csr_pem: bytes, device_id: str) -> Optional[bytes]:
         _td, ca_key, ca_crt, _rg, _ds = _tls_paths()
         csrp = os.path.join(d, "device.csr")
         outp = os.path.join(d, "device.crt")
+        inform = []
+        if b"-----BEGIN" not in csr_pem:
+            inform = ["-inform", "DER"]
         Path(csrp).write_bytes(csr_pem)
         serial = secrets.token_hex(8)
         ok, _, err = _openssl(
-            ["x509", "-req", "-in", csrp, "-CA", str(ca_crt),
+            ["x509", "-req", *inform, "-in", csrp, "-CA", str(ca_crt),
              "-CAkey", str(ca_key), "-sha256", "-days", str(_CERT_DAYS),
              "-out", outp,
              "-set_serial", f"0x{serial}",
