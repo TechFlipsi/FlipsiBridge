@@ -276,8 +276,20 @@ def JSON_RESPONSE(payload, status: int = 200):
 
 
 def _relay_state():
-    import android_relay as _ar
+    try:
+        import android_relay as _ar  # Flat-Lauf (direkter Modul-Import)
+    except ImportError:
+        from tools import android_relay as _ar  # Daemon: Package-Weg
     return getattr(_ar, "_relay_instance", None)
+
+
+def _ar_module():
+    try:
+        import android_relay as _ar
+        return _ar
+    except ImportError:
+        from tools import android_relay as _ar
+        return _ar
 
 
 async def challenge_handler(request):
@@ -287,7 +299,7 @@ async def challenge_handler(request):
     remote_ip = request.remote or "?"
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
-    import android_relay as _ar
+    _ar = _ar_module()
     if not _ar._constant_time_eq(token, state.pairing_code):
         _ar._auth_record_failure(remote_ip)
         return JSON_RESPONSE({"error": "auth"}, status=401)
@@ -311,7 +323,7 @@ async def enroll_handler(request):
     remote_ip = request.remote or "?"
     auth_header = request.headers.get("Authorization", "")
     token = auth_header.removeprefix("Bearer ").strip() if auth_header.startswith("Bearer ") else ""
-    import android_relay as _ar
+    _ar = _ar_module()
     if not _ar._constant_time_eq(token, state.pairing_code):
         _ar._auth_record_failure(remote_ip)
         return JSON_RESPONSE({"error": "auth"}, status=401)
