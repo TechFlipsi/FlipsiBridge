@@ -106,6 +106,12 @@ def init() -> bool:
             ok, _, err = _openssl(["x509", "-in", str(ca_crt), "-noout"], timeout=10)
             if not ok:
                 raise RuntimeError(f"CA-Cert unlesbar: {err.strip()[:200]}")
+            # FIX-6 (W16.3, fail-early): Schreibprobe ins devices-Verzeichnis — ein
+            # read-only TLS-Dir (systemd ProtectSystem=full) macht Enrollment sonst
+            # erst IM Handshake kaputt (500). Routen bleiben dann OFF mit klarer Meldung.
+            probe = devices_sub / ".write-probe"
+            probe.write_bytes(b"ok")
+            probe.unlink(missing_ok=True)
             _registry_load()  # defekte Registry reparieren (leer + Backup)
             _INIT_STATE["ready"] = True
             logger.info("mtls_enroll: Device-CA aktiv (%s)", ca_crt)
@@ -371,9 +377,20 @@ async def enroll_handler(request):
     cert_path = devices_sub / (device_id + ".pem")
     if len(cert_pem) < 400 or b"BEGIN CERTIFICATE" not in cert_pem:
         return JSON_RESPONSE({"error": "cert-shape"}, status=500)
-    devices_sub.mkdir(parents=True, exist_ok=True)
-    cert_path.write_bytes(cert_pem)
-    cert_path.chmod(0o644)
+    # FIX-6 (W16.3): Read-only-Filesystem (z. B. systemd ProtectSystem=full) →
+    # klare 500 statt rohem Traceback. Abhilfe am Host: ReadWritePaths=/etc/flipsibridge/tls
+    try:
+        devices_sub.mkdir(parents=True, exist_ok=True)
+        cert_path.write_bytes(cert_pem)
+        cert_path.chmod(0o644)
+    except OSError as exc:
+        logger.error(
+            "mtls_enroll: TLS-Verzeichnis nicht schreibbar (%s). systemd-Hardening? "
+            "ReadWritePaths auf das CA-Verzeichnis setzen (%s).", exc, tls_dir)
+        return JSON_RESPONSE(
+            {"error": "tls-dir-readonly",
+             "hint": "Server: TLS-Verzeichnis nicht schreibbar (systemd ProtectSystem) "
+                     "— ReadWritePaths setzen."}, status=500)
 
     reg.setdefault("epoch", 1)
     enrolled[device_id] = {
