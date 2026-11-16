@@ -225,7 +225,9 @@ object MtlsSupport {
             // SignaturAlgorithmus: id-ecdsa-with-sha256 (1.2.840.10045.4.3.2)
             val alg = Der.seq(Der.oid("1.2.840.10045.4.3.2"))
             val tbs = Der.seq(
-                Der.integer(0) + name + spki + Der.cnContext(0, Der.seq(ByteArray(0))),
+                // PKCS#10-Attributes = [0] IMPLICIT-LEER (0xA0 0x00) —
+                // die explicit-Form [0]{SEQ{}} frisst openssl (deleg_50e5fdf6).
+                Der.integer(0) + name + spki + Der.cnContext(0, ByteArray(0)),
             )
             val signer = Signature.getInstance("SHA256withECDSA")
             signer.initSign(keyPair.private)
@@ -234,17 +236,6 @@ object MtlsSupport {
             return Der.seq(tbs + alg + Der.bitString(sig))
         }
 
-        /** Roh-DER-CSR in PEM einpacken (Relay-Ketten = openssl-Pfad PEM). */
-        private fun pemFromDer(der: ByteArray): String {
-            val b64 = Base64.getEncoder().encodeToString(der)
-            val sb = StringBuilder("-----BEGIN CERTIFICATE REQUEST-----\n")
-            for (i in 0 until b64.length step 64) {
-                val end = minOf(i + 64, b64.length)
-                sb.append(b64, i, end).append('\n')
-            }
-            sb.append("-----END CERTIFICATE REQUEST-----")
-            return sb.toString()
-        }
 
         /**
          * Komplett-Enrollment: Keygen → Nonce → PoP + CSR → cert_pem speichern.
@@ -276,11 +267,12 @@ object MtlsSupport {
                     signer.initSign(kp.private)
                     signer.update(nonce.toByteArray(Charsets.UTF_8))
                     val popSig = signer.sign()
-                    val csrPem = pemFromDer(buildCsrDer("flipsibridge-$devId", kp))
+                    val csrDer = buildCsrDer("flipsibridge-$devId", kp)
                     // 3) Enrollment
                     val payload = org.json.JSONObject()
                         .put("device_id", devId)
-                        .put("csr", csrPem)
+                        // Bewiesene Relay-Form (deleg_50e5fdf6): b64(DER), PEM-Text weglassen
+                        .put("csr", Base64.getEncoder().encodeToString(csrDer))
                         .put("sig", Base64.getEncoder().encodeToString(popSig))
                         .put("nonce", nonce)
                     val req2 = Request.Builder()
