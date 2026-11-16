@@ -89,7 +89,6 @@
     <string name="about_sheet_title">About FlipsiBridge</string>
     <string name="about_version_label">Version</string>
     <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
-    <string name="about_open_legal_full">App info: legal (full view)</string>
 
     <!-- Wave 13 / P12: appearance (color customizer) -->
     <string name="settings_appearance_title">Appearance</string>
@@ -352,8 +351,6 @@
     <string name="crypto_agent_fp">Agent identity fingerprint</string>
     <string name="crypto_compare_hint">Check: tap the fingerprint-check button in the chat — the agent confirms automatically (✓ match / ✗ mismatch = red).</string>
     <string name="crypto_banner_close_a11y">Close notice</string>
-    <string name="legal_placeholder_title">Content will follow</string>
-    <string name="legal_placeholder_text">This section will be filled with the legal information.</string>
     <string name="chat_list_title">Agents</string>
     <string name="chat_list_title_sub">Direct chat with the paired agents — live via the relay.</string>
     <string name="dash_agents_sub">Live status of the paired agents.</string>
@@ -534,6 +531,7 @@
     <string name="chat_menu_design">Chat design</string>
     <string name="chat_menu_model">Model &amp; thinking</string>
     <string name="chat_menu_mediathek">Open media gallery</string>
+    <string name="chat_menu_fp">FP check</string>
     <string name="chat_menu_delete">Delete chat</string>
     <string name="agent_avatar_a11y">Agent profile picture</string>
     <string name="agent_avatar_change">Change profile picture</string>

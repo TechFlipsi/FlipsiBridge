@@ -1290,7 +1290,15 @@ fun ChatInputBar(
                     cursorBrush = SolidColor(FlipsiColors.Ember),
                     maxLines = 4,
                     decorationBox = { innerTextField ->
-                        Box {
+                        // W16.1 (Fixliste 37): Hinweis UND getippter Text sitzen
+                        // vertikal MITTIG in der Pill — vorher top-bündig im
+                        // 48dp-Feld („weiter oben“-Optik, Sir). Die min-Höhe
+                        // bleibt hier statt am Kern, contentAlignment zentriert
+                        // den Inhalt je Zeilenzahl (1 Zeile = mittig, mehr = füllt).
+                        Box(
+                            modifier = Modifier.heightIn(min = 48.dp),
+                            contentAlignment = Alignment.CenterStart,
+                        ) {
                             if (value.isEmpty()) {
                                 Text(
                                     if (voiceRecording) stringResource(R.string.chat_input_hint_recording)

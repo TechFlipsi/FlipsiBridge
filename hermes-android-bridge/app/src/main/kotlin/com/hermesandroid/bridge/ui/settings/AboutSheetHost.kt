@@ -3,20 +3,14 @@ package com.hermesandroid.bridge.ui.settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.KeyboardArrowRight
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,9 +39,10 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  *  - Rechtliches: die drei legal_*-Expander (Impressum/Datenschutz/Nutzung)
  *    mit dem GLEICHEN Inhalt wie die ehemalige Karte — die Rechtstexte leben
  *    als legal_*-Keys in strings.xml (eine Quelle, keine zwei Wahrheiten).
- *  - Route 3 (LegalScreenPlaceholder) bleibt als TIEFE vom Sheet erreichbar
- *    ([AboutState.requestLegalDepth] → BridgeScreen konsumiert und setzt
- *    Route 3); die Tiefe zeigt zusätzlich die Version (P20).
+ *  - W16.1 (P38, Sir): die Route-3-Vollansicht ist VOLL ENTFERNT („komplett
+ *    raus“) — das Sheet ist der EINE Ort für Version + Rechtstexte; der
+ *    Tiefen-Sprung samt LegalScreenPlaceholder (nur Platzhalterkarten)
+ *    existiert nicht mehr.
  */
 object AboutState {
 
@@ -55,28 +50,13 @@ object AboutState {
     var sheetOpen by mutableStateOf(false)
         private set
 
-    /** Einmal-Merker: Volltext-Tiefe (Route 3) aus dem Sheet anfordern. */
-    var legalDepthRequest by mutableStateOf(false)
-        private set
-
     /** Von der ℹ️-TopBar-Action aufzurufen. */
     fun open() {
         sheetOpen = true
     }
 
-    /** Vom „Rechtliches“-Eintrag im Sheet aufzurufen (Tiefe Route 3). */
     fun close() {
         sheetOpen = false
-    }
-
-    fun requestLegalDepth() {
-        sheetOpen = false
-        legalDepthRequest = true
-    }
-
-    /** BridgeScreen konsumiert den Merker direkt nach dem Routen-Wechsel. */
-    fun consumeLegalDepth() {
-        legalDepthRequest = false
     }
 }
 
@@ -98,8 +78,10 @@ fun AboutSheetHost() {
 
 /**
  * Inhalt des About-Sheets (ehemals SettingsHome.AboutSheetContent): App-Name,
- * Tagline, Version „vX.Y.Z“ (Editions-Suffix fällt weg — AboutInfo), die drei
- * Rechtliches-Expander und der Tiefe-Sprung zur Vollansicht (Route 3).
+ * Tagline, Version „vX.Y.Z“ (Editions-Suffix fällt weg — AboutInfo) und die
+ * drei Rechtliches-Expander. W16.1 (P38): KEIN Tiefe-Sprung mehr — das Sheet
+ * ist der einzige Ort (Sir: „Vollansicht komplett raus“; dort standen zudem
+ * nur die Phase-8-Platzhalterkarten statt echter Texte).
  */
 @Composable
 private fun AboutSheetContent() {
@@ -141,21 +123,10 @@ private fun AboutSheetContent() {
         LegalExpander(titleRes = R.string.legal_imprint_title, bodyRes = R.string.legal_imprint_body)
         LegalExpander(titleRes = R.string.legal_privacy_title, bodyRes = R.string.legal_privacy_body)
         LegalExpander(titleRes = R.string.legal_terms_title, bodyRes = R.string.legal_terms_body)
-        // P27-Tiefe: Route 3 (Vollansicht mit Version). Kein toter Code-Faden:
-        // der Merker wird im BridgeScreen konsumiert (LaunchedEffect → route=3).
-        TextButton(onClick = { AboutState.requestLegalDepth() }) {
-            Icon(
-                Icons.Outlined.KeyboardArrowRight,
-                contentDescription = null,
-                tint = FlipsiColors.Ember,
-            )
-            Spacer(Modifier.width(4.dp))
-            Text(
-                stringResource(R.string.about_open_legal_full),
-                color = FlipsiColors.Ember,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
+        // W16.1 (P38): der frühere „Über die App: Rechtliches (Vollansicht)"-
+        // Sprung (requestLegalDepth → Route 3) ist ENTFERNT — hinter der Tiefe
+        // standen ausschließlich die Phase-8-Platzhalterkarten, während die
+        // echten Rechtstexte bereits HIER im Sheet lagen (Doppel + tote Inhalte).
     }
 }
 

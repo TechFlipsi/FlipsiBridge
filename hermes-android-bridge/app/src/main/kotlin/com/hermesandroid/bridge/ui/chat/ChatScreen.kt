@@ -47,7 +47,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -73,7 +72,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.R
@@ -2000,9 +1998,9 @@ private fun ConversationBody(
  * läuft sekündlich ab started_at (Empfang beim Agenten) hoch.
  * W4-B (Chat-Suche): Magnifier-Knopf am Chat-Kopf → Suchleiste + Treffer-
  * Liste + Sprung-Anker (ChatSearchRules/ConversationBody); der Knopf toggelt
- * (Suchleiste offen = Schließen-Semantik, A11y je Zustand). W16 (Fixliste
- * 28): im Suchmodus blendet der FP-Abgleich-Button aus (reduzierte Such-
- * Ansicht); der Header bleibt als Kontext-Zeile (wer der Chat ist).
+ * (Suchleiste offen = Schließen-Semantik, A11y je Zustand). W16.1 (Fixliste
+ * 36): der FP-Abgleich lebt als Eintrag im ⋮-Menü (Kopf-Button entfernt,
+ * KEIN DOPPEL); der Header bleibt als Kontext-Zeile (wer der Chat ist).
  * W16 (Fixliste 32): im Mediathek-Modus ruht die Verlaufssuche (Suchleiste
  * lebt nur im Chat-Zweig) → der Magnifier entfällt dort.
  */
@@ -2125,11 +2123,13 @@ private fun ConversationHeader(
                 color = FlipsiColors.Ember,
             )
         }
-        // PH-3 Welle 2 (Sirs Revision (iii)): FP-Abgleich-Button im Chat —
-        // sendet 'FP-ABGLEICH: <hex>' als normale (verschlüsselte) Nachricht;
-        // der Agent antwortet automatisch ✓ gleich / ✗ ABWEICHUNG (rot-Banner).
-        // W16-P32-Fix: der Platzhalter-Spacer ist GESCHWUNDEN — die gewichtete
-        // Titel-Zeile drückt alle Aktionen nach rechts (kein Clip mehr am ⋮).
+        // W16.1 (Fixliste 36): der FP-Abgleich-Button lebt NICHT mehr in der
+        // Kopf-Zeile — er ist Eintrag im ⋮-Menü (derselbe onFpCheck-Callback,
+        // sendet 'FP-ABGLEICH: <hex>' als verschlüsselte Nachricht; Agent
+        // antwortet automatisch ✓ gleich / ✗ ABWEICHUNG als rot-Banner).
+        // KEIN-DOPPEL: der alte Kopf-Button ist ENTFERNT (nicht nur versteckt);
+        // damit stirbt auch die P32-Clip-Quelle (FP-Feld am schmalen Kopf)
+        // samt der headerNarrow-Kompakt-Variante.
         // W4-B + W16 (Fixliste 32): Magnifier nur im Chat-Zweig anbieten —
         // im Mediathek-Overlay lebt die Suchleiste nicht (kein Blind-Tap);
         // A11y-Label je Zustand (nie nur Farbe).
@@ -2157,55 +2157,9 @@ private fun ConversationHeader(
                 )
             }
         }
-        // W16 (Fixliste 28): der FP-Abgleich-Button ruht im Suchmodus — die
-        // Suchansicht ist reduziert (Suchfeld + Treffer + Liste), der Button
-        // kehrt beim Schließen der Suche SOFORT UND VOLL zurück.
-        if (!searchOpen) {
-            // W16-P32-Fix (Drill): unter 340 dp ist die Kopf-Zeile mit
-            // Suche+Herz+FP+⋮ zu eng für das volllabelige FP-Schild (die
-            // ⋮-Clip-Quelle!) — dort läuft der FP-Pfad als Icon kompakt,
-            // Funktion identisch; Labels bleiben auf breiten Flächen.
-            val headerNarrow = LocalConfiguration.current.screenWidthDp < 340
-            if (headerNarrow) {
-                IconButton(onClick = onFpCheck) {
-                    Text(
-                        "FP",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = FlipsiColors.TextPrimary,
-                        maxLines = 1,
-                    )
-                }
-            } else
-            OutlinedButton(
-                onClick = onFpCheck,
-                modifier = Modifier.padding(end = 4.dp),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                    start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp,
-                ),
-            ) {
-            // W13-SENDFIX (Komposer-Meta-Reihe-Render-Bug): Label NIE
-            // umbrechen lassen. Auf schmalen Flächen (Drill-Emulator =
-            // sw262dp/440dpi) läuft die Kopf-Zeile über — die festen Kinder
-            // vor dem Knopf fressen die Breite, der FP-Knopf als LETZTES
-            // Row-Kind bekommt ~0 px Breite, und der auf 11 Zeilen umbrochene
-            // Label blähte den Knopf auf exakt 184 dp (506 px = 11 Zeilen
-            // labelSmall) auf. Die Kopf-Zeile wuchs damit auf ~192 dp und
-            // stahl der Column den Platz: Nachrichten-Box (weight 1f) = 0 px,
-            // InputBar-Box nur noch ~280 px — das Pill-Panel (.clip!) schnitt
-            // die Meta-Reihe (Anhang/Modell-Chip/Mikro/Send-Kreis) unterhalb
-            // der Panel-Grenze weg: A11y-Geistknoten ohne Pixel, Send-Tap
-            // scheinbar tot, Relay 0× POST /chat. Einzeilig bleibt der
-            // Knopf ~40 dp hoch — das Layout heilt sich komplett (Panel
-            // wieder 114 dp, Meta-Reihe sichtbar). Kein Feature-Rewrite:
-            // Verhalten auf breiten Flächen (Sirs Handy, sw360dp) unberührt.
-            Text(
-                "FP-Abgleich",
-                style = MaterialTheme.typography.labelSmall,
-                maxLines = 1,
-                softWrap = false,
-            )
-            } // W16: Ende „!searchOpen" (FP-Abgleich ruht im Suchmodus)
-        }
+        // W16.1 (Fixliste 36): Hier stand der FP-Abgleich-Button (Breit-Label
+        // + schmale „FP“-Icon-Variante unter 340 dp) — er wanderte ins ⋮-Menü.
+        // Die Kopf-Zeile trägt jetzt nur Magnifier (+ play: Herz) + ⋮.
         // W16 (Fixliste 32): ⋮-Chat-Menü im Header (WA-Muster, Referenz-
         // Screenshot) — die 4 Sir-Punkte (Agent ansehen, Chatdesign, Mediathek
         // öffnen, Chat löschen) plus „Modell & Denken“ (der Welle-12-Picker
@@ -2249,6 +2203,15 @@ private fun ConversationHeader(
                     onClick = {
                         menuOpen = false
                         onMenuMediathek()
+                    },
+                )
+                // W16.1 (Fixliste 36): „FP-Abgleich“ im ⋮-Menü — war Kopf-Button;
+                // letzter Eintrag vor der destruktiven Aktion (sicheres Ende).
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_menu_fp)) },
+                    onClick = {
+                        menuOpen = false
+                        onFpCheck()
                     },
                 )
                 DropdownMenuItem(

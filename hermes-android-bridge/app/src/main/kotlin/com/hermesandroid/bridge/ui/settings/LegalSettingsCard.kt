@@ -32,8 +32,8 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  * Welle 16 / P20+P27 (Sir): KEINE eigene „Rechtliches“-Karte mehr (die
  * frühere LegalSettingsCard ist ENTFERNT — der EINIGE Ort ist das ℹ️-
  * About-Sheet, ui/settings/AboutSheetHost.kt, das diesen [LegalExpander]
- * wiederverwendet). Die Route 3-Vollansicht (BridgeScreen) zeigt die
- * Platzhalter-Gerüste weiter (Tiefe aus dem Sheet).
+ * wiederverwendet). W16.1 / P38: die Route-3-Vollansicht ist ENTFERNT —
+ * das Sheet ist der einzige Ort für die Rechtstexte.
  *
  * Inhalt-Regeln: Österrechtlich korrekt (Anbieter nach §5 Abs 1 ECG, DSGVO-
  * Art-13-Information, ABGB-Haftungsrahmen) und dabei schlichtungs-ehrlich.

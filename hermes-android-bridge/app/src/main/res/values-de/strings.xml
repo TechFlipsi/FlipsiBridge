@@ -83,7 +83,6 @@
     <string name="about_sheet_title">Über FlipsiBridge</string>
     <string name="about_version_label">Version</string>
     <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
-    <string name="about_open_legal_full">Über die App: Rechtliches (Vollansicht)</string>
 
     <!-- Welle 13 / P12: Darstellung (Color-Customizer) -->
     <string name="settings_appearance_title">Darstellung</string>
@@ -344,8 +343,6 @@
     <string name="crypto_agent_fp">Agent-Identity-Fingerprint</string>
     <string name="crypto_compare_hint">Abgleich: im Chat den FP-Abgleich-Button tippen — der Agent bestätigt automatisch (✓ gleich / ✗ Abweichung = rot).</string>
     <string name="crypto_banner_close_a11y">Hinweis schließen</string>
-    <string name="legal_placeholder_title">Inhalte folgen in Phase 8</string>
-    <string name="legal_placeholder_text">Dieser Abschnitt wird mit den rechtlichen Angaben hinterlegt.</string>
     <string name="chat_list_title">Agenten</string>
     <string name="chat_list_title_sub">Direkt-Chat mit den gekoppelten Agenten — live über das Relay.</string>
     <string name="dash_agents_sub">Live-Status der gekoppelten Agenten.</string>
@@ -531,6 +528,7 @@
     <string name="chat_menu_design">Chatdesign</string>
     <string name="chat_menu_model">Modell &amp; Denken</string>
     <string name="chat_menu_mediathek">Mediathek öffnen</string>
+    <string name="chat_menu_fp">FP-Abgleich</string>
     <string name="chat_menu_delete">Chat löschen</string>
     <string name="agent_avatar_a11y">Profilbild des Agenten</string>
     <string name="agent_avatar_change">Profilbild ändern</string>

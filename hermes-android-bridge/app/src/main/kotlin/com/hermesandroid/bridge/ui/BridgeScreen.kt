@@ -714,11 +714,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         )
                     }
                     // W16 P27 (Sir, Doppel-ℹ️ audit): DAUERHAFTEN TopBar-ℹ️
-                    // BEHALTEN, aber er öffnet JETZT das About-Sheet (Version +
-                    // Rechtliches am EINEN Ort) STATT direkt auf Route 3. Die
-                    // SettingsHead-Kachel in Einstellungen ist entgangen
-                    // (P27); Route 3 bleibt Tiefe vom Sheet
-                    // (AboutState.requestLegalDepth → Konsum unten).
+                    // BEHALTEN — er öffnet das About-Sheet (Version +
+                    // Rechtliches am EINEN Ort). Die SettingsHead-Kachel in
+                    // Einstellungen ist entgangen (P27). W16.1 (P38): die
+                    // frühere Route-3-Vollansicht-Tiefe ist VOLL ENTFERNT —
+                    // Sheet = einzige Quelle (Sir: „komplett raus“).
                     IconButton(onClick = { AboutState.open() }) {
                         Icon(
                             Icons.Outlined.Info,
@@ -732,8 +732,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
         },
         // ── W15 (Sir-Fixliste 9): TAB-NAVIGATION — sauber als eigene Leiste
         // in Sirs Tab-Order: Dashboard | Chat | Agenten | E2E. Einstellungen
-        // (Route 1) und Impressum (Route 3) bleiben Sprünge oben rechts; auf
-        // ihnen ist kein Tab selektiert. Material3-NavigationBar ohne neue
+        // bleibt ein Sprung oben rechts; auf ihm ist kein Tab selektiert.
+        // (W16.1 P38: der alte „Impressum (Route 3)“-Sprung ist mit der
+        // Vollansicht entfallen.) Material3-NavigationBar ohne neue
         // Dependency (Compose-BOM), Haus-Farbrollen (Ember = aktiver Tab).
         // W16 (Sir-Fixliste 15): die Leiste verschwindet auf Route 2, SOLANGE
         // eine Conversation offen ist (mehr Platz für Bubbles + Composer) und
@@ -809,7 +810,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
                 // holt die untere NavigationBar (siehe bottomBar-Verband oben).
                 onConversationOpen = { open -> chatConversationOpen = open },
             )
-            3 -> LegalScreenPlaceholder(padding)
+            // W16.1 (P38): Route 3 (Legal-Vollansicht) ENTFERNT — eine aus
+            // einem alten Prozesstod wiederhergestellte Route 3 fällt auf das
+            // else-Dashboard zurück (kein Crash, Sheet bleibt der EINE Ort).
             4 -> AgentsContent(padding)
             5 -> E2eContent(padding)
             else -> DashboardScreen(
@@ -832,19 +835,14 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // Das ℹ️-TopBar-Action öffnet das Sheet (AboutState.open) — der Host
     // rendert es hier einmalig, auf JEDEM Route-Level (nicht nur Einstellungen).
     AboutSheetHost()
+    // W16.1 (P38): der frühere LaunchedEffect legalDepthRequest → route = 3
+    // ist mit dem Vollansicht-Sprung ENTFERNT (AboutState trägt den Merker
+    // nicht mehr) — Rechtstexte leben exklusiv im About-Sheet.
     // W16 P11 (play-Schiene): EIN Host für alle Disclosure-Dialoge — bewusst
     // am SCREEN-Level (vorher: nur in PermissionsSections/Einstellungen), denn
     // im Agenten-Tab (Route 4) lief ein request() sonst in den LEERAUM:
     // pending gesetzt, kein Dialog, Toggle tot ohne jede Meldung.
     DisclosureDialogHost()
-    // Tiefe aus dem Sheet: „Rechtliches“-Eintrag → Route 3 (Vollansicht).
-    // Einmal-Merker wird direkt nach dem Routen-Wechsel abgeräumt.
-    LaunchedEffect(AboutState.legalDepthRequest) {
-        if (AboutState.legalDepthRequest) {
-            route = 3
-            AboutState.consumeLegalDepth()
-        }
-    }
 
     // ── Dialoge ────────────────────────────────────────────────────────────
     if (showRegenDialog) {
@@ -1581,92 +1579,4 @@ private fun CryptoSettingsCard() {
             }
         }
     }
-}
-
-/** Chat-Screen: Platzhalter — der Direkt-Chat folgt mit Phase 2. */
-@Composable
-private fun ChatScreenPlaceholder(padding: PaddingValues) {
-    ScreenPlaceholderBody(padding) {
-        SectionTitle(
-            "Chat",
-            sub = "Direkt-Chat — Phase 2.",
-        )
-    }
-}
-
-/**
- * Impressum/Datenschutz (Route 3, PH1-T6): Gerüst mit den 3 Abschnitts-
- * Headern + je Abschnitt ein sauber strukturierter INHALTS-RAHMEN (Karte
- * mit Trennern und definierten Textbereichen) — Phase 8 setzt nur die
- * Inhalte ein. Bewusst keine privaten Daten im Gerüst.
- *
- * W16 P20 (Sir): die Route ist die TIEFE aus dem About-Sheet (TopBar-ℹ️
- * → Sheet → „Rechtliches“) und zeigt die VERSION (P20: Version im ℹ️-Pfad
- * immer sichtbar — hier mit [BridgeStatus.appVersion], gleiche Regel wie
- * AboutInfo.versionLabel: NUR „vX.Y.Z“ ohne Editions-Suffix).
- */
-@Composable
-private fun LegalScreenPlaceholder(padding: PaddingValues) {
-    ScreenPlaceholderBody(padding) {
-        Text(
-            BridgeStatus.appVersion(),
-            style = MaterialTheme.typography.labelMedium,
-            color = FlipsiColors.TextSecondary,
-            fontWeight = FontWeight.SemiBold,
-        )
-        SectionTitle(stringResource(R.string.legal_imprint_title))
-        LegalSectionCard()
-        SectionTitle(stringResource(R.string.legal_privacy_title))
-        LegalSectionCard()
-        SectionTitle(stringResource(R.string.legal_terms_title))
-        LegalSectionCard()
-    }
-}
-
-/**
- * Inhalts-Rahmen je Rechts-Abschnitt (PH1-T6): Kartenstruktur mit klar
- * getrennten Textbereichen, damit Phase 8 die Inhalte einheitlich
- * einsetzen kann — ohne Inhalt, ohne private Daten.
- */
-@Composable
-private fun LegalSectionCard() {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(
-                stringResource(R.string.legal_placeholder_title),
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = FlipsiColors.TextSecondary,
-            )
-            androidx.compose.material3.HorizontalDivider(
-                Modifier.padding(vertical = 10.dp),
-                color = FlipsiColors.LineStrong,
-            )
-            Text(
-                stringResource(R.string.legal_placeholder_text),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-            )
-        }
-    }
-}
-
-/** Gemeinsamer Rahmen der Platzhalter-Screens: füllt die Fläche, scrollbar. */
-@Composable
-private fun ScreenPlaceholderBody(
-    padding: PaddingValues,
-    content: @Composable ColumnScope.() -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(padding)
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        content = content,
-    )
 }
