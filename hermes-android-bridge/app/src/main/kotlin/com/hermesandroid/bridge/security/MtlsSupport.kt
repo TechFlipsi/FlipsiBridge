@@ -218,7 +218,10 @@ object MtlsSupport {
         private fun buildCsrDer(cn: String, keyPair: java.security.KeyPair): ByteArray {
             val spki = keyPair.public.encoded // X.509 SubjectPublicKeyInfo (DER)
             val cnSeq = Der.seq(Der.oid("2.5.4.3") + Der.utf8(cn))
-            val name = Der.seq(cnSeq)
+            // PKCS#10-Name = SEQUENCE of RDN, RDN = SET of SEQ(ATV) — die
+            // SET-Ebene (Tag 0x31) war im Fix-1-CSR vergessen (openssl
+            // „wrong tag“ = 400 pop-fail, END-Test deleg_e859ab88).
+            val name = Der.seq(Der.tag(0x31, cnSeq))
             // SignaturAlgorithmus: id-ecdsa-with-sha256 (1.2.840.10045.4.3.2)
             val alg = Der.seq(Der.oid("1.2.840.10045.4.3.2"))
             val tbs = Der.seq(
