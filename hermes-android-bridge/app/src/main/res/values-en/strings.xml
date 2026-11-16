@@ -337,10 +337,7 @@
     <string name="footer_url">http://%1$s:8765 — home Wi-Fi only</string>
     <string name="footer_desc">Normal operation runs via the relay server (above) — so the agent has access on the go too.</string>
     <string name="mtls_title">mTLS certificate</string>
-    <string name="mtls_configured">Client certificate selected — the connection presents it to the relay.</string>
-    <string name="mtls_not_configured">No client certificate selected. Only needed if the relay server requires client certificates.</string>
     <string name="mtls_choose">Choose certificate</string>
-    <string name="mtls_choose_other">Choose a different certificate</string>
     <string name="mtls_unavailable">Certificate selection unavailable here</string>
     <!-- W16 (Punkt 26): update check/info push — NO in-app install anymore -->
     <string name="update_channel_name">Updates</string>
@@ -550,4 +547,13 @@
     <string name="chat_delete_title">Delete chat?</string>
     <string name="chat_delete_text">All messages of this chat will be deleted — this cannot be undone. The encrypted session (E2E keys) is kept.</string>
     <string name="chat_delete_confirm">Delete</string>
+    <string name="mtls_device_ok">Device certificate active: %1$s</string>
+    <string name="mtls_device_none">No device certificate yet — the server issues one (button).</string>
+    <string name="mtls_request">Request certificate</string>
+    <string name="mtls_enrolling">Requesting …</string>
+    <string name="mtls_enroll_ok">Certificate installed (%1$s) — presented to the relay on the mTLS handshake.</string>
+    <string name="mtls_no_profile">No server profile — connect a server first.</string>
+    <string name="mtls_no_code">No pairing code in the profile.</string>
+    <string name="mtls_code_used">Code already used — please generate a new pairing code on the server.</string>
+    <string name="mtls_enroll_error">Certificate request failed (%1$s).</string>
 </resources>

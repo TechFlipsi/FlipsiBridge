@@ -578,10 +578,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         },
                         onRegenerateRequest = { showRegenDialog = true },
                     )
-                    // mTLS: nur Anzeige + Öffnen der BESTEHENDEN MtlsSupport-
-                    // Route (Systemdialog via choosePrivateKeyAlias) — keine
-                    // neue Logik (PH1-T2-Vorgabe).
-                    MtlsCard(configVersion = configVersion, activity = activity)
+                    // mTLS (W16.3, Fixliste 41): Karte zeigt den app-verwalteten
+                    // Device-Leg + Enrollment-Button (Server stellt das
+                    // Zertifikat aus). Der tote KeyChain-Systemdialog ist rauf —
+                    // KeyChain bleibt nur als Fallback in MtlsSupport.decorate().
+                    MtlsCard(configVersion = configVersion)
                 }
 
 
@@ -1460,14 +1461,17 @@ private fun AccordionCard(
 }
 
 /**
- * mTLS-Zertifikats-Bereich (PH1-T2): Statusanzeige + Öffnen der BESTEHENEN
- * MtlsSupport-Route (KeyChain-Systemdialog via choosePrivateKeyAlias) —
- * bewusst KEINE neue Logik, nur Sichtbarmachung.
+ * mTLS-Zertifikats-Bereich (W16.3, Fixliste 41): Statuszeile + EIN Button, der
+ * wirklich etwas tut — Enrollment am Relay (app-verwalteter AndroidKeystore-
+ * Leg, Server stellt das Kette via Device-CA aus). Der KeyChain-Systemdialog
+ * ist raus (Sackgasse: ohne installiertes Zertifikat schließt er still).
  */
 @Composable
-private fun MtlsCard(configVersion: Int, activity: Activity?) {
+private fun MtlsCard(configVersion: Int) {
     val context = LocalContext.current
-    val configured = remember(configVersion) { MtlsSupport.isConfigured() }
+    var cn by remember(configVersion) { mutableStateOf(MtlsSupport.Enrollment.deviceCn(context)) }
+    var running by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     Card(
         colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
         shape = MaterialTheme.shapes.medium,
@@ -1475,25 +1479,59 @@ private fun MtlsCard(configVersion: Int, activity: Activity?) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Text(stringResource(R.string.mtls_title), fontWeight = FontWeight.SemiBold)
             Text(
-                if (configured)
-                    stringResource(R.string.mtls_configured)
+                text = if (cn != null)
+                    stringResource(R.string.mtls_device_ok, cn!!)
                 else
-                    stringResource(R.string.mtls_not_configured),
+                    stringResource(R.string.mtls_device_none),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
             )
             OutlinedButton(
                 onClick = {
-                    if (activity != null) {
-                        MtlsSupport.chooseCertificate(activity)
-                    } else {
-                        BridgeStatus.showText(context.getString(R.string.mtls_unavailable))
+                    if (running) return@OutlinedButton
+                    val profile = ServerProfiles.activeProfile()
+                    if (profile == null) {
+                        BridgeStatus.showText(context.getString(R.string.mtls_no_profile))
+                        return@OutlinedButton
+                    }
+                    running = true
+                    scope.launch {
+                        val res = kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) {
+                            val code = ServerProfiles.codeOf(profile.id)
+                            if (code.isBlank()) {
+                                MtlsSupport.Enrollment.Result(ok = false, error = "no-code")
+                            } else {
+                                MtlsSupport.Enrollment.enrollDevice(context, profile.url, code)
+                            }
+                        }
+                        running = false
+                        when {
+                            res.ok -> {
+                                cn = res.cn
+                                BridgeStatus.showText(
+                                    context.getString(R.string.mtls_enroll_ok, res.cn ?: "?"))
+                            }
+                            res.error == "no-code" ->
+                                BridgeStatus.showText(context.getString(R.string.mtls_no_code))
+                            res.error != null && res.error!!.startsWith("enroll:403") ->
+                                BridgeStatus.showText(context.getString(R.string.mtls_code_used))
+                            else -> BridgeStatus.showText(
+                                context.getString(R.string.mtls_enroll_error, res.error ?: "?"))
+                        }
                     }
                 },
+                enabled = !running,
                 modifier = Modifier.padding(top = 10.dp).height(48.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-            ) { Text(if (configured) stringResource(R.string.mtls_choose_other) else stringResource(R.string.mtls_choose)) }
+            ) {
+                Text(
+                    if (running) stringResource(R.string.mtls_enrolling)
+                    else stringResource(R.string.mtls_request)
+                )
+            }
         }
     }
 }

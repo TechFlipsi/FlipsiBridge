@@ -20,8 +20,8 @@ android {
         // die Verlängerung bis 01.11.2026 ist verpasst) — GitHub-Edition bleibt 34.
         targetSdk = 34
         // W16: WA-Chat-Redesign + Agenten-live + Update-Flow-Neubau — 42 → 43.
-        versionCode = 45
-        versionName = "0.16.2"
+        versionCode = 46
+        versionName = "0.16.3"
     }
 
     buildFeatures {

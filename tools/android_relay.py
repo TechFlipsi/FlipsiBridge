@@ -943,6 +943,14 @@ def set_pairing_code(code: str) -> None:
         logger.info("Pairing code updated")
     if state is None or not changed:
         return
+    # W16.3 (P41): Code-Wechsel öffnet das Enrollment-Fenster neu
+    # (CODE-EINMALIGKEIT: je Epoch ein Neugerät; Reset hier).
+    try:
+        from mtls_enroll import reset_epoch as _mtls_reset_epoch
+        import threading as _threading
+        _threading.Thread(target=_mtls_reset_epoch, daemon=True).start()
+    except Exception as exc:
+        logger.warning("mtls_enroll epoch-reset fehlgeschlagen (fail-soft): %s", exc)
     # Kick der Phone-WS im Relay-Loop (Thread-sicher; Aufrufer ist Sync-Kontext)
     loop = state.loop
     if loop is None or state.thread is None or not state.thread.is_alive():
@@ -1258,6 +1266,19 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
             app.router.add_get(path, handler)
         if method in ("POST", "BOTH"):
             app.router.add_post(path, handler)
+
+    # W16.3 (P41, Sir): Enrollment-Routen /mtls/enroll[/challenge] — fail-soft:
+    # Init-Fehler (keine OpenSSL-CA-Materialien) = Routen OFF + Log, der Rest
+    # des Relays läuft unverändert (P22-Stufe 1: Ausstellen + Registry +
+    # Code-Einmaligkeit; Enforcement am Socket = Stufe 2 nginx-Verband).
+    try:
+        from mtls_enroll import add_routes as _mtls_add_routes
+        if _mtls_add_routes(app):
+            logger.info("mTLS-Enrollment-Routen aktiv (P41)")
+        else:
+            logger.info("mTLS-Enrollment OFF (Init fehlgeschlagen — fail-soft)")
+    except Exception as exc:
+        logger.warning("mTLS-Enrollment-Wiring fehlgeschlagen (fail-soft): %s", exc)
 
     runner = web.AppRunner(app)
     state.runner = runner

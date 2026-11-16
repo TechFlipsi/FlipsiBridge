@@ -329,10 +329,7 @@
     <string name="footer_url">http://%1$s:8765 — nur im Heim-WLAN</string>
     <string name="footer_desc">Regelbetrieb läuft über den Relay-Server (oben) — damit der Agent auch unterwegs Zugriff hat.</string>
     <string name="mtls_title">mTLS-Zertifikat</string>
-    <string name="mtls_configured">Client-Zertifikat gewählt — die Verbindung legt es dem Relay vor.</string>
-    <string name="mtls_not_configured">Kein Client-Zertifikat gewählt. Nur nötig, wenn der Relay-Server Client-Zertifikate verlangt.</string>
     <string name="mtls_choose">Zertifikat wählen</string>
-    <string name="mtls_choose_other">Anderes Zertifikat wählen</string>
     <string name="mtls_unavailable">Zertifikat-Auswahl hier nicht verfügbar</string>
     <!-- W16 (Punkt 26): Update-Check/Info-Push — KEIN In-App-Install mehr -->
     <string name="update_channel_name">Updates</string>
@@ -547,4 +544,13 @@
     <string name="chat_delete_title">Chat löschen?</string>
     <string name="chat_delete_text">Alle Nachrichten dieses Chats werden gelöscht — das lässt sich nicht wiederherstellen. Die verschlüsselte Sitzung (E2E-Schlüssel) bleibt erhalten.</string>
     <string name="chat_delete_confirm">Löschen</string>
+    <string name="mtls_device_ok">Geräte-Zertifikat aktiv: %1$s</string>
+    <string name="mtls_device_none">Noch kein Geräte-Zertifikat — der Server stellt eines aus (Button).</string>
+    <string name="mtls_request">Zertifikat anfordern</string>
+    <string name="mtls_enrolling">Wird angefordert …</string>
+    <string name="mtls_enroll_ok">Zertifikat installiert (%1$s) — wird dem Relay beim mTLS-Handshake vorgelegt.</string>
+    <string name="mtls_no_profile">Kein Serverprofil — bitte zuerst Server verbinden.</string>
+    <string name="mtls_no_code">Kein Kopplungscode im Profil vorhanden.</string>
+    <string name="mtls_code_used">Code bereits verwendet — bitte am Server einen neuen Kopplungscode erzeugen.</string>
+    <string name="mtls_enroll_error">Zertifikat-Anforderung fehlgeschlagen (%1$s).</string>
 </resources>
