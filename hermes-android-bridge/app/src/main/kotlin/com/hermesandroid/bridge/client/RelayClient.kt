@@ -101,12 +101,17 @@ object RelayClient {
      * 0.16.4 (P42): Verbindungsversuche ohne Ende — MAX_RETRIES nur noch
      * theoretisch (Int.MAX_VALUE). Der 5er-Cap ließ die App nach 5 Fails
      * STILL stehen (kein weiterer Versuch, kein Netzwechsel-Reroute = das
-     * Handy-Frozen am 16.11.2026). Der Doze-budgetierte Alarm-Takt
-     * (LOW_RATE_BACKOFF_MS) übernimmt die Rate-Disziplin, nicht ein Cap.
+     * Handy-Frozen am 16.11.2026). Rate-Disziplin = Low-Rate-Modus ab
+     * [LOW_RATE_ATTEMPT_THRESHOLD] Fehlversuchen (0.16.4-Fixrunde: mit
+     * Int.MAX_VALUE lieferte isExhausted NIE true — Low-Rate, Doze-Alarm im
+     * Normalpfad und Termux-Revival waren tote Codepfade; Flagship-Prüfung
+     * 16.11.2026).
      */
     private const val MAX_RETRIES = Int.MAX_VALUE
+    /** Low-Rate (5-min-Takt, Doze-Alarm, Revival-Check) ab so vielen Fehlversuchen. */
+    private const val LOW_RATE_ATTEMPT_THRESHOLD = 10
     /** Backoff ab dieser Dauer als Doze-sicheren Alarm legen (kein Coroutine-Sleep). */
-    private const val ALARM_THRESHOLD_MS = 60_000L
+    private const val ALARM_THRESHOLD_MS = 30_000L
     /** 429 → Relay-Block (300 s) abwarten + Puffer, Budget bleibt unberührt. */
     private const val BLOCK_WAIT_MS = 310_000L
     /** Auth-Fehlversuche, bevor die Versuche stoppen (Relay blockt bei 5). */
@@ -1111,7 +1116,10 @@ object RelayClient {
 
         // v0.11.0: NICHT mehr abbrechen nach Budgetverbrauch — Low-Rate-Modus
         // (endlos alle ~5 min neu verbinden) statt Terminalzustand.
-        val enteringLowRate = reconnectPolicy.isExhausted
+        // 0.16.4-Fixrunde: Schwellwert entkoppelt von isExhausted (mit
+        // MAX_RETRIES = Int.MAX_VALUE wäre isExhausted nie wahr → Low-Rate,
+        // Doze-Alarm im Normalpfad und Termux-Revival wären tot).
+        val enteringLowRate = reconnectPolicy.attempts >= LOW_RATE_ATTEMPT_THRESHOLD
 
         val backoff = when {
             forceBackoffMs != null -> forceBackoffMs
@@ -1145,9 +1153,13 @@ object RelayClient {
         }
 
         reconnectPending = true
+        // P3 (0.16.4-Fixrunde): bei Int.MAX_VALUE keine Absurdi-Ausgabe
+        // ("Versuch 12/2147483647") — endlos = beschriftet.
+        val limitLabel = if (reconnectPolicy.limit >= Int.MAX_VALUE) "läuft endlos weiter"
+        else "/${reconnectPolicy.limit}"
         reconnectJob = activeScope.launch {
-            Log.i(TAG, "Reconnecting in ${backoff}ms... (attempt $attempt/${reconnectPolicy.limit})")
-            notifyStatus(false, "$label in ${backoff / 1000}s (Versuch $attempt/${reconnectPolicy.limit})", Phase.RECONNECTING)
+            Log.i(TAG, "Reconnecting in ${backoff}ms... (attempt $attempt$limitLabel)")
+            notifyStatus(false, "$label in ${backoff / 1000}s (Versuch $attempt$limitLabel)", Phase.RECONNECTING)
             delay(backoff)
             beginReconnectAttempt(url, PairingManager.getCode())
         }

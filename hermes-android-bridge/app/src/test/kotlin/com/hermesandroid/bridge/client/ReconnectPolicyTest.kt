@@ -120,4 +120,29 @@ class ReconnectPolicyTest {
             assertTrue("backoff must stay positive, got $backoff", backoff in 1L..30_000L)
         }
     }
+
+    /**
+     * 0.16.4-Fixrunde (Flagship-Befund P1-1): MAX_RETRIES = Int.MAX_VALUE
+     * machte `isExhausted` unerreichbar — Low-Rate-Takt, Doze-Alarm im
+     * Normalpfad und Termux-Revival wären tote Codepfade gewesen. Der
+     * Client-Verband koppelt den Low-Rate-Eintritt jetzt an
+     * [ReconnectPolicy.attempts] (Schwellwert 10). Guard: die Policy-API
+     * bleibt fähig, Attempts dauerhaft zu zählen, damit der Schwellwert
+     * jederzeit erfüllbar bleibt — ein endlose-Sperren-Fall (Attempts
+     * einfrieren) würde die alte Tote-Wiederherstellen.
+     */
+    @Test
+    fun `endless policy keeps counting attempts for the low rate threshold`() {
+        val policy = ReconnectPolicy(maxRetries = Int.MAX_VALUE)
+
+        repeat(50) {
+            assertFalse("endlose Policy: Versuch ${it + 1} erlaubt", policy.isExhausted)
+            policy.nextBackoffMs()
+        }
+
+        assertTrue(
+            "Attempts müssen über den Low-Rate-Schwellwert (10) hinaus zählen",
+            policy.attempts >= 10,
+        )
+    }
 }
