@@ -61,7 +61,7 @@ android {
             // PH-7/DE-2: eigener Play-Zähler (3-stellig, Start 100), versionName-
             // Suffix je Edition, targetSdk 36 = Play-Gate (neue Apps 31.08.2026).
             // W15b: 5 Re-Drill-Fixes — play-Zähler 104 → 105.
-            versionCode = 108
+            versionCode = 109
             versionNameSuffix = "-play"
             targetSdk = 36
         }
