@@ -1113,13 +1113,54 @@ _RELAY_NATIVE_ROUTES = frozenset(
     {"/chat", "/chat_event", "/key_publish", "/key_get", "/crypto_hello", "/media"})
 
 
+# ── W16.3 Stufe 2, Layer 2 (16.11.26): CN-vs-Registry-Gate ──────────────────
+_MTLS_GATE_PATHS = frozenset(
+    {"/ws", "/chat", "/chat_event", "/media", "/key_publish", "/key_get", "/crypto_hello"})
+
+def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
+    """Layer 2 hinter dem NPM-Zert-Zwang (Layer 1 = nginx 421 bei fehlendem Zert):
+    NPM reicht X-SSL-Verify/X-SSL-Device-DN durch (server_proxy.conf, Regex-Location);
+    hier: Verify=SUCCESS UND CN in der Device-Registry nötig. Fail-closed bei
+    Registry-Fehlern. Exklusiv Prod (ANDROID_MTLS_ENFORCE=1) — Drills/direkte
+    Agenten-Verbindungen (/agent_ws Direct) laufen ohne Gate."""
+    if os.getenv("ANDROID_MTLS_ENFORCE", "0") != "1":
+        return None
+    if request.path not in _MTLS_GATE_PATHS:
+        return None
+    dn = request.headers.get("X-SSL-Device-DN") or ""
+    m = re.search(r"CN=flipsibridge-([0-9a-fA-F-]+)", dn)
+    if request.headers.get("X-SSL-Verify", "") == "SUCCESS" and m:
+        try:
+            try:
+                from tools.mtls_enroll import _registry_load as _rg
+            except Exception:
+                from mtls_enroll import _registry_load as _rg
+            enrolled = (_rg() or {}).get("enrolled") or {}
+            if m.group(1).lower() in {str(k).lower() for k in enrolled}:
+                return None
+        except Exception as exc:
+            logger.warning("mtls-gate: Registry-Fehler — fail-closed: %s", exc)
+    else:
+        logger.info("mtls-gate: Ablehnung %s (verify=%r, dn=%.60s)", request.path,
+                    request.headers.get("X-SSL-Verify", "<kein Header>"), dn)
+    return web.json_response({"error": "mtls-unknown-device"}, status=403)
+
+@web.middleware
+async def _mtls_gate_mw(request: "web.Request", handler):
+    gated = _mtls_gate(request)
+    if gated is not None:
+        return gated
+    return await handler(request)
+
+
 async def _serve(state: _RelayState, ready: threading.Event) -> None:
     """Build the aiohttp app, start the site, and block until shutdown."""
     # v0.10.8-Deploy-Fix: aiohttp-Default client_max_size ist 1MB - grosse
     # POST-Bodies (files_push mit APK als base64) wurden still gekappt, die App
     # sah ein leeres JSON und antwortete 'Pflichtfelder fehlen'. 96MB deckt das
     # app-seitige 48MB-Dateilimit (x1.37 Base64) plus JSON-Overhead ab.
-    app = web.Application(client_max_size=96 * 1024 * 1024)
+    app = web.Application(client_max_size=96 * 1024 * 1024,
+                          middlewares=[_mtls_gate_mw])
     state.app = app
 
     # WebSocket endpoint
