@@ -1,3 +1,16 @@
+## [0.16.4] - 2026-11-16
+### Behoben
+- **Verbindungsversuch-Verband (P42):** WS-Verbindungsversuche laufen ENDLOS weiter
+  (MAX_RETRIES 5 → Int.MAX_VALUE). Der 5er-Cap ließ die App nach 5 Fehlversuchen
+  still stehen (kein weiterer Versuch, keine Netzwechsel-Reaktion) — Frozen-Verband
+  am 16.11.2026: Handy verließ den Verbindungs-Wach-Zustand nie wieder von selbst.
+- Rate-Disziplin übernimmt weiterhin der Doze-budgetierte Alarm-Takt (5 min), nicht
+  ein Retry-Cap. Backoff unangetastet (1 s basis, 30 s Deckel).
+### Serverseite (schon live)
+- Stufe 2: NPM verlangt Client-Zert für Handy-Routen (421 sonst), /mtls/* frei;
+  Relay-Gate prüft Zert-CN gegen Device-Registry (403 fail-closed); Agenten-Direct
+  unverändert ohne Zert.
+
 ## [0.16.3] - 2026-11-16 — Welle 16.3: mTLS-Enrollment (Zertifikat-Button tut etwas)
 - **Enrollment-Verband (P41, Sir: „Zertifikat wählen passiert nichts“):** der Button in Einstellungen › Server › mTLS-Zertifikat war der KeyChain-Systemdialog — ohne installiertes Zertifikat schließt er still (Sackgasse: das Zertifikat MUSS erst der Server ausstellen). NEU: „Zertifikat anfordern“ startet das komplette Enrollment — AndroidKeystore-EC-Leg (non-exportable) + hand-kodierter PKCS#10-CSR (kein BouncyCastle-Dep) + Proof-of-Possession (Server-Nonce signiert) → `/mtls/enroll` am Relay stellt das Gerät-Zertifikat aus (Device-CA), Statuszeile + Snack zeigen CN; KeyChain bleibt nur als Fallback-Pfad in decorate(). versionCode 46 (github) / 109 (play).
 - **Relay (mtls_enroll.py):** POST /mtls/enroll/challenge + /mtls/enroll (code-gated, Rate-Chain, Struktur-Boundaries) — Device-CA (RSA 3072, /etc/flipsibridge/tls/device-ca.*), CSR-Signierung (400 Tage), Registry `mtls_devices.json` + je-Gerät PEM. **CODE-EINMALIGKEIT (Sir: „nur einmal die Codes gehen“):** je Kopplungs-Epoch enrollt der Code GENAU EIN NEUGERÄT (403 code-used sonst); Code-Neuerzeugung (= set_pairing_code) erhöht die Epoch und öffnet das Fenster neu; Wiederaufnahme derselben device_id (renewal) bleibt ohne Code möglich.

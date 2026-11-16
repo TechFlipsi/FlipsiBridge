@@ -91,10 +91,20 @@ object RelayClient {
     private const val KEY_AUTH_BROKEN = "bridge_auth_broken"
     private const val KEY_AUTH_FAILURES = "auth_failure_streak"
     private const val MAX_BACKOFF_MS = 30_000L
-    private const val MAX_RETRIES = 5
+    // 0.16.4 (P42): Verbindungsversuche ENDLOS weiterlaufen lassen — der 5er-Cap
+    // (MAX_RETRIES = 5) erzeugte nach Fail-Serien stille Stillstand-Fenster
+    // (Frozen-Verband 16.11.2026, Handy verließ den Retry-Zustand nie wieder).
 
     /** Low-Rate-Modus nach Budgetverbrauch: endloser 5-Minuten-Takt. */
     private const val LOW_RATE_BACKOFF_MS = 300_000L
+    /**
+     * 0.16.4 (P42): Verbindungsversuche ohne Ende — MAX_RETRIES nur noch
+     * theoretisch (Int.MAX_VALUE). Der 5er-Cap ließ die App nach 5 Fails
+     * STILL stehen (kein weiterer Versuch, kein Netzwechsel-Reroute = das
+     * Handy-Frozen am 16.11.2026). Der Doze-budgetierte Alarm-Takt
+     * (LOW_RATE_BACKOFF_MS) übernimmt die Rate-Disziplin, nicht ein Cap.
+     */
+    private const val MAX_RETRIES = Int.MAX_VALUE
     /** Backoff ab dieser Dauer als Doze-sicheren Alarm legen (kein Coroutine-Sleep). */
     private const val ALARM_THRESHOLD_MS = 60_000L
     /** 429 → Relay-Block (300 s) abwarten + Puffer, Budget bleibt unberührt. */
