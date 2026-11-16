@@ -23,6 +23,7 @@ import java.security.cert.CertificateFactory
 import java.security.cert.X509Certificate
 import java.util.Base64
 import java.util.UUID
+import javax.security.auth.x500.X500Principal
 import javax.net.ssl.X509ExtendedKeyManager
 import javax.net.ssl.X509TrustManager
 
@@ -191,7 +192,7 @@ object MtlsSupport {
 
         /** Gerätezertifikat installiert? */
         fun isDeviceCertConfigured(): Boolean =
-            BridgeApplication.instance.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            com.hermesandroid.bridge.BridgeApplication.instance.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
                 .getString(PREF_DEV_CERT, null).isNullOrBlank().not()
 
         private fun ensureKeyPair(): java.security.KeyPair {
@@ -315,9 +316,10 @@ object MtlsSupport {
             val entry = ks.getEntry(DEVICE_ALIAS, null) as? KeyStore.PrivateKeyEntry
                 ?: throw IllegalStateException("Kein Device-Leg im Keystore")
             val key = entry.privateKey
-            val chain = entry.certificateChain?.filterNotNull()?.toTypedArray()
-                ?: arrayOf(entry.certificate)
-            val cnPref = prefs(BridgeApplication.instance).getString(PREF_DEV_CN, "flipsibridge-device")
+            val chain: Array<X509Certificate> =
+                entry.certificateChain?.mapNotNull { it as? X509Certificate }?.toTypedArray()
+                    ?: arrayOf(entry.certificate as X509Certificate)
+            val cnPref = prefs(com.hermesandroid.bridge.BridgeApplication.instance).getString(PREF_DEV_CN, "flipsibridge-device")
             return object : X509ExtendedKeyManager() {
                 override fun chooseClientAlias(
                     keyType: Array<out String>?,
