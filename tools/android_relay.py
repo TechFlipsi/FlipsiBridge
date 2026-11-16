@@ -946,7 +946,10 @@ def set_pairing_code(code: str) -> None:
     # W16.3 (P41): Code-Wechsel öffnet das Enrollment-Fenster neu
     # (CODE-EINMALIGKEIT: je Epoch ein Neugerät; Reset hier).
     try:
-        from mtls_enroll import reset_epoch as _mtls_reset_epoch
+        try:
+            from tools.mtls_enroll import reset_epoch as _mtls_reset_epoch
+        except ImportError:
+            from mtls_enroll import reset_epoch as _mtls_reset_epoch
         import threading as _threading
         _threading.Thread(target=_mtls_reset_epoch, daemon=True).start()
     except Exception as exc:
@@ -1272,7 +1275,10 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     # des Relays läuft unverändert (P22-Stufe 1: Ausstellen + Registry +
     # Code-Einmaligkeit; Enforcement am Socket = Stufe 2 nginx-Verband).
     try:
-        from mtls_enroll import add_routes as _mtls_add_routes
+        try:  # Daemon lädt android_relay als tools.android_relay → Package-Weg
+            from tools.mtls_enroll import add_routes as _mtls_add_routes
+        except ImportError:  # Flat-Import (direkter Modul-Lauf)
+            from mtls_enroll import add_routes as _mtls_add_routes
         if _mtls_add_routes(app):
             logger.info("mTLS-Enrollment-Routen aktiv (P41)")
         else:
