@@ -1050,7 +1050,11 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         Laufzeit-Maps (Schlüssel sind Relay-Chat-IDs). push_session_meta
         mapped selbst: Relay-IDs laufen via _relay_chat_id_for unverändert
         durch, stabile Gateway-IDs über das Mapping. Ohne bekannte Chats:
-        leere Liste (Hook pusht dann nichts — keine Chat-ID erfunden)."""
+        leere Liste (Hook pusht dann nichts — keine Chat-ID erfunden).
+        W16.3 (P40): zusätzlich PERSISTIERTE Chat-IDs (je Agent, überlebt
+        Gateway-Restarts) — nach einem Neuhochlauf sind die Laufzeit-Maps
+        leer, das Hook-Push lief sonst ins Leere und die Slots standen
+        blank. Fail-soft: Lesen/Schreiben je try/except."""
         targets: list = []
         seen: set = set()
         try:
@@ -1068,7 +1072,52 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                     targets.append(chat_id)
         except Exception:  # pragma: no cover
             pass
+        try:
+            for chat_id in self._persisted_chats() or []:
+                if chat_id not in seen:
+                    seen.add(chat_id)
+                    targets.append(chat_id)
+        except Exception:  # pragma: no cover
+            pass
         return targets
+
+    # ── W16.3 (P40):persistierte Chat-Ziele je Agent ────────────────────────
+
+    def _chats_state_path(self):
+        import re as _re
+        from pathlib import Path as _Path
+        safe = _re.sub(r"[^A-Za-z0-9_-]", "_", str(self.agent_id))[:48] or "agent"
+        return _Path(__file__).resolve().parent / "state" / (safe + ".chats.json")
+
+    def _persist_chats(self, chat_id: str) -> None:
+        """Aktuelles _received_at (neueste zuerst, Cap 32) je Agent speichern.
+        Fail-soft: jeder Fehler = debug-Log, nie ein Push-Block (P40)."""
+        try:
+            import json as _json
+            path = self._chats_state_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            ids = [c for c, _ in sorted(self._received_at.items(),
+                                        key=lambda item: item[1], reverse=True)]
+            if chat_id not in ids:
+                ids.insert(0, chat_id)
+            path.write_text(_json.dumps(
+                {"agent_id": self.agent_id, "chats": ids[:32],
+                 "ts": int(time.time() * 1000)}), encoding="utf-8")
+        except Exception as exc:  # pragma: no cover — Speichern darf nie stoeren
+            logger.debug("meta_hook chats persist skip: %s", exc)
+
+    def _persisted_chats(self) -> list:
+        try:
+            import json as _json
+            path = self._chats_state_path()
+            if not path.exists():
+                return []
+            data = _json.loads(path.read_text(encoding="utf-8"))
+            chats = data.get("chats") or []
+            return [c for c in chats if isinstance(c, str) and c][:32]
+        except Exception as exc:  # pragma: no cover
+            logger.debug("meta_hook chats load skip: %s", exc)
+            return []
 
     def _pin_relay_url(self) -> str:
         """Whitelist-Pinning (I3): geprüfte Relay-URL oder AdapterPinningError.
@@ -1565,8 +1614,13 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                 self._composer_meta[chat_id] = {"model": _pm, "effort": _pe}
         # PH2-T11: Empfangszeit für elapsed_ms notieren (begrenzt, FIFO-Cap).
         self._received_at[chat_id] = int(time.time() * 1000)
+        # W16.3 (P40, Sir 16.11.): bekannte Chat-Ziele PERSISTIERT halten — nach
+        # einem Gateway-Restart ist _received_at leer (erst die nächste App-
+        # Nachricht füllt sie wieder), das Hook-Push an die Slots lief ins
+        # LEERE. Fail-soft: Schreiben/Beschädigungen = debug-Log, nie Push-Block.
         while len(self._received_at) > 256:
             self._received_at.pop(next(iter(self._received_at)))
+        self._persist_chats(chat_id)
         # W4-B2: Adapter-gesteuerter Slash-Präfix-Parser — NACH Dekrypt und
         # Fp-Gatter, VOR der Gateway-Zustellung. True = lokal behandelt (kein
         # Gateway-Push; Read-Receipt + Antwort hier); /new und alle Nicht-

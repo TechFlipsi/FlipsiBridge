@@ -36,6 +36,9 @@
     <string name="conn_url_hint">my-relay.example.com:8766</string>
     <string name="conn_connect">Connect</string>
     <string name="conn_disconnect">Disconnect</string>
+    <string name="conn_connecting">Connecting …</string>
+    <string name="snack_connecting">Connecting to server …</string>
+    <string name="server_no_active_snack">No server profile — please add a server.</string>
     <string name="caps_section_hint">What the agent may do on the phone — everything off by default.</string>
 
     <string name="section_pairing">Pairing</string>

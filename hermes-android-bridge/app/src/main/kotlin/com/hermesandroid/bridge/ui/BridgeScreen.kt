@@ -514,20 +514,49 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // (Einstellungen › Server) — die alte Verbindungskarte am
                     // Dashboard ist entfallen; gleiche Aktion/Faser wie deren
                     // Trennen-Button (RelayClient.disconnect + Snack).
+                    // W16.2 (P39, Sir 16.11.): die Taste FOLGT dem LIVE-Zustand
+                    // (BridgeStatus.state) — verbunden = „Trennen" (rot),
+                    // getrennt = „Verbinden" (neutral; Re-Connect aufs AKTIVE
+                    // Profil via connectViaProfile). Vorher: dauerhaft
+                    // „Trennen" — nach dem Trennen eine Sackgasse ohne
+                    // sichtbare Verbinden-Fläche. „Verbinde …" (disabled)
+                    // solange der Client selbst CONNECTED/connectiert.
+                    val connState by BridgeStatus.state.collectAsState()
+                    val connConnected = connState is BridgeStatus.ConnectionState.CONNECTED
+                    val connInFlight = connState is BridgeStatus.ConnectionState.CONNECTING ||
+                        connState is BridgeStatus.ConnectionState.RECONNECTING
                     OutlinedButton(
                         onClick = {
-                            RelayClient.disconnect()
-                            snack(context.getString(R.string.snack_disconnected))
+                            if (connConnected) {
+                                RelayClient.disconnect()
+                                snack(context.getString(R.string.snack_disconnected))
+                            } else {
+                                val activeProfileId = ServerProfiles.activeId.value
+                                if (activeProfileId.isNullOrBlank()) {
+                                    snack(context.getString(R.string.server_no_active_snack))
+                                } else {
+                                    ServerProfiles.connectViaProfile(context, activeProfileId)
+                                    snack(context.getString(R.string.snack_connecting))
+                                }
+                            }
                         },
+                        enabled = !connInFlight,
                         modifier = Modifier.fillMaxWidth(),
-                        // Destruktive Aktion = kenntlich dezent rot (Muster
-                        // der alten Dashboard-Verbindungskarte).
+                        // Destruktive Richtung (Trennen) = dezent rot; Connect-
+                        // Richtung = Ember (positiver Weg, Muster Nav-Tabs).
                         colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = FlipsiColors.SignalRedText,
+                            contentColor = if (connConnected) FlipsiColors.SignalRedText
+                            else FlipsiColors.Ember,
                         ),
                     ) {
                         Text(
-                            stringResource(R.string.conn_disconnect),
+                            stringResource(
+                                when {
+                                    connInFlight -> R.string.conn_connecting
+                                    connConnected -> R.string.conn_disconnect
+                                    else -> R.string.conn_connect
+                                },
+                            ),
                             fontWeight = FontWeight.Medium,
                         )
                     }

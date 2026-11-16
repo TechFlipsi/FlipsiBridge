@@ -26,6 +26,9 @@
     <string name="conn_url_hint">mein-relay.example.com:8766</string>
     <string name="conn_connect">Verbinden</string>
     <string name="conn_disconnect">Trennen</string>
+    <string name="conn_connecting">Verbinde …</string>
+    <string name="snack_connecting">Verbinde mit Server …</string>
+    <string name="server_no_active_snack">Kein Serverprofil — bitte Server hinzufügen.</string>
     <string name="caps_section_hint">Was der Agent am Handy tun darf — alles standardmäßig aus.</string>
 
     <string name="section_pairing">Pairing</string>
