@@ -180,6 +180,16 @@ def main():
             editId=eid, packageName=PACKAGE, media_body=media
         ).execute()
         version = bundle["versionCode"]
+        # W16.1: Name/Notes dynamisch — Hardcode (0.15.3-Notiz) flog raus, damit
+        # künftige Uploads nie wieder eine alte Notiz unter falschem Namen zeigen.
+        import re as _re
+        m = _re.search(r"(\d+\.\d+(?:\.\d+)?).*?vc(\d+)", aab)
+        rel_name = f"FlipsiBridge {m.group(1)} ({version})" if m else f"FlipsiBridge ({version})"
+        rel_notes = [
+            {"language": "de-DE", "text":
+             "Fehlerbehebungen und Detailverbesserungen: FP-Abgleich im Chat-Menü, "
+             "Mittelige Textausrichtung im Composer, Rechtliches an einem Ort."}
+        ]
         edits.tracks().update(
             editId=eid,
             packageName=PACKAGE,
@@ -188,10 +198,10 @@ def main():
                 "track": TRACK,
                 "releases": [
                     {
-                        "name": f"0.15.3 Welle 15: Sirs Fixliste ({version})",
+                        "name": rel_name,
                         "versionCodes": [str(version)],
                         "status": "completed",
-                        "releaseNotes": [{"language": "de-DE", "text": "Welle 15 — Sirs Fixliste: Chat-Bubbles mit Status-Häkchen (versendet/zugestellt/gelesen), neues Status-Dashboard als Startseite, Sprachwechsel wirkt live, Einstellungen mit Pfad-Anzeige und schlanken Kacheln."}],
+                        "releaseNotes": rel_notes,
                     }
                 ],
             },
