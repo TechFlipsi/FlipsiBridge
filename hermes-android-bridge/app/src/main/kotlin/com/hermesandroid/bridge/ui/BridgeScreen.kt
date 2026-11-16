@@ -1489,6 +1489,8 @@ private fun MtlsCard(configVersion: Int) {
             )
             OutlinedButton(
                 onClick = {
+                    android.util.Log.i("MtlsCard", "click: running=" + running +
+                        ", profile=" + (ServerProfiles.activeProfile()?.id ?: "-null-"))
                     if (running) return@OutlinedButton
                     val profile = ServerProfiles.activeProfile()
                     if (profile == null) {
