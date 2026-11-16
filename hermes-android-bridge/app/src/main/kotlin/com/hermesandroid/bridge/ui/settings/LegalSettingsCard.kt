@@ -1,13 +1,10 @@
 package com.hermesandroid.bridge.ui.settings
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -17,25 +14,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.ui.FlipsiColors
-import com.hermesandroid.bridge.ui.components.SettingsIcons
 
 /**
- * Welle 13 / P7b (Sirs Direktive 11.11.): Rechtliches lebt AUSKLAPPBAR in
- * den Einstellungen — KEINE eigenen Top-Level-Einträge. Karte „Rechtliches“
- * mit drei Expandern: Impressum, Datenschutz (DSGVO, Österreich,
- * Serverbetreiber-Angabe), Nutzungsbedingungen. Die Kurztexte wohnen als
- * legal_*-Keys in strings.xml (de-AT + EN), jederzeit erreichbar — auch im
- * ℹ️-About-Sheet (SettingsHome) über dieselben Keys.
+ * Welle 13 / P7b (Sirs Direktive 11.11.): legal_*-Texte lebt in Expandern —
+ * Impressum, Datenschutz (DSGVO, Österreich, Serverbetreiber-Angabe),
+ * Nutzungsbedingungen, jederzeit über dieselben Keys erreichbar.
+ *
+ * Welle 16 / P20+P27 (Sir): KEINE eigene „Rechtliches“-Karte mehr (die
+ * frühere LegalSettingsCard ist ENTFERNT — der EINIGE Ort ist das ℹ️-
+ * About-Sheet, ui/settings/AboutSheetHost.kt, das diesen [LegalExpander]
+ * wiederverwendet). Die Route 3-Vollansicht (BridgeScreen) zeigt die
+ * Platzhalter-Gerüste weiter (Tiefe aus dem Sheet).
  *
  * Inhalt-Regeln: Österrechtlich korrekt (Anbieter nach §5 Abs 1 ECG, DSGVO-
  * Art-13-Information, ABGB-Haftungsrahmen) und dabei schlichtungs-ehrlich.
@@ -43,34 +41,6 @@ import com.hermesandroid.bridge.ui.components.SettingsIcons
  * (TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen) —
  * KEINE privaten Domains/IPs/Mails in den Texten.
  */
-@Composable
-fun LegalSettingsCard(
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    SettingsCard(
-        titleRes = R.string.settings_legal_title,
-        subtitle = stringResource(R.string.settings_legal_desc),
-        iconRes = SettingsIcons.legal,
-        expanded = expanded,
-        onExpandedChange = onExpandedChange,
-        modifier = modifier,
-    ) {
-        LegalExpander(
-            titleRes = R.string.legal_imprint_title,
-            bodyRes = R.string.legal_imprint_body,
-        )
-        LegalExpander(
-            titleRes = R.string.legal_privacy_title,
-            bodyRes = R.string.legal_privacy_body,
-        )
-        LegalExpander(
-            titleRes = R.string.legal_terms_title,
-            bodyRes = R.string.legal_terms_body,
-        )
-    }
-}
 
 /**
  * Innerer Expander je Rechts-Dokument (Standard zugeklappt, eigener

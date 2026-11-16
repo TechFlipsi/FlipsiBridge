@@ -39,9 +39,10 @@
     <string name="pairing_hint">Antippen kopiert den Code. Der Agent fragt danach beim Telefon-Setup.</string>
     <string name="pairing_regen">Neuen Code erzeugen</string>
 
-    <!-- W4 App-Lane C: Mediathek-Tab am Chatscreen je Agent -->
-    <string name="chat_tab_chat">Chat</string>
-    <string name="chat_tab_mediathek">Mediathek</string>
+    <!-- W16 Fixliste 32: Mediathek ist das ⋮-Menü-Overlay (Tab-Zeile entfällt);
+         chat_tab_chat/chat_tab_mediathek gestrichen -->
+    <string name="mediathek_title">Mediathek</string>
+    <string name="mediathek_back_a11y">Zurück zum Chat</string>
     <string name="mediathek_empty_title">Noch keine Medien</string>
     <string name="mediathek_empty_hint">Bilder, Sprachnachrichten und Dateien aus dem Chat erscheinen hier.</string>
     <string name="mediathek_section_media">Bilder &amp; Videos</string>
@@ -81,6 +82,8 @@
     <string name="settings_info_a11y">Über FlipsiBridge öffnen</string>
     <string name="about_sheet_title">Über FlipsiBridge</string>
     <string name="about_version_label">Version</string>
+    <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
+    <string name="about_open_legal_full">Über die App: Rechtliches (Vollansicht)</string>
 
     <!-- Welle 13 / P12: Darstellung (Color-Customizer) -->
     <string name="settings_appearance_title">Darstellung</string>
@@ -127,7 +130,11 @@
     <string name="assistant_status_held">FlipsiBridge ist als Standard-Assistent eingerichtet.</string>
     <string name="assistant_status_other">Derzeit ist ein anderer Assistent eingerichtet — Android zeigt dir die Auswahl.</string>
     <string name="assistant_unavailable">Auf diesem Android (unter 10) ist kein Standard-Assistent einrichtbar.</string>
-
+    <!-- W16 P12/P20: roleAvailable-Gate + Ergebnis-Handler + Fallback -->
+    <string name="assistant_role_unavailable_hint">Die Assistenten-Rolle ist auf diesem Gerät derzeit nicht verfügbar. Nutze den Umweg über die Systemeinstellungen.</string>
+    <string name="assistant_dialog_failed">Assistent-Dialog nicht verstanden</string>
+    <string name="assistant_dialog_failed_text">Android hat kein Ergebnis geliefert. Du kannst die Rolle auch manuell setzen: Systemeinstellungen → Apps → Standard-Apps → Digitale Assistent-App.</string>
+    <string name="assistant_open_default_apps">Digitale Assistent-App öffnen</string>
     <!-- Welle 13 / P7b: Rechtliches (österreichische Kurztexte, ausklappbar) -->
     <string name="settings_legal_title">Rechtliches</string>
     <string name="settings_legal_desc">Impressum, Datenschutz und Nutzungsbedingungen.</string>
@@ -232,8 +239,6 @@
     <string name="cap_desc_notify_reply">Direkt in Benachrichtigungen antworten (z. B. WhatsApp)</string>
     <string name="cap_label_files_write">Dateien schreiben/löschen</string>
     <string name="cap_desc_files_write">Dateien ablegen oder löschen (destruktiv!)</string>
-    <string name="cap_label_selfupdate">App-Update</string>
-    <string name="cap_desc_selfupdate">Neue Versionen laden und den Installationsdialog zeigen</string>
     <string name="cap_label_location">Standort</string>
     <string name="cap_desc_location">GPS-Position abfragen</string>
     <string name="cap_label_sms">SMS senden</string>
@@ -327,10 +332,11 @@
     <string name="mtls_choose">Zertifikat wählen</string>
     <string name="mtls_choose_other">Anderes Zertifikat wählen</string>
     <string name="mtls_unavailable">Zertifikat-Auswahl hier nicht verfügbar</string>
-    <string name="update_title">Selbst-Update</string>
-    <string name="update_github_desc">Sucht auf dem Relay nach einer neueren APK und zeigt den Installationsdialog (SHA-geprüft).</string>
-    <string name="update_play_desc">Nur in der GitHub-Edition — die Play-Edition aktualisiert sich über den Play Store.</string>
-    <string name="update_search">Nach Update suchen</string>
+    <!-- W16 (Punkt 26): Update-Check/Info-Push — KEIN In-App-Install mehr -->
+    <string name="update_channel_name">Updates</string>
+    <string name="update_channel_desc">Hinweis, wenn eine neuere FlipsiBridge-Version verfügbar ist</string>
+    <string name="update_notify_title">Update verfügbar</string>
+    <string name="update_notify_text">FlipsiBridge %1$s verfügbar</string>
     <string name="crypto_title">Ende-zu-Ende-Verschlüsselung</string>
     <string name="crypto_no_session">Noch keine aktive E2E-Sitzung — der Handshake läuft beim Agenten-Verbinden automatisch.</string>
     <string name="crypto_active_session">Aktive Sitzung je Agent: Fingerprints vergleichen (Chat → FP-Abgleich-Button).</string>
@@ -349,6 +355,9 @@
     <string name="dash_last_active">Zuletzt aktiv %1$s</string>
     <string name="dash_no_activity">Noch keine Aktivität</string>
     <string name="dash_working">arbeitet … (%1$s)</string>
+    <string name="dash_model_label">Modell %1$s</string>
+    <string name="dash_sub_agent">SUB-Agent %1$s</string>
+    <string name="dash_sub_model">(Modell %1$s)</string>
     <!-- W15c (Jäger B5/A): Dashboard-Labels als Ressourcen — DashboardRules
          gibt LabelRes (R-Konstante + Args) zurück, die UI löst live auf.
          Tage/Agenten-Zahlwörter sind Plural-Ressourcen („vor 1 Tag“/
@@ -413,6 +422,15 @@
     <string name="media_voice_pending">Noch nicht auf dem Gerät gespeichert</string>
     <string name="media_voice_missing_file">Sprachnachricht — Datei fehlt</string>
     <string name="media_voice_no_service">Sprachnachricht — Hol-Dienst nicht verfügbar</string>
+    <!-- W16 B2 (Fixliste 31/30b): WA-Voice-Bubble + Hold-to-Record (A11y DE/EN). -->
+    <string name="media_voice_pause_a11y">Sprachnachricht pausieren</string>
+    <string name="chat_tts_voice_prepare">Erzeuge Audio …</string>
+    <string name="chat_tts_voice_prepare_a11y">Sprachnachricht-Datei wird erzeugt — einen Moment</string>
+    <string name="chat_voice_too_short">Sprachnachricht zu kurz — verworfen</string>
+    <string name="chat_voice_recording_swipe_hint">‹ Wischen zum Abbrechen</string>
+    <string name="chat_voice_recording_cancel_active">Loslassen = Abbrechen</string>
+    <string name="chat_voice_recording_cancel_a11y">Aufnahme abbrechen</string>
+    <string name="chat_voice_recording_holding_a11y">Aufnahme läuft, %1$s — Loslassen sendet die Sprachnachricht</string>
     <string name="media_image_load_failed">Bild konnte nicht geladen werden.</string>
     <string name="composer_title">Modell</string>
     <string name="composer_demo_hint">Demo-Eintrag (nicht gekoppelt) — Auswahl wirkt nur lokal, bis der Agent gekoppelt ist.</string>
@@ -420,6 +438,9 @@
     <string name="composer_auto_sub">Agenten-Standard</string>
     <string name="composer_add_placeholder">Eigenes Modell hinzufügen …</string>
     <string name="composer_add">Hinzu</string>
+    <string name="composer_chip_a11y">Modell &amp; Denken öffnen — zeigt das aktive Modell</string>
+    <string name="composer_custom_add">Eigenes Modell …</string>
+    <string name="composer_no_list">Vom Server liegt keine Modell-Liste vor — Auto bleibt aktiv. Eigenes Modell unten als erweiterte Option.</string>
     <string name="composer_read_aloud">Agenten-Antworten vom Gerät vorlesen</string>
     <string name="lock_title">FlipsiBridge ist gesperrt</string>
     <string name="lock_subtitle">PIN eingeben, um Chat und Einstellungen zu öffnen</string>
@@ -463,6 +484,8 @@
 
     <!-- W15-Fund: support_a11y fehlte in values-de -->
     <string name="support_a11y">Unterstützer-Knopf: App unterstützen mit einmaliger Spende</string>
+    <string name="support_sheet_title">Unterstützen</string>
+    <string name="support_sheet_info">Ein freiwilliges Danke für die laufende Entwicklung — nichts wird gesperrt, ein Kauf ist nie nötig.</string>
 
     <!-- W15 (Lücken-Schluss): Chat/Komposer/Medien-Reststrings — hardcodierte UI-Texte -->
     <string name="chat_send_a11y">Senden</string>
@@ -493,4 +516,34 @@
     <string name="chat_demo_input">Beispiel-Eingabe — der Verlauf bleibt lokal gespeichert.</string>
     <string name="chat_demo_greeting">Beispiel-Begrüßung von Agent 3.</string>
     <string name="e2e_xdh_unavailable">Verschlüsselung auf diesem Gerät nicht verfügbar</string>
+
+    <!-- W16 Fixliste 30a: Composer = WA-Pill + runder inline Send/Mikro-Button -->
+    <string name="chat_mic_a11y_start">Sprachnachricht aufnehmen</string>
+    <string name="chat_mic_a11y_stop">Sprachnachricht beenden und senden</string>
+
+    <!-- W16 Fixliste 16: kompakte AI-Act-Kennzeichnung in der Bubble-Metareihe -->
+    <string name="chat_ki_badge">KI</string>
+    <string name="chat_ki_badge_a11y">Von einer KI erzeugt</string>
+
+    <!-- W16 Fixliste 32: ⋮-Menü im Chat-Header + Agenten-Profil/Chatdesign/Löschung -->
+    <string name="chat_menu_a11y">Weitere Optionen</string>
+    <string name="chat_menu_view_agent">Agent ansehen</string>
+    <string name="chat_menu_design">Chatdesign</string>
+    <string name="chat_menu_model">Modell &amp; Denken</string>
+    <string name="chat_menu_mediathek">Mediathek öffnen</string>
+    <string name="chat_menu_delete">Chat löschen</string>
+    <string name="agent_avatar_a11y">Profilbild des Agenten</string>
+    <string name="agent_avatar_change">Profilbild ändern</string>
+    <string name="agent_avatar_remove">Profilbild entfernen</string>
+    <string name="agent_avatar_failed">Foto konnte nicht übernommen werden.</string>
+    <string name="agent_sheet_name_label">Name</string>
+    <string name="agent_sheet_hint">Name kommt aus der Brücke (gespeicherte Session) — lesend hier.</string>
+    <string name="design_sheet_title">Chatdesign</string>
+    <string name="design_sheet_state_default">Hintergrund: Eigenes Muster</string>
+    <string name="design_sheet_state_photo">Hintergrund: Foto aus Galerie</string>
+    <string name="design_wallpaper_standard">Eigenes Muster (Standard)</string>
+    <string name="design_wallpaper_photo">Foto aus Galerie wählen</string>
+    <string name="chat_delete_title">Chat löschen?</string>
+    <string name="chat_delete_text">Alle Nachrichten dieses Chats werden gelöscht — das lässt sich nicht wiederherstellen. Die verschlüsselte Sitzung (E2E-Schlüssel) bleibt erhalten.</string>
+    <string name="chat_delete_confirm">Löschen</string>
 </resources>

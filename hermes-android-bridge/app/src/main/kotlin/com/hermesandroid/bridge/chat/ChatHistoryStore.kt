@@ -157,13 +157,40 @@ object ChatHistoryStore {
     fun loadAll(root: File): List<Entry> =
         // W4-FIX-JAG2 (C5): der Voll-Load zieht unter demselben Prozess-Lock
         // wie append/load-Kürzung — vorher las er die .jsonl-Dateien
-        // unverriegert (torn-read: eine zwischen ListFiles und Read umbenannte
+        // unverriegelt (torn-read: eine zwischen ListFiles und Read umbenannte
         // Datei + halbe Append-Zeile = still verschluckter Eintrag je Restore).
         synchronized(fileLock) {
             (root.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: emptyArray())
                 .flatMap { parse(readLines(it)) }
                 .sortedBy { it.seq }
         }
+
+    /**
+     * W16 (Sir-Fixliste 32): den Verlauf eines Agenten löschen — „Chat löschen“
+     * im ⋮-Menü der Conversation. Es wird NUR die Agent-Verlaufsdatei geräumt
+     * (gehashter Name + Legacy-Zwilling ohne Hash-Suffix, sonst importiert die
+     * Adoption den alten Stand beim nächsten Zugriff zurück); die E2E-Keys
+     * (IdentityStore/relay-keys) liegen in ANDEREN Dateien und bleiben
+     * unangetastet. Aufrufer entscheiden über den Thread (ChatScreen: media-
+     * Scope + Dispatchers.IO).
+     */
+    fun clearAgent(root: File, agentId: String) {
+        if (agentId.isBlank()) return
+        runCatching {
+            synchronized(fileLock) {
+                val safe = agentId.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                    .take(64).ifEmpty { "agent" }
+                // Der Legacy-Zwilling wird vor der Adoption gelöscht —
+                // adoptLegacyFile würde sonst den Alt-Stand wieder beleben.
+                File(root, "$safe.jsonl").delete()
+                fileFor(root, agentId)
+                    .let { hashed ->
+                        File(root, ".${hashed.name}.part").delete()
+                        hashed.delete()
+                    }
+            }
+        }
+    }
 
     // ── Interna ──────────────────────────────────────────────────────────────
 

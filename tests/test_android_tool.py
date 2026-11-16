@@ -54,12 +54,13 @@ from tools.android_tool import (
 
 
 class TestSchemas:
-    def test_all_58_tools_have_schemas(self):
-        # v0.11.0: +1 Tool (android_health — Health Connect read-only)
-        assert len(_SCHEMAS) == 58
+    def test_all_57_tools_have_schemas(self):
+        # v0.11.0: +1 Tool (android_health — Health Connect read-only).
+        # W16 (Punkt 26): -1 Tool (android_apk_install — In-App-Install raus).
+        assert len(_SCHEMAS) == 57
 
-    def test_all_58_tools_have_handlers(self):
-        assert len(_HANDLERS) == 58
+    def test_all_57_tools_have_handlers(self):
+        assert len(_HANDLERS) == 57
 
     def test_schema_names_match_handler_names(self):
         assert set(_SCHEMAS.keys()) == set(_HANDLERS.keys())
@@ -96,9 +97,11 @@ class TestCodeQuality:
 
         # F7-Fix (Schnüffler): die Plugin-Kopie muss ZEILEN-IDENTISCH mit
         # tools/ sein — der 596-Zeile-Abstand enthielt NIE geladene Härtung
-        # (android_apk_install-Relay-Pin, android_health usw.). Der Sync
+        # (Security-Gates je Tool, android_health usw.). Der Sync
         # (rsync bei jedem Deploy) = Pflicht; der Zähler = tools/-Stand.
-        assert len(plugin["_SCHEMAS"]) == 58
+        # W16 (Punkt 26): android_apk_install ist RAUS (In-App-Install stirbt).
+        assert "android_apk_install" not in plugin_source
+        assert len(plugin["_SCHEMAS"]) == 57
         assert set(plugin["_SCHEMAS"]) == set(plugin["_HANDLERS"])
         assert ("scp " + "-P") not in plugin_source
 
@@ -461,7 +464,9 @@ class TestApprovalGuard:
         directive = android_pre_tool_call("android_send_sms", {})
         assert directive["action"] == "approve"
         assert directive["rule_key"].startswith("hermes-android:")
-        assert android_pre_tool_call("android_apk_install", {})["action"] == "approve"
+        # W16 (Punkt 26): android_apk_install existiert nicht mehr — der
+        # Approval-Gate-Verband wird am destruktiven Sibling weiterbewiesen.
+        assert android_pre_tool_call("android_file_delete", {})["action"] == "approve"
 
     def test_hook_ignores_safe_tools(self):
         from tools.android_tool import android_pre_tool_call

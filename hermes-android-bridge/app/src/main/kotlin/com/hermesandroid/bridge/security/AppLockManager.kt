@@ -247,6 +247,17 @@ class AppLockManager internal constructor(
         }
         resetFailCount()
         unlock()
+        // W16 P25 (R2-Audit-Nachziehung): TRANSPARENTE HASH-MIGRATION — ein
+        // mit weniger Iterationen erzeugter Bestandstitel (ältere Version,
+        // niedrigere Standardzahl ODER ein künftig erhöhter Wert) wird beim
+        // NÄCHSTEN KORREKTEN Login still auf die aktuelle Iterationszahl
+        // gehoben (frischer Salt, neu versiegelt). Der Nutzer merkt nichts
+        // (keine UI-Änderung, die PIN bleibt DIESELBE). Migration gescheitert
+        // (Keystore kaputt) = unveränderter Bestandstitel — der Erfolg zählt
+        // trotzdem, der nächste Login versucht es erneut.
+        if (usedIterations != PBKDF2_ITERATIONS) {
+            migrateLegacyHash(pin)
+        }
         return PinVerifyResult.Success
     }
 
@@ -408,6 +419,25 @@ class AppLockManager internal constructor(
                 .generateSecret(spec).encoded
         }.getOrNull()
 
+    /**
+     * W16 P25: Migration eines ALTEN Hash-Titels auf die aktuelle
+     * PBKDF2-Iterationszahl — frischer Salt + Re-Derive + Re-Seal, NUR die
+     * drei Hash-Keys (Fail-/Sperrenzähler bleiben unangetastet; der Verifizier-
+     * Pfad ist an diesem Punkt GRÜN). Bewusst best-effort: schlägt seal()
+     * fehlt (Keystore), bleibt der Alt-Titel stehen — verifyPin zählt als
+     * Success weiter, der nächste korrekte Login wiederholt die Migration.
+     */
+    private fun migrateLegacyHash(pin: String) {
+        val salt = ByteArray(SALT_BYTES).also { SecureRandom().nextBytes(it) }
+        val hash = derivePinHash(pin, salt, PBKDF2_ITERATIONS) ?: return
+        val sealed = crypto.seal(hash) ?: return
+        prefs.edit()
+            .putString(KEY_HASH_SEALED, Base64.getEncoder().encodeToString(sealed))
+            .putString(KEY_SALT, Base64.getEncoder().encodeToString(salt))
+            .putInt(KEY_ITERATIONS, PBKDF2_ITERATIONS)
+            .apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "flipsibridge_applock"
         private const val KEY_HASH_SEALED = "pin_hash_sealed"
@@ -432,6 +462,10 @@ class AppLockManager internal constructor(
          * hoher Standardwert für den Geräte-Fall; Tests injizieren kleinere
          * Werte über den Konstruktor, der GENUTZTE Wert wird mit dem Hash
          * gespeichert (lesbar für spätere Erhöhungen ohne Re-Set der PIN).
+         * W16 P25 (R2-Audit): FLOOR ≥ 120_000 ist eingehalten (130_000);
+         * Titel mit ABWEICHENDER gespeicherter Zahl werden beim nächsten
+         * korrekten Login transparent auf diesen Wert migriert
+         * ([AppLockManager.migrateLegacyHash], ohne UI-Änderung).
          */
         const val PBKDF2_ITERATIONS = 130_000
 

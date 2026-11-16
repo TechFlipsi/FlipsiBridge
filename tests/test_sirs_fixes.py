@@ -188,8 +188,13 @@ class TestPskCodepathRemoved:
                 continue
             if "pairing_psk" in text or "FLIPSI_PAIRING_PSK" in text:
                 offenders.append(str(path))
-        expected = str(repo / "contrib" / "hermes-chat-plugin" / "adapter.py")
-        assert offenders == [expected], (
+        # W16: hermes-android-plugin/adapter.py = Spiegel des Live-Plugins
+        # (md5-par); der PSK-Bezug ist derselbe Code — beide sind Legitim.
+        expected = [
+            str(repo / "contrib" / "hermes-chat-plugin" / "adapter.py"),
+            str(repo / "hermes-android-plugin" / "adapter.py"),
+        ]
+        assert offenders == expected, (
             "pairing_psk/FLIPSI_PAIRING_PSK außerhalb des FlipsiBridge-Chat-"
             f"Adapters entdeckt (SCOPE-GUARD-Verstoß): {offenders}")
 

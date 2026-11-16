@@ -2,7 +2,6 @@ package com.hermesandroid.bridge.ui.chat
 
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.os.Build
 import android.provider.MediaStore
 import androidx.compose.foundation.Image
@@ -21,13 +20,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -86,7 +83,9 @@ internal fun mediaKindLabel(kind: String): String = when (kind) {
  *
  * - image: Thumbnail (downgesampelte Dekodierung, app-private Datei) +
  *   Tap → Full-Screen-Viewer (Dialog).
- * - voice: Play/Stopp-Button + Dauer (MediaPlayer, Sekunden-Zeile).
+ * - voice: WA-Sprachnachricht-Bubble (W16 B2, Fixliste 31 — rund Play/Pause,
+ *   gecachete Wellenform, Fortschritts-Fill, Dauer + verstrichene Sekunden;
+ *   Holen-Verband für eingehende Medien ohne lokale Datei unverändert).
  * - file/video: Name + Größe + „In Downloads speichern“-Aktionszeile
  *   (MediaStore.Downloads, API 29+; darunter: Hinweis auf App-Ordner).
  * Klartext-Kontext: der Relay sieht nur Metadaten; die Datei liegt
@@ -145,6 +144,7 @@ internal fun MediaBubbleContent(
             "voice" -> {
                 VoiceBubbleRow(
                     media = media,
+                    fromAgent = fromAgent,
                     contentColor = contentColor,
                     subColor = subColor,
                     onDownloadMedia = onDownloadMedia,
@@ -217,43 +217,32 @@ private fun MediaMetaLine(media: ChatMediaInfo, contentColor: Color, subColor: C
 }
 
 /**
- * MEDIA-T1: Sprachnachricht — Play/Stopp + Dauer (MediaPlayer, je Bubble 1).
+ * MEDIA-T1 + W16 B2 (Fixliste 31): Sprachnachricht-Bubble im WA-Design.
  *
- * WELLE-13 P8 (Sir-Befund 11.11. spät, UI-Teil): eingehende Sprachnachrichten
- * liegen nur als Meta (mediaId) vor — ohne lokale Datei gab es NICHTS zu
- * spielen. Der UI-Verband: localPath leer + mediaId vorhanden → „Holen“-
- * Button mit [onDownloadMedia]-Callback (Implementierung = Koordinator über
- * [ChatMediaDownload]); ohne Dienst oder ohne mediaId → ehrlicher Hinweis,
- * nie ein toter Play-Button. Nach onDone(path) refüllt ChatScreen die
- * Bubble (media.copy(localPath = path)) — dieselbe Zeile spielt dann wie
- * eine eigene Sprachnachricht (Play/Pause/Fortschritt).
+ * Der Holen-Pfad (localPath leer, WELLE-13 P8) bleibt unverändert: mediaId
+ * vorhanden + Download-Dienst → „Holen“-Button (Callback über [ChatMediaDownload],
+ * nach onDone(path) refüllt ChatScreen die Bubble); ohne Dienst/mediaId →
+ * ehrlicher Hinweis, nie ein toter Play-Button.
+ *
+ * Mit lokaler Datei rendert die Zeile [VoiceBubbleMedia] (runder Play/Pause-
+ * Knopf, gecachete Wellenform, Fortschritts-Fill, Dauer 0:21 + verstrichene
+ * Sekunden) — der alte MediaPlayer-je-Bubble-Zustand wanderte in
+ * [ChatVoicePlayback] (WA-Parität: eine laufende Wiedergabe je Chat, keine
+ * Doppel-Audio-Spuren zwischen Bubbles).
  */
 @Composable
 private fun VoiceBubbleRow(
     media: ChatMediaInfo,
+    fromAgent: Boolean,
     contentColor: Color,
     subColor: Color,
     onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
 ) {
-    val context = LocalContext.current
-    var playing by remember { mutableStateOf(false) }
-    var durationMs by remember(media.localPath) { mutableStateOf(voiceDurationMs(media.localPath)) }
-    // WELLE-13 P8: Holen-Lauf dieser Zeile (Button → „Holen …“ bis onDone).
-    var fetching by remember(media.mediaId) { mutableStateOf(false) }
-    // Player je Bubble-Instanz; beim Verlassen IMMER freigeben (Leak-Schutz).
-    val player = remember(media.localPath) { runCatching { MediaPlayer() }.getOrNull() }
-    DisposableEffect(media.localPath) {
-        onDispose {
-            runCatching {
-                player?.stop()
-                player?.release()
-            }
-            playing = false
-        }
-    }
-
     // ── WELLE-13 P8: eingehende Medien ohne lokale Datei → Holen-Verband ──────
     if (media.localPath.isBlank()) {
+        var fetching by remember(media.mediaId) { mutableStateOf(false) }
+        // Holen-Fehlschlag bleibt sichtbar („Nicht abrufbar — erneut holen").
+        var fetchFailed by remember(media.mediaId) { mutableStateOf(false) }
         Row(
             modifier = Modifier.heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -283,7 +272,7 @@ private fun VoiceBubbleRow(
                                 if (path.isNullOrBlank()) {
                                     // Ehrlicher Fehlschlag: Zeile bleibt mit
                                     // Retry-Hinweis stehen (kein Fake-Player).
-                                    durationMs = -1L
+                                    fetchFailed = true
                                 }
                             }
                         }
@@ -301,7 +290,7 @@ private fun VoiceBubbleRow(
                         color = contentColor,
                     )
                     Text(
-                        if (durationMs < 0) stringResource(R.string.media_voice_failed)
+                        if (fetchFailed) stringResource(R.string.media_voice_failed)
                         else stringResource(R.string.media_voice_pending),
                         style = MaterialTheme.typography.labelMedium,
                         color = subColor,
@@ -321,52 +310,17 @@ private fun VoiceBubbleRow(
         return
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        IconButton(
-            onClick = {
-                val p = player ?: return@IconButton
-                runCatching {
-                    if (playing) {
-                        p.stop()
-                        p.reset()
-                        p.setDataSource(media.localPath)
-                        p.prepare()
-                        playing = false
-                    } else {
-                        if (!p.isPlaying) {
-                            p.setDataSource(media.localPath)
-                            p.prepare()
-                        }
-                        p.start()
-                        playing = true
-                    }
-                }
-            },
-            modifier = Modifier.size(44.dp),
-        ) {
-            Icon(
-                painterResource(if (playing) R.drawable.ic_close else R.drawable.ic_play),
-                // W15: Play/Stopp-A11y als Ressource (DE/EN).
-                contentDescription = if (playing) stringResource(R.string.media_voice_stop_a11y)
-                else stringResource(R.string.media_voice_play_a11y),
-                tint = contentColor,
-            )
-        }
-        Spacer(Modifier.width(8.dp))
-        Column {
-            Text(
-                stringResource(R.string.media_voice_title),
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = contentColor,
-            )
-            Text(
-                if (durationMs > 0) formatVoiceDuration(durationMs) else media.name,
-                style = MaterialTheme.typography.labelMedium,
-                color = subColor,
-            )
-        }
-    }
+    // ── Datei vorhanden → WA-Sprachnachricht-Bubble (W16 B2, Fixliste 31) ─────
+    // Dauer einmal aus den Metadaten (Fehlschlag = 0 → Bubble zeigt bis zur
+    // ersten Wiedergabe „--:--“ und füllt dann aus der Playback-Dauer).
+    val localDurationMs = remember(media.localPath) { voiceDurationMs(media.localPath) }
+    VoiceBubbleMedia(
+        playbackKey = ChatVoicePlayback.mediaKey(media.localPath),
+        audioPath = media.localPath,
+        startDurationMs = localDurationMs,
+        fromAgent = fromAgent,
+        time = null, // Die Zeit steht in der Bubble-Metareihe unten-rechts (Punkt 2).
+    )
 }
 
 /** MEDIA-T1: „In Downloads speichern“-Zeile (MediaStore.Downloads, API 29+). */

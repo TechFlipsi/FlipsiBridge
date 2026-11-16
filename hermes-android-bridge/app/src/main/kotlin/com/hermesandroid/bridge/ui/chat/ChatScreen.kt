@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.hermesandroid.bridge.ui.chat
 
 import androidx.activity.compose.BackHandler
@@ -32,23 +34,31 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -63,10 +73,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
+import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.media.VoiceMemoRecorder
@@ -75,6 +87,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -93,7 +106,9 @@ import java.util.Locale
 @Composable
 fun ChatScreen(
     padding: PaddingValues,
-    onOpenSettings: () -> Unit = {},
+    // W16 (Fixliste 34): onOpenSettings-Thread ENTFERNT — der Herz-Tap öffnet
+    // DIREKT das Unterstützen-Sheet im Chat (ConversationBody), kein Umweg
+    // Einstellungen.
     // W15 (Sir-Fixliste 9): optionaler Öffnen-Wunsch aus dem Dashboard —
     // ein Tap auf einen Agenten-Slot startet hier DIREKT in der Conversation
     // dieses Agenten (statt der Liste). Einmalig: der Konsum-Callback räumt
@@ -101,6 +116,11 @@ fun ChatScreen(
     // landet wieder auf der Agenten-Liste.
     openAgentId: String? = null,
     onOpenedAgent: () -> Unit = {},
+    // W16 (Sir-Fixliste 15): „Conversation offen“ nach oben melden —
+    // BridgeScreen versteckt die untere NavigationBar, solange eine offene
+    // Conversation den Chat beansprucht (Platz für Bubbles + Composer), und
+    // holt sie beim Verlassen (Liste/Tab-Wechsel) sofort zurück.
+    onConversationOpen: (Boolean) -> Unit = {},
 ) {
     // PH2-MERGE: echte Agenten-Liste vom Relay; leer = Demo-Fallback.
     val relayAgents by RelayClient.agents.collectAsState()
@@ -256,12 +276,24 @@ fun ChatScreen(
                 val restoredWire = if (!entry.fromAgent) {
                     ChatQuoteRules.splitWireText(entry.text)
                 } else null
+                // W16.3 (F3, Literal-Falle): die Platte trägt den Bubble-Text
+                // von Media-Verweisen mit PERSIST-Sprache-Label („Foto“/„Video“)
+                // — der Restore baut die Zeile aus mediaKindRes je LOCALE neu,
+                // damit ein Sprachwechsel nicht den eingefrorenen Literal zeigt
+                // (ohne Persist-Metadaten: ehrlich der Disk-Text).
+                val mediaLabelText = entry.mediaKind?.let { kind ->
+                    entry.mediaName?.let { name ->
+                        val label = historyContext.getString(mediaKindRes(kind))
+                        "[$label] $name" +
+                            (entry.mediaSize?.let { " (${MediaProtocol.formatBytes(it)})" } ?: "")
+                    }
+                }
                 restored.add(
                     ChatMessage(
                         id = id,
                         agentId = entry.agentId.hashCode(),
                         fromAgent = entry.fromAgent,
-                        text = restoredWire?.reply ?: entry.text,
+                        text = restoredWire?.reply ?: mediaLabelText ?: entry.text,
                         time = entry.time,
                         // WELLE-13 P11 (Datum-Chip): die Platte trägt nur HH:mm —
                         // restaurierte Einträge bleiben OHNE Tages-Schlüssel
@@ -530,14 +562,30 @@ fun ChatScreen(
     }
     var voiceRecording by remember { mutableStateOf(false) }
     val voiceRecorder = remember { VoiceMemoRecorder(context) }
+    // W16 P30b (Fixliste 30b): Hold-to-Record-Verband — B2s VoiceHoldRecorder-
+    // Fassade (0,5 s-Kante je GESTE und RECORDER an derselben Zahl) + Wisch-
+    // Abbruch-Marke der Fahne. Die TAP-Fallback-Sessionen (Assist-Start,
+    // Berechtigungs-Fortsetzung) laufen unangetastet über voiceRecorder (B1).
+    val voiceHoldRecorder = remember { VoiceHoldRecorder(context) }
+    var voiceHoldCancelling by remember { mutableStateOf(false) }
     // Aufnahme beim Verlassen der Conversation bewusst abbrechen (kein
     // Zombie-Recorder im Hintergrund, kein Mikro-Claim über den Screen weg).
+    // W16 B2 (Fixliste 31): Bubble-Wiedergabe miträumen — kein unsichtbarer
+    // Player, der über den Rückweg zur Agenten-Liste weiterlaufen kann.
     DisposableEffect(selectedAgentId) {
         onDispose {
             if (voiceRecorder.isRecording) {
                 voiceRecorder.cancel()
                 voiceRecording = false
             }
+            // W16 P30b: HOLD-Aufnahme miträumen (die Geste kann nicht mehr
+            // releasen, sobald die Conversation weg ist).
+            if (voiceHoldRecorder.isRecording) {
+                voiceHoldRecorder.cancelNow()
+                voiceRecording = false
+            }
+            voiceHoldCancelling = false
+            ChatVoicePlayback.stop()
         }
     }
 
@@ -576,7 +624,13 @@ fun ChatScreen(
         if (agent.agentId.isBlank()) {
             // Demo-Fallback: kein echter Agent, kein Fake-Upload.
         } else {
-            RelayClient.sendMedia(agent.agentId, kind, name, mime, bytes) { ok, error, mediaId, msgId ->
+            // W16.3 (F2): der ANHÄNGEN-ts (sentAtMs, Z. 585/601) reist mit —
+            // RelayClient persistiert den Disk-Zwilling mit DEMSELBEN ts
+            // (C6-Verband: kein Minuten-Roll zwischen Live-Bubble und Disk).
+            RelayClient.sendMedia(
+                agent.agentId, kind, name, mime, bytes,
+                sentAtMs = sentAtMs,
+            ) { ok, error, mediaId, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
                     sendErrors = sendErrors + (
@@ -679,6 +733,22 @@ fun ChatScreen(
         }
     }
 
+    // ── W16 P30b: Hold-to-Record (Fixliste 30b) — B2-APIs am runden Knopf ─────
+
+    /**
+     * Fertige AAC-Datei als Voice-Medium senden — der GEMEINSAME Sendeweg des
+     * Hold-Pfads (P30b) und des Tap-Fallbacks (B1): identische Bubble, identischer
+     * Upload, identische Fehlerbehandlung.
+     */
+    fun submitVoiceFile(agent: ChatAgent, file: File) {
+        val bytes = runCatching { file.readBytes() }.getOrNull()
+        if (bytes == null || bytes.isEmpty()) {
+            sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht unlesbar")
+            return
+        }
+        submitMedia(agent, "voice", file.name, "audio/mp4", bytes)
+    }
+
     /** Voice-Record starten/stopen — Stopp sendet die fertige AAC-Datei. */
     fun toggleVoice() {
         val agent = openAgent() ?: return
@@ -689,12 +759,19 @@ fun ChatScreen(
                 sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
                 return
             }
-            val bytes = runCatching { file.readBytes() }.getOrNull()
-            if (bytes == null || bytes.isEmpty()) {
-                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht unlesbar")
+            submitVoiceFile(agent, file)
+        } else if (voiceHoldRecorder.isRecording) {
+            // W16 P30b: HOLD-Aufnahme OHNE Release-Verband (Geste von einem
+            // System-Dialog/Call abgebrochen) — der Tap-Fallback beendet sie
+            // und sendet (derselbe Sendeweg wie der Geste-Release).
+            val file = voiceHoldRecorder.finish(VoiceHoldOutcome.SEND)
+            voiceHoldCancelling = false
+            voiceRecording = false
+            if (file == null) {
+                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
                 return
             }
-            submitMedia(agent, "voice", file.name, "audio/mp4", bytes)
+            submitVoiceFile(agent, file)
         } else {
             val granted = ContextCompat.checkSelfPermission(
                 context, android.Manifest.permission.RECORD_AUDIO,
@@ -711,6 +788,87 @@ fun ChatScreen(
         }
     }
 
+    // ── W16 P30b: Hold-Funktionen — onStart/onEnd/Abbruch (Fixliste 30b) ──────
+
+    /**
+     * P30b onStart (DRÜCKEN am Mikro-Knopf): Aufnahme auf der VoiceHoldRecorder-
+     * Fassade starten. Rückgabe = Press übernommen:
+     * - true → Geste hat die Sequenz (Aufnahme läuft bzw. der START_DENIED-Pfad
+     *   öffnete den Berechtigungs-Dialog) — der Klick des kurzen Taps ist still.
+     * - false → Press gehört B1s Tap-Fallback (Text im Feld = Send, Aufnahme
+     *   läuft = Stop+Send, Recorder-Fail = Toggle-Neuversuch).
+     */
+    fun startVoiceHold(): Boolean {
+        val agent = openAgent() ?: return false
+        // Text im Feld = der Knopf ist gerade SEND (Icon-Morph) — kein Voice-Hold.
+        if (inputText.isNotBlank()) return false
+        // EINE Audio-Spur: Fallback-Session läuft → Geste verzichtet (der Tap
+        // des Releases beendet sie über toggleVoice).
+        if (voiceRecording) return false
+        voiceHoldCancelling = false
+        val granted = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.RECORD_AUDIO,
+        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            // START_DENIED-Pfad (B2-Vertrag): der Host-Launcher ist an der
+            // Reihe. true = Press übernommen, damit der Klick nicht parallel
+            // einen zweiten Berechtigungs-Request nachschiebt.
+            micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
+            return true
+        }
+        val started = voiceHoldRecorder.start()
+        if (!started) {
+            // B2-Vertrag: START_DENIED (Recorder-Fail) — Release-Aktion entfällt;
+            // der Click-Fallback darf B1s Toggle einen Neuversuch geben.
+            sendErrors = sendErrors + (agent.agentId to "Media: Aufnahme fehlgeschlagen")
+            return false
+        }
+        voiceRecording = true
+        return true
+    }
+
+    /**
+     * P30b onEnd (LOSLASSEN): SEND → stop + senden; TOO_SHORT (< 0,5 s) →
+     * verwerfen + Too-Short-Hinweis; SWIPE_CANCELLED/START_DENIED → verwerfen,
+     * still. Läuft keine Geste-Session (Press verweigert bzw. Fallback-Aufnahme),
+     * greift hier nichts — der Click hat den Pfad bereits bedient.
+     */
+    fun endVoiceHold(outcome: VoiceHoldOutcome, holdMs: Long) {
+        // Wisch-Marke räumen — die Fahne rollt zurück, egal wie der Release ausgeht.
+        voiceHoldCancelling = false
+        if (!voiceHoldRecorder.isRecording) return
+        val agent = openAgent()
+        val file = voiceHoldRecorder.finish(outcome)
+        voiceRecording = false
+        if (agent == null) return
+        when (outcome) {
+            VoiceHoldOutcome.SEND -> if (file == null) {
+                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
+            } else {
+                submitVoiceFile(agent, file)
+            }
+            VoiceHoldOutcome.TOO_SHORT -> sendErrors = sendErrors +
+                (agent.agentId to "Media: Sprachnachricht zu kurz")
+            // SWIPE_CANCELLED / START_DENIED: still verwerfen (kein Send-Fehler).
+            else -> {}
+        }
+        // [holdMs] = Geste-Haltezeit (Druck→Release); die Verwerfen-Kante sitzt
+        // an VoiceHoldRules.MIN_HOLD_MS — je GESTE und RECORDER dieselbe Zahl.
+    }
+
+    /** P30b: harter Abbruch der Aufnahme (Fahne-X /Conversation-Verlassen). */
+    fun cancelVoiceRecording() {
+        voiceHoldCancelling = false
+        if (voiceHoldRecorder.isRecording) {
+            voiceHoldRecorder.cancelNow()
+            voiceRecording = false
+        }
+        if (voiceRecorder.isRecording) {
+            voiceRecorder.cancel()
+            voiceRecording = false
+        }
+    }
+
     // MEDIA-T1: empfangene Agenten-Medien in die Verlaufsliste übernehmen
     // (analog chatEvents: Schlüssel = mediaId, Cap gegen Doppel-Übernahme).
     var consumedMediaKeys by rememberSaveable(stateSaver = ConsumedEventKeysSaver) {
@@ -720,8 +878,13 @@ fun ChatScreen(
     // Trampoline (AssistEntryActivity) setzte pendingVoice; BridgeScreen
     // startet deshalb in Route 2 und hier springt die Sprachaufnahme an:
     // der Nutzer redet direkt, das Ende sendet die Sprachnachricht.
-    LaunchedEffect(Unit) {
-        if (com.hermesandroid.bridge.AssistLaunch.pendingVoice) {
+    // W16.3 (F4): W16-Jäger-Befund — Unit-Key verbrannte den Merker im
+    // ersten Frame, BEVOR Route-2/openAgentId selectedAgentId gesetzt hatte
+    // → toggleVoice lief ins Leere (openAgent() = null) und der Wusch war
+    // weg. Jetzt key auf Conversation + Agentenstand: solange openAgent()
+    // null liefert, bleibt der Merker UNGEBRUCHEN.
+    LaunchedEffect(selectedAgentId, agents) {
+        if (com.hermesandroid.bridge.AssistLaunch.pendingVoice && openAgent() != null) {
             com.hermesandroid.bridge.AssistLaunch.pendingVoice = false
             if (!voiceRecording) {
                 toggleVoice()
@@ -795,6 +958,17 @@ fun ChatScreen(
     val allMessages = messages
 
     val agent = agents.firstOrNull { it.id == selectedAgentId }
+    // W16 (Fixliste 15): Offen-Status vorzeichenfest ableiten (AttachSheet-
+    // Verband, B7-LIVE) und nach JEDER Composition melden. SideEffect + 
+    // structural-equality-Write: gleicher Wert = keine Recompose-Kaskaden,
+    // ein echter Wechsel (open/close) flippt die NavigationBar oben.
+    val conversationOpen = AttachSheetRules.isConversationOpen(
+        selectedAgentId,
+        agents.map { it.id },
+    )
+    SideEffect {
+        onConversationOpen(conversationOpen)
+    }
     if (agent == null) {
         AgentListBody(
             padding = padding,
@@ -888,6 +1062,13 @@ fun ChatScreen(
             onAttach = { attachSheetOpen = true },
             voiceRecording = voiceRecording,
             onVoiceToggle = { toggleVoice() },
+            // W16 P30b: Hold-to-Record-Verband (Fixliste 30b) — die Geste rutscht
+            // in den runden Mikro-Knopf, die Fahne hängt über der Composer-Zeile.
+            onVoiceHoldStart = { startVoiceHold() },
+            onVoiceHoldEnd = { outcome, holdMs -> endVoiceHold(outcome, holdMs) },
+            onVoiceHoldCancelState = { cancelling -> voiceHoldCancelling = cancelling },
+            voiceHoldCancelling = voiceHoldCancelling,
+            onVoiceCancel = { cancelVoiceRecording() },
             uploadOfMedia = { mediaId ->
                 mediaId.takeIf { it.isNotBlank() }?.let { mediaUploads[it] }
             },
@@ -915,6 +1096,22 @@ fun ChatScreen(
                             }
                         }
                         onDone(path)
+                    }
+                }
+            },
+            // W16 (Fixliste 32): „Chat löschen“ — Nachrichten-Liste SOFORT im
+            // State räumen + Persist-Verlauf je Agent asynchron von der Platte
+            // (ChatHistoryStore.clearAgent — gehashte Datei + Legacy-Zwilling).
+            // KEIN Relay-/E2E-Eingriff: die verschlüsselten Session-Keys
+            // (IdentityStore/relay-keys) bleiben unangetastet.
+            onClearHistory = {
+                messages = messages.filterNot { it.agentId == agent.id }
+                if (agent.agentId.isNotBlank()) {
+                    mediaScope.launch(Dispatchers.IO) {
+                        ChatHistoryStore.clearAgent(
+                            ChatHistoryStore.root(context.applicationContext),
+                            agent.agentId,
+                        )
                     }
                 }
             },
@@ -1109,7 +1306,6 @@ private fun AgentListBody(
 private fun ConversationBody(
     padding: PaddingValues,
     agent: ChatAgent,
-    onOpenSettings: () -> Unit = {},
     conversation: List<ChatMessage>,
     working: RelayClient.AgentActivity?,
     errorBanner: String?,
@@ -1127,6 +1323,13 @@ private fun ConversationBody(
     onAttach: (() -> Unit)? = null,
     voiceRecording: Boolean = false,
     onVoiceToggle: (() -> Unit)? = null,
+    // W16 P30b: Hold-to-Record-Verband (B2-API voiceHoldToRecord) am runden
+    // Mikro-Knopf + Aufnahme-Fahne über der Composer-Zeile + Abbruch (X).
+    onVoiceHoldStart: (() -> Boolean)? = null,
+    onVoiceHoldEnd: ((VoiceHoldOutcome, Long) -> Unit)? = null,
+    onVoiceHoldCancelState: ((Boolean) -> Unit)? = null,
+    voiceHoldCancelling: Boolean = false,
+    onVoiceCancel: () -> Unit = {},
     uploadOfMedia: (String) -> RelayClient.MediaUploadState? = { null },
     // W4-B (Zitieren): aktiver Antwort-Verweis (null = kein Zitier-Modus) +
     // Abwahl-Binding für das Overlay-Strip.
@@ -1137,6 +1340,10 @@ private fun ConversationBody(
     // lokale Datei — null = kein Download-Dienst (Voice-Zeile zeigt einen
     // ehrlichen Hinweis statt eines toten Buttons).
     onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
+    // W16 (Fixliste 32): „Chat löschen“ — die Implementierung (messages-Liste
+    // + ChatHistoryStore) lebt im ChatScreen-Verband; hier kommt der
+    // Bestätigungsdialog davor und der Nachträgliche Callback dahinter.
+    onClearHistory: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
@@ -1155,7 +1362,12 @@ private fun ConversationBody(
     var composerEffort by remember(agent.agentId) {
         mutableStateOf(ChatComposerPrefs.effort(compositionContext, agent.agentId))
     }
-    var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }    // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
+    var composerPickerOpen by remember(agent.agentId) { mutableStateOf(false) }
+    // W16 (Fixliste 34): „Unterstützen“-Sheet — der Herz-Tap im Header öffnet
+    // DIREKT dieses Sheet (mit der play-Billing-SupporterCard) statt Umweg
+    // Einstellungen. GitHub-Edition: Herz nicht gerendert (Header-Gate).
+    var supporterSheetOpen by remember(agent.id) { mutableStateOf(false) }
+    // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
     // füttert den Regler im ChatModelSheet; das Enqueue in ChatScreen liest
     // den Prefs-Stand zur Laufzeit, der Regler wirkt also sofort.
     var composerReadAloud by remember(agent.agentId) {
@@ -1164,6 +1376,64 @@ private fun ConversationBody(
     // WELLE-13 P9: Speaking-Chips je Bubble — zustandsgesteuert vom TTS-Singleton
     // (IDs der gerade/nächst vorgelesenen Antworten; Tap auf den Chip stoppt).
     val speakingIds by ChatSpeechSpeaker.speakingIds.collectAsState()
+    // ── W16 (Fixliste 35): LIVE-Modell-Quellen am Composer-Chip —
+    // bestehender Composer-Modell-State (explizite Auswahl reist mit jeder
+    // chat.send) ODER session_meta/agentMeta (B4-Welle) für die LIVE-Anzeige
+    // des tatsächlich verwendeten Modells; Auto = „Auto · <Modell>“.
+    val agentMetaLive by RelayClient.agentMeta.collectAsState()
+    val agentModelsLive by RelayClient.agentModels.collectAsState()
+    val modelChipLabel = composerModel ?: agentMetaLive[agent.agentId]?.model?.let { m ->
+        stringResource(R.string.composer_auto) + " · " + m
+    } ?: stringResource(R.string.composer_auto)
+    // ── W16 (Fixliste 32): Chat-Menü-Verband — ⋮-Menü am Kopf (ChatScreen-
+    // Header), Mediathek als Overlay über dem Chat (Tab-Zeile entfällt),
+    // Agenten-/Chatdesign-Sheets + Lösch-Bestätigung. Zustand JE Agent
+    // (Agent-Wechsel räumt auf; kein saveable — Rotation kehrt in den Chat).
+    var showMediathek by remember(agent.id) { mutableStateOf(false) }
+    var agentSheetOpen by remember(agent.id) { mutableStateOf(false) }
+    var designSheetOpen by remember(agent.id) { mutableStateOf(false) }
+    var confirmDeleteChat by remember(agent.id) { mutableStateOf(false) }
+    var sheetPictureError by remember(agent.id) { mutableStateOf(false) }
+    // W16 (Chatdesign): Tick-Mirror — Wallpaper-Wechsel invalidiert die
+    // Conversation-Composition. ChatWallpaperPrefs schreibt SharedPreferences
+    // (KEIN Snapshot-State); ChatWallpaper liest den Stand je Composition neu
+    // — der Tick ist der Recompose-Zündpunkt (sonst frisst der Pick still).
+    var wallpaperTick by remember { mutableIntStateOf(0) }
+    // Avatar-Regel des Sheets an die Store-Revision binden: Pick/Entfernen
+    // rendert die „Profilbild entfernen“-Option frisch (Revision ist Snapshot-
+    // State, ein Lesen im Scope abonniert sie).
+    val avatarRevision = AgentAvatarStore.revision
+    val hasAvatarPicture = remember(avatarRevision, agent.agentId) {
+        AgentAvatarStore.hasAvatar(compositionContext, agent.agentId)
+    }
+    // W16 (Fixliste 32): Foto-Picker der Sheets — Agenten-Avatar (app-privat
+    // Kopie via AgentAvatarStore, P32a) und Chat-Wallpaper (app-privat Kopie
+    // via ChatWallpaperPrefs, W16.3 F6 — dieselbe Basis wie der Avatar,
+    // Parität AgentAvatarStore; der reine URI-Verweis ist entfallen).
+    val avatarPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            sheetPictureError = !AgentAvatarStore.setAvatar(
+                compositionContext,
+                agent.agentId,
+                uri,
+            )
+        }
+    }
+    val wallpaperPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) {
+            // W16.3 (F6): Pick-Bytes app-privat kopieren (Parität
+            // AgentAvatarStore.setAvatar) — die Kopie überlebt Galerie-
+            // Revokes; bei Fail bleibt der Zustand ehrlich auf „Standard"
+            // (kein Tick → keine gefälschte Statuszeile).
+            if (ChatWallpaperPrefs.setWallpaperImage(compositionContext, uri)) {
+                wallpaperTick++
+            }
+        }
+    }
     // ── W4-B (Chat-Suche): Magnifier-Verband ─────────────────────────────────
     // Suchleiste + Treffer-Liste über dem VOLLSTÄNDIGEN Verlauf (Disk-Restore
     // via ChatHistoryStore + Live-Ankömmlinge — NIEMALS am chatEvents-200er-
@@ -1248,8 +1518,14 @@ private fun ConversationBody(
             .fillMaxSize()
             .padding(padding),
     ) {
-        // WELLE 13 (Sir): Herz-Knopf öffnet die Einstellungen (dort lebt die
-        // Supporter-Billing-Karte — Maschine in play/github je Edition).
+        // WELLE 13 (Sir): Herz-Knopf = Support — W16 (Fixliste 34): play
+        // öffnet DIREKT das „Unterstützen“-Sheet im Chat; GitHub hat das
+        // Herz vollständig nicht (keine Supporter-Route).
+        // W16 (Fixliste 30a/32): Header im WA-Format — dynamisches Profilbild
+        // (AgentAvatarStore, P32a) + ⋮-Chat-Menü (Agent ansehen / Chatdesign /
+        // Modell & Denken / Mediathek öffnen / Chat löschen). Im Suchmodus
+        // bleibt der Header als Kontext-Zeile (Fixliste 28: „Agent-Header
+        // minimal behalten"); der FP-Abgleich-Button blendet dort aus.
         ConversationHeader(
             agent = agent,
             working = working,
@@ -1261,7 +1537,24 @@ private fun ConversationBody(
                 searchOpen = !searchOpen
                 if (!searchOpen) searchQuery = ""
             },
-            onSupport = onOpenSettings,
+            // W16 (Fixliste 34): Herz (play) → DIREKT das „Unterstützen“-Sheet
+            // mit der Billing-Karte (GitHub: Herz entfällt im Header).
+            onSupport = { supporterSheetOpen = true },
+            // W16 (Fixliste 32): Mediathek-Modus = Verlaufssuche ausblenden
+            // (kein Blind-Tap auf die Suchleiste, die im Overlay fehlt).
+            showSearchButton = !showMediathek,
+            onMenuAgent = { agentSheetOpen = true },
+            onMenuDesign = { designSheetOpen = true },
+            onMenuModel = { composerPickerOpen = true },
+            onMenuMediathek = {
+                searchOpen = false
+                showMediathek = true
+            },
+            onMenuDelete = {
+                searchOpen = false
+                showMediathek = false
+                confirmDeleteChat = true
+            },
         )
         HorizontalDivider(color = FlipsiColors.LineStrong)
         // PH2-FIX (E2E P1): dismissbare Fehler-Zeile direkt unter dem Kopf —
@@ -1271,14 +1564,40 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
-        // ── W4 (App-Lane C): Tab-Verband [Chat | Mediathek] am Chatscreen ────
-        // Der Mediathek-Tab lebt NEBEN dem Chat in derselben Conversation
-        // (gemeinsamer Kopf). Zustand je Agent: Agent-Wechsel setzt auf Chat
-        // zurück (remember(agent.id), bewusst KEIN saveable — Rotation/Wechsel
-        // kehren in die Chat-Ansicht zurück, das ist der natürliche Modus).
-        var convTab by remember(agent.id) { mutableStateOf(TAB_CHAT) }
-        ChatTabsRow(selected = convTab, onSelect = { convTab = it })
-        if (convTab == TAB_CHAT) {
+        // ── W16 (Fixliste 32-Nachtrag): die Tab-Zeile [Chat | Mediathek] ist
+        // ENTFERNT — das Chat-Fenster ist pur (nur der Chat selbst). Die
+        // Mediathek lebt als Overlay (Menü „Mediathek öffnen"), Zurück per ‹-
+        // Zeile; die Fixliste-28-Ausblendungen bleiben konsistent (im Mediathek-
+        // Modus gibt es Composer ohnehin nicht).
+        if (showMediathek) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 4.dp, end = 12.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { showMediathek = false }) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.mediathek_back_a11y),
+                        tint = FlipsiColors.TextPrimary,
+                    )
+                }
+                Text(
+                    stringResource(R.string.mediathek_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = FlipsiColors.TextPrimary,
+                )
+            }
+            // ── Mediathek-Overlay — alle Medien DIESES Agenten (Store-Verbind +
+            // LIVE-Bubbles, STALE = Platzhalter-Karte); ohne Composer, volle Fläche.
+            MediathekTabBody(
+                agent = agent,
+                conversation = conversation,
+                modifier = Modifier.weight(1f),
+            )
+        } else {
             // W4-B (Chat-Suche): Suchleiste unter dem Tab-Verband (offen =
             // Tastatur fokusiert; X leert erst die Query, schließt dann).
             if (searchOpen) {
@@ -1323,7 +1642,11 @@ private fun ConversationBody(
                     ChatDateRules.dayKey(java.time.LocalDate.now().minusDays(1).atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli())
                 }
                 Box(modifier = Modifier.weight(1f)) {
-                    ChatWallpaper(modifier = Modifier.fillMaxSize())
+                    // W16: key(wallpaperTick) — ein Wallpaper-Wechsel baut die
+                    // Unterlage frisch (Prefs sind kein Snapshot-State).
+                    key(wallpaperTick) {
+                        ChatWallpaper(modifier = Modifier.fillMaxSize())
+                    }
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
@@ -1355,10 +1678,9 @@ private fun ConversationBody(
                             }
                             MessageBubble(
                             message = message,
-                            // PH-FIX-CHAT-A (F3): Agent-Name als Hauptlabel neben dem
-                            // KI-Badge — Demo-Einträge (blank agentId) bekommen ihn
-                            // bewusst nicht (kein echter Agent hinter dem Namen).
-                            senderName = agent.name.takeIf { agent.agentId.isNotBlank() },
+                            // W16 (Fixliste 16a): Label-Spalte (Agenten-Name +
+                            // KI-Badge) neben der Bubble entfällt — die Kenn-
+                            // zeichnung lebt in der Meta-Fußzeile (ChatWidgets).
                             // PH2-T10: Zustell-/Lese-Chips je EIGENER Nachricht.
                             status = if (!message.fromAgent) statusOfMessage(message) else null,
                             // PH2-FIX (Jäger B7): Demo-Eintrag (blank agentId) → KEIN
@@ -1392,20 +1714,41 @@ private fun ConversationBody(
                             onStopSpeaking = { ChatSpeechSpeaker.stopAll() },
                             // WELLE-13 P8: Holen-Verband eingehender Medien.
                             onDownloadMedia = onDownloadMedia,
+                            // W16 P30/P32: Avatar der Agenten-TTS-Bubble aus
+                            // dem AgentAvatarStore (deterministisch ohne Foto).
+                            agentAvatar = if (message.fromAgent) {
+                                { AgentAvatar(agentId = agent.agentId, name = agent.name, diameter = 26.dp) }
+                            } else {
+                                null
+                            },
                             )
                         }
                     }
                 }
             }
-            // W4-B (Zitieren): Antwort-Overlay — Longpress auf eine Bubble setzt
-            // den Antwort-Verweis, das Strip zeigt Original-Zitat über der
-            // Eingabe-Leiste; Senden klebt den Zitat-Block über die neue Bubble.
-            // (Chat-spezifisch: der Strip hängt an replyQuote und gehört in den
-            // Verlaufszweig — der Mediathek-Tab zeigt ihn nicht.)
+            // W16 (Fixliste 28/Zitat-Verband): Antwort-Strip + Composer + Trenner
+            // gehören zur Chat-Szene — IM Suchmodus WEG (die Fläche gehört der
+            // Suche), beim Schließen (✕/Back/Treffer-Sprung) SOFORT UND VOLL
+            // zurück. Der getippte Draft lebt in `inputText` (ChatScreen-State,
+            // rememberSaveable) und überlebt die Modus-Wechsel unberührt.
+            // (Zitat-Verband: der Strip hängt an replyQuote und gehört in den
+            // Chat-Zweig — das Mediathek-Overlay zeigt ihn nicht.)
+            if (!searchOpen) {
             replyQuote?.let { quote ->
                 ReplyQuoteStrip(quote = quote, onCancel = onDismissReply)
             }
             HorizontalDivider(color = FlipsiColors.LineStrong)
+            // ── W16 P30b: Aufnahme-Fahne ÜBER der Composer-Zeile (WA-Muster) ──
+            // roter Laufzeit-Punkt + mm:ss + „‹ Wischen zum Abbrechen"; beim
+            // Wisch-Abbruch rot, der X-Knopf bricht hart ab (onVoiceCancel).
+            // Steht für BEIDE Aufnahme-Spuren: Hold-Geste (P30b) und die
+            // Tap-Fallback-Sessionen (B1) — recording = voiceRecording.
+            VoiceRecordingFahne(
+                recording = voiceRecording,
+                cancelling = voiceHoldCancelling,
+                onCancel = onVoiceCancel,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
             // W4-01 (App-Lane A, W4-01a): IME-Verband — NUR die InputBar trägt
             // imePadding()+navigationBarsPadding(); der Header (Agent-Name/
             // FP-Button) und die Divider/Banner leben oberhalb und werden von
@@ -1434,51 +1777,234 @@ private fun ConversationBody(
                     onAttach = onAttach,
                     voiceRecording = voiceRecording,
                     onVoiceToggle = onVoiceToggle,
-                    modelLabel = composerModel ?: "Auto",
-                    // W15: Denken-Label als Ressource (DE/EN) statt deutschem Literal.
-                    effortLabel = composerEffort?.let { stringResource(effortLabelRes(it)) },
-                    onOpenPicker = { composerPickerOpen = true },
+                    // W16 P30b: Hold-to-Record-Verband am runden Knopf + Fahne.
+                    onVoiceHoldStart = onVoiceHoldStart,
+                    onVoiceHoldEnd = onVoiceHoldEnd,
+                    onVoiceHoldCancelState = onVoiceHoldCancelState,
+                    // W16 (Fixliste 35): Modell-Chip (LIVE-Anzeige) — Tap öffnet
+                    // dasselbe Modell & Denken-Sheet wie der ⋮-Punkt.
+                    modelChipLabel = modelChipLabel,
+                    onModelChip = { composerPickerOpen = true },
                 )
             }
-            if (composerPickerOpen) {
-                ChatModelSheet(
-                    agentId = agent.agentId,
-                    currentModel = composerModel,
-                    currentEffort = composerEffort,
-                    onPickModel = { picked ->
-                        composerModel = picked
-                        composerPickerOpen = false
-                    },
-                    onPickEffort = { level ->
-                        composerEffort = level
-                    },
-                    onDismiss = { composerPickerOpen = false },
-                    // WELLE-13 P9: Vorlesen-Regler — Persistenz passiert im Sheet
-                    // (ChatSpeechPrefs), der Spiegel hält die Antwort des Chats.
-                    currentReadAloud = composerReadAloud,
-                    onToggleReadAloud = { enabled -> composerReadAloud = enabled },
-                )
+            } // W16: Ende „!searchOpen" (Composer-Verband des Suchmodus)
+            // W16 (Fixliste 30-Nachtrag): der Modell-/Denken-Picker lebt nach dem
+            // Composer-Umbau im ⋮-Menü („Modell & Denken") — das Sheet bleibt
+            // VERBANDS-gleich (Pro-Agent-Prefs, Vorlesen-Regler), nur der
+            // Offen-Sprung kam vom Chip → zum Menüpunkt.
+        }
+        if (composerPickerOpen) {
+            ChatModelSheet(
+                agentId = agent.agentId,
+                currentModel = composerModel,
+                currentEffort = composerEffort,
+                onPickModel = { picked ->
+                    composerModel = picked
+                    composerPickerOpen = false
+                },
+                onPickEffort = { level ->
+                    composerEffort = level
+                },
+                onDismiss = { composerPickerOpen = false },
+                // WELLE-13 P9: Vorlesen-Regler — Persistenz passiert im Sheet
+                // (ChatSpeechPrefs), der Spiegel hält die Antwort des Chats.
+                currentReadAloud = composerReadAloud,
+                onToggleReadAloud = { enabled -> composerReadAloud = enabled },
+                // W16 (Fixliste 35): wählbare Modell-Liste — NUR der vom
+                // Gateway/Adapter gelieferte Katalog dieses Agenten.
+                gatewayModels = agentModelsLive[agent.agentId],
+            )
+        }
+        // W16 (Fixliste 34): „Unterstützen“-Sheet am Herz-Tap (direkt im Chat,
+        // play-only — GitHub ohne Billing-Route hat weder Herz noch Sheet).
+        if (supporterSheetOpen && BuildConfig.EDITION_PLAY) {
+            ChatSupporterSheet(
+                activity = com.hermesandroid.bridge.i18n.AppLanguage.LocalAppActivity.current,
+                onDismiss = { supporterSheetOpen = false },
+            )
+        }
+        // ── W16 (Fixliste 32): Sheets + Lösch-Bestätigung des ⋮-Chat-Menüs ────
+        if (agentSheetOpen) {
+            ModalBottomSheet(
+                onDismissRequest = {
+                    agentSheetOpen = false
+                    sheetPictureError = false
+                },
+                containerColor = FlipsiColors.Panel,
+            ) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        stringResource(R.string.chat_menu_view_agent),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FlipsiColors.TextPrimary,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    AgentAvatar(
+                        agentId = agent.agentId,
+                        name = agent.name,
+                        diameter = 96.dp,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "${stringResource(R.string.agent_sheet_name_label)}: ${agent.name}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FlipsiColors.TextPrimary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (agent.online) "Online" else "Offline",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        stringResource(R.string.agent_sheet_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                        modifier = Modifier.padding(horizontal = 8.dp),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        if (agent.agentId.isNotBlank()) {
+                            // W16 (Fixliste 32a): Profilbild ändern → Galerie-Pick
+                            // → AgentAvatarStore (app-privat JPEG-Kopie).
+                            TextButton(onClick = {
+                                sheetPictureError = false
+                                avatarPicker.launch(
+                                    androidx.activity.result.PickVisualMediaRequest(
+                                        androidx.activity.result.contract.ActivityResultContracts
+                                            .PickVisualMedia.ImageOnly,
+                                    ),
+                                )
+                            }) {
+                                Text(
+                                    stringResource(R.string.agent_avatar_change),
+                                    color = FlipsiColors.Ember,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            }
+                        }
+                        if (hasAvatarPicture) {
+                            TextButton(onClick = {
+                                AgentAvatarStore.clearAvatar(compositionContext, agent.agentId)
+                                sheetPictureError = false
+                            }) { Text(stringResource(R.string.agent_avatar_remove), color = FlipsiColors.TextPrimary) }
+                        }
+                    }
+                    if (sheetPictureError) {
+                        Text(
+                            stringResource(R.string.agent_avatar_failed),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.SignalRedText,
+                        )
+                    }
+                }
             }
-        } else {
-            // ── W4 (App-Lane C): Mediathek-Tab — alle Medien DIESES Agenten
-            // (Store-Verbind + LIVE-Bubbles, STALE = Platzhalter-Karte).
-            MediathekTabBody(
-                agent = agent,
-                conversation = conversation,
-                modifier = Modifier.weight(1f),
+        }
+        if (designSheetOpen) {
+            ModalBottomSheet(
+                onDismissRequest = { designSheetOpen = false },
+                containerColor = FlipsiColors.Panel,
+            ) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
+                    Text(
+                        stringResource(R.string.design_sheet_title),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FlipsiColors.TextPrimary,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    // Zustands-Zeile liest den Prefs-Stand je Composition — die
+                    // Wahl wirkt beim nächsten Rendern (ChatWallpaper liest selbst).
+                    // Der Tick liest im Scope mit und abonniert damit die Wahl.
+                    val wallpaperSet = remember(wallpaperTick) {
+                        ChatWallpaperPrefs.wallpaperPath(compositionContext).isNotBlank()
+                    }
+                    Text(
+                        if (wallpaperSet) stringResource(R.string.design_sheet_state_photo)
+                        else stringResource(R.string.design_sheet_state_default),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    FilterChipFlipsi(
+                        label = stringResource(R.string.design_wallpaper_standard),
+                        active = !wallpaperSet,
+                        onClick = {
+                            // W16.3 (F6): Kopie + Prefs-Eintrag räumen (URI-AltStand
+                            // fliegt mit dem Key-Renaming ohnehin nie mehr an).
+                            ChatWallpaperPrefs.clearWallpaper(compositionContext)
+                            wallpaperTick++
+                        },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    FilterChipFlipsi(
+                        label = stringResource(R.string.design_wallpaper_photo),
+                        active = wallpaperSet,
+                        onClick = {
+                            wallpaperPicker.launch(
+                                androidx.activity.result.PickVisualMediaRequest(
+                                    androidx.activity.result.contract.ActivityResultContracts
+                                        .PickVisualMedia.ImageOnly,
+                                ),
+                            )
+                        },
+                    )
+                }
+            }
+        }
+        if (confirmDeleteChat) {
+            AlertDialog(
+                onDismissRequest = { confirmDeleteChat = false },
+                title = { Text(stringResource(R.string.chat_delete_title)) },
+                text = { Text(stringResource(R.string.chat_delete_text)) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmDeleteChat = false
+                        onClearHistory()
+                    }) {
+                        Text(
+                            stringResource(R.string.chat_delete_confirm),
+                            color = FlipsiColors.SignalRedText,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmDeleteChat = false }) {
+                        Text(stringResource(R.string.common_cancel))
+                    }
+                },
+                containerColor = FlipsiColors.PanelElev,
             )
         }
     }
 }
 
 /**
- * Kopf der Conversation: zurück zur Liste + Agent-Name + Online-Status.
+ * Kopf der Conversation (W16, Fixliste 30a/32 — WA-Format): dynamisches
+ * Profilbild je Agent (AgentAvatarStore, P32a — Tap = „Agent ansehen“) +
+ * Agent-Name + Online-Status + ⋮-Chat-Menü (Agent ansehen/Chatdesign/Modell
+ * & Denken/Mediathek öffnen/Chat löschen). Menü dynamisch je Agent, KEINE
+ * hartcodierten Namen.
  * PH2-T10 (F2-S3): arbeitet der Agent gerade (chat.activity working=true),
  * zeigt der Kopf einen kleinen Spinner + 'arbeitet … (mm:ss)' — die Zeit
  * läuft sekündlich ab started_at (Empfang beim Agenten) hoch.
  * W4-B (Chat-Suche): Magnifier-Knopf am Chat-Kopf → Suchleiste + Treffer-
  * Liste + Sprung-Anker (ChatSearchRules/ConversationBody); der Knopf toggelt
- * (Suchleiste offen = Schließen-Semantik, A11y je Zustand).
+ * (Suchleiste offen = Schließen-Semantik, A11y je Zustand). W16 (Fixliste
+ * 28): im Suchmodus blendet der FP-Abgleich-Button aus (reduzierte Such-
+ * Ansicht); der Header bleibt als Kontext-Zeile (wer der Chat ist).
+ * W16 (Fixliste 32): im Mediathek-Modus ruht die Verlaufssuche (Suchleiste
+ * lebt nur im Chat-Zweig) → der Magnifier entfällt dort.
  */
 @Composable
 private fun ConversationHeader(
@@ -1492,7 +2018,19 @@ private fun ConversationHeader(
     onSearchToggle: () -> Unit = {},
     // WELLE 13 (Sir): Herz-Knopf = Support/IAP-Dialog (2,99-Perk, kein Zwang).
     onSupport: () -> Unit = {},
+    // W16 (Fixliste 32): Verlaufssuche nur im Chat-Zweig anbieten (Mediathek-
+    // Overlay = kein Blind-Tap auf die versteckte Leiste).
+    showSearchButton: Boolean = true,
+    // W16 (Fixliste 32): ⋮-Menü-Aktionen — dynamisch je Agent.
+    onMenuAgent: () -> Unit = {},
+    onMenuDesign: () -> Unit = {},
+    onMenuModel: () -> Unit = {},
+    onMenuMediathek: () -> Unit = {},
+    onMenuDelete: () -> Unit = {},
 ) {
+    // Je Agent eigener Menü-Zustand (Agent-Wechsel schließt das Menü; kein
+    // saveable — Rotation kehrt zu, Menü zu = natürlicher Grundstand).
+    var menuOpen by remember(agent.id) { mutableStateOf(false) }
     // mm:ss seit started_at — je Sekunde neu gerechnet (nur bei working).
     // PH-FIX-CHAT-A (F5): 10-Minuten-Deckel statt while(true)-Ewigzähler —
     // working=false kommt in drei Live-Situationen nie an (PIPELINE-BUGS
@@ -1530,20 +2068,47 @@ private fun ConversationHeader(
                 tint = FlipsiColors.TextPrimary,
             )
         }
-        Text(
-            agent.name,
-            style = MaterialTheme.typography.titleMedium,
-            color = FlipsiColors.TextPrimary,
+        // W16 (Fixliste 32a): dynamisches Profilbild — eigenes Foto oder
+        // deterministische Farbe + Initial (AgentAvatarStore, derselbe Store
+        // wie Bubble/Agenten-Tab). Tap öffnet „Agent ansehen“ (Header-Tap ↔
+        // Sheet, WA-Muster); A11y-Beschilderung über contentDescription.
+        AgentAvatar(
+            agentId = agent.agentId,
+            name = agent.name,
+            diameter = 38.dp,
+            description = stringResource(R.string.agent_avatar_a11y),
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .clickable(onClick = onMenuAgent),
         )
         Spacer(Modifier.width(10.dp))
-        // Status-Zeichen klein neben dem Namen — Punkt + Text, nie nur Farbe (A11y).
-        OnlineDot(online = agent.online)
-        Spacer(Modifier.width(6.dp))
-        Text(
-            if (agent.online) "Online" else "Offline",
-            style = MaterialTheme.typography.labelSmall,
-            color = FlipsiColors.TextSecondary,
-        )
+        // W16-P32-Fix (Drill 05:50): der ungewichtete Titel-Text fraß die
+        // Zeilenbreite — bei schmalen Flächen bekam das ⋮ (letztes Row-Kind)
+        // ~0 px = unsichtbar + stumm (Such-/Mediathek-Modus: FP ruht → ⋮ OK).
+        // Fix: Titel+Status in einer WEIGHT-Zeile (fill = true) mit Ellipsis —
+        // sie schrumpfen und die Aktionen (Suche/Herz/FP/⋮) bleiben sichtbar.
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                agent.name,
+                style = MaterialTheme.typography.titleMedium,
+                color = FlipsiColors.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.width(8.dp))
+            // Status-Zeichen klein neben dem Namen — Punkt + Text, nie nur Farbe (A11y).
+            OnlineDot(online = agent.online)
+            Spacer(Modifier.width(4.dp))
+            Text(
+                if (agent.online) "Online" else "Offline",
+                style = MaterialTheme.typography.labelSmall,
+                color = FlipsiColors.TextSecondary,
+                maxLines = 1,
+            )
+        }
         // PH2-T10 (F2-S3): Arbeitsstatus live im Kopf (Spinner + mm:ss).
         // PH-FIX-CHAT-A (F5): nach dem 10-Minuten-Deckel kein Spinner mehr.
         if (working != null && working.working && !timedOut) {
@@ -1563,33 +2128,61 @@ private fun ConversationHeader(
         // PH-3 Welle 2 (Sirs Revision (iii)): FP-Abgleich-Button im Chat —
         // sendet 'FP-ABGLEICH: <hex>' als normale (verschlüsselte) Nachricht;
         // der Agent antwortet automatisch ✓ gleich / ✗ ABWEICHUNG (rot-Banner).
-        Spacer(Modifier.weight(1f))
-        // W4-B (Chat-Suche): Magnifier-Knopf am Chat-Kopf — toggelt die
-        // Suchleiste; A11y-Label je Zustand (nie nur Farbe).
-        IconButton(onClick = onSearchToggle) {
-            Icon(
-                Icons.Filled.Search,
-                contentDescription = stringResource(
-                    if (searchOpen) R.string.chat_search_close_a11y else R.string.chat_search_open_a11y,
-                ),
-                tint = FlipsiColors.TextPrimary,
-            )
+        // W16-P32-Fix: der Platzhalter-Spacer ist GESCHWUNDEN — die gewichtete
+        // Titel-Zeile drückt alle Aktionen nach rechts (kein Clip mehr am ⋮).
+        // W4-B + W16 (Fixliste 32): Magnifier nur im Chat-Zweig anbieten —
+        // im Mediathek-Overlay lebt die Suchleiste nicht (kein Blind-Tap);
+        // A11y-Label je Zustand (nie nur Farbe).
+        if (showSearchButton) {
+            IconButton(onClick = onSearchToggle) {
+                Icon(
+                    Icons.Filled.Search,
+                    contentDescription = stringResource(
+                        if (searchOpen) R.string.chat_search_close_a11y else R.string.chat_search_open_a11y,
+                    ),
+                    tint = FlipsiColors.TextPrimary,
+                )
+            }
         }
         // WELLE 13 (Sir 12.11.): Herz = Unterstützer-Knopf (IAP, unaufdringlich).
-        IconButton(onClick = onSupport) {
-            Icon(
-                Icons.Filled.Favorite,
-                contentDescription = stringResource(R.string.support_a11y),
-                tint = FlipsiColors.TextPrimary,
-            )
+        // W16 (Fixliste 34): play-only — die GitHub-Edition kennt KEINE
+        // Supporter-Route (Play-Billing), das Herz entfällt dort vollständig;
+        // play öffnet DIREKT das Unterstützen-Sheet statt Umweg Einstellungen.
+        if (BuildConfig.EDITION_PLAY) {
+            IconButton(onClick = onSupport) {
+                Icon(
+                    Icons.Filled.Favorite,
+                    contentDescription = stringResource(R.string.support_a11y),
+                    tint = FlipsiColors.TextPrimary,
+                )
+            }
         }
-        OutlinedButton(
-            onClick = onFpCheck,
-            modifier = Modifier.padding(end = 4.dp),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
-                start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp,
-            ),
-        ) {
+        // W16 (Fixliste 28): der FP-Abgleich-Button ruht im Suchmodus — die
+        // Suchansicht ist reduziert (Suchfeld + Treffer + Liste), der Button
+        // kehrt beim Schließen der Suche SOFORT UND VOLL zurück.
+        if (!searchOpen) {
+            // W16-P32-Fix (Drill): unter 340 dp ist die Kopf-Zeile mit
+            // Suche+Herz+FP+⋮ zu eng für das volllabelige FP-Schild (die
+            // ⋮-Clip-Quelle!) — dort läuft der FP-Pfad als Icon kompakt,
+            // Funktion identisch; Labels bleiben auf breiten Flächen.
+            val headerNarrow = LocalConfiguration.current.screenWidthDp < 340
+            if (headerNarrow) {
+                IconButton(onClick = onFpCheck) {
+                    Text(
+                        "FP",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = FlipsiColors.TextPrimary,
+                        maxLines = 1,
+                    )
+                }
+            } else
+            OutlinedButton(
+                onClick = onFpCheck,
+                modifier = Modifier.padding(end = 4.dp),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                    start = 10.dp, end = 10.dp, top = 4.dp, bottom = 4.dp,
+                ),
+            ) {
             // W13-SENDFIX (Komposer-Meta-Reihe-Render-Bug): Label NIE
             // umbrechen lassen. Auf schmalen Flächen (Drill-Emulator =
             // sw262dp/440dpi) läuft die Kopf-Zeile über — die festen Kinder
@@ -1611,6 +2204,66 @@ private fun ConversationHeader(
                 maxLines = 1,
                 softWrap = false,
             )
+            } // W16: Ende „!searchOpen" (FP-Abgleich ruht im Suchmodus)
+        }
+        // W16 (Fixliste 32): ⋮-Chat-Menü im Header (WA-Muster, Referenz-
+        // Screenshot) — die 4 Sir-Punkte (Agent ansehen, Chatdesign, Mediathek
+        // öffnen, Chat löschen) plus „Modell & Denken“ (der Welle-12-Picker
+        // zog mit dem Composer-Umbau aus den Chips hierher, kein Feature-Ver-
+        // lust). Dropdown dynamisch je Agent, KEINE hartcodierten Namen.
+        Box {
+            IconButton(onClick = { menuOpen = true }) {
+                Icon(
+                    Icons.Filled.MoreVert,
+                    contentDescription = stringResource(R.string.chat_menu_a11y),
+                    tint = FlipsiColors.TextPrimary,
+                )
+            }
+            DropdownMenu(
+                expanded = menuOpen,
+                onDismissRequest = { menuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_menu_view_agent)) },
+                    onClick = {
+                        menuOpen = false
+                        onMenuAgent()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_menu_design)) },
+                    onClick = {
+                        menuOpen = false
+                        onMenuDesign()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_menu_model)) },
+                    onClick = {
+                        menuOpen = false
+                        onMenuModel()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_menu_mediathek)) },
+                    onClick = {
+                        menuOpen = false
+                        onMenuMediathek()
+                    },
+                )
+                DropdownMenuItem(
+                    text = {
+                        Text(
+                            stringResource(R.string.chat_menu_delete),
+                            color = FlipsiColors.SignalRedText,
+                        )
+                    },
+                    onClick = {
+                        menuOpen = false
+                        onMenuDelete()
+                    },
+                )
+            }
         }
     }
 }
@@ -1796,54 +2449,9 @@ val RestoredStatusSaver = listSaver<Map<Long, String>, Any>(
     },
 )
 
-// ── W4 (App-Lane C): Tab-Verband am Chatscreen je Agent ──────────────────────
-
-/** Tab-Wert „Chat“ (Standard-Ansicht der Conversation). */
-private const val TAB_CHAT = "chat"
-
-/** Tab-Wert „Mediathek“ (Medien-Sicht, siehe MediathekTabBody). */
-private const val TAB_MEDIATHEK = "mediathek"
-
-/**
- * Tab-Zeile unter dem Conversation-Kopf: [Chat | Mediathek] als Filter-Chips
- * (deutsch beschriftet via Strings-Keys, A11y: Text-Label + selektiert-Zustand
- * — nie nur Farbe). Der Chip-Satz bleibt bewusst minimal (kein TabRow-Kohle-
- * Wrapper, keine Anim — Reduced-Pass je Anim-Stelle).
- */
-@Composable
-private fun ChatTabsRow(selected: String, onSelect: (String) -> Unit) {
-    val chatLabel = stringResource(R.string.chat_tab_chat)
-    val mediaLabel = stringResource(R.string.chat_tab_mediathek)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 6.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        FilterChip(
-            selected = selected == TAB_CHAT,
-            onClick = { onSelect(TAB_CHAT) },
-            label = { Text(chatLabel) },
-            colors = FilterChipDefaults.filterChipColors(
-                containerColor = FlipsiColors.Panel,
-                labelColor = FlipsiColors.TextPrimary,
-                selectedContainerColor = FlipsiColors.Ember,
-                selectedLabelColor = FlipsiColors.OnEmber,
-            ),
-        )
-        FilterChip(
-            selected = selected == TAB_MEDIATHEK,
-            onClick = { onSelect(TAB_MEDIATHEK) },
-            label = { Text(mediaLabel) },
-            colors = FilterChipDefaults.filterChipColors(
-                containerColor = FlipsiColors.Panel,
-                labelColor = FlipsiColors.TextPrimary,
-                selectedContainerColor = FlipsiColors.Ember,
-                selectedLabelColor = FlipsiColors.OnEmber,
-            ),
-        )
-    }
-}
+// ── W16 (Fixliste 32): die Tab-Verband-Konstanten TAB_CHAT/TAB_MEDIATHEK und
+// die ChatTabsRow-Komposable sind ENTFERNT — Mediathek wandert ins ⋮-Menü
+// („Mediathek öffnen“) als Overlay, der Chat-Fenster ist pur.
 
 // ── W4-B (Chat-Suche): Suchleiste + Trefferliste ─────────────────────────────
 

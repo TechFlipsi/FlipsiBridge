@@ -461,6 +461,10 @@ object ServerProfiles {
             dto = ProfileStoreDto(
                 version = parsed.version,
                 onboardingDone = parsed.onboardingDone ?: false,
+                // W16.3 (F7): Skip-Merker MITLADEN — ohne Zeile fiel der
+                // „Einrichtung übersprungen“-Persistenz-Merker je Restart auf
+                // false (Restore-Konstruktor baute eine LEERE dto-Default).
+                onboardingSkipped = parsed.onboardingSkipped ?: false,
                 activeId = parsed.activeId,
                 profiles = parsed.profiles.orEmpty()
                     .filter { it.id.isNotBlank() && it.url.isNotBlank() },

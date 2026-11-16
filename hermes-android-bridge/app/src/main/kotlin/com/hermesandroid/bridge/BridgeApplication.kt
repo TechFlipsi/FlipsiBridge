@@ -36,5 +36,8 @@ class BridgeApplication : Application() {
         // hält KEINE Activity-Referenz (Leak-Fix R11).
         com.hermesandroid.bridge.ui.BridgeStatus.init()
         RelayClient.autoConnect()
+        // W16 (Fixliste-Punkt 26): Update-Check beim App-Start (kein Download/
+        // Install mehr — nur Info-Push; intern 24h-Fenster + Dedupe je Version).
+        com.hermesandroid.bridge.files.UpdateCheck.afterAppStart(this)
     }
 }

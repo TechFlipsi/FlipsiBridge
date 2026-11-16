@@ -19,9 +19,9 @@ android {
         // (hartes Play-Gate seit 31.08.2026: neue Apps + Updates = API 36;
         // die Verlängerung bis 01.11.2026 ist verpasst) — GitHub-Edition bleibt 34.
         targetSdk = 34
-        // W15b: 5 Re-Drill-Fixes — versionCode-Bump 41 → 42 (github).
-        versionCode = 42
-        versionName = "0.15.3"
+        // W16: WA-Chat-Redesign + Agenten-live + Update-Flow-Neubau — 42 → 43.
+        versionCode = 43
+        versionName = "0.16.0"
     }
 
     buildFeatures {
@@ -61,7 +61,7 @@ android {
             // PH-7/DE-2: eigener Play-Zähler (3-stellig, Start 100), versionName-
             // Suffix je Edition, targetSdk 36 = Play-Gate (neue Apps 31.08.2026).
             // W15b: 5 Re-Drill-Fixes — play-Zähler 104 → 105.
-            versionCode = 105
+            versionCode = 106
             versionNameSuffix = "-play"
             targetSdk = 36
         }

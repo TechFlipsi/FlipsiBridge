@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,18 +9,23 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -43,8 +49,6 @@ import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.server.ServerProfileRules
 import com.hermesandroid.bridge.ui.onboarding.OnboardingRules
 import com.hermesandroid.bridge.ui.onboarding.PassCodeField
-import java.text.DateFormat
-import java.util.Date
 
 /**
  * Welle 4 / App-Lane D — Multi-Server-Liste in Einstellungen → Server
@@ -63,19 +67,26 @@ import java.util.Date
  * Einblenden pro Tipp) — der Code wird beim Bearbeiten aus dem Vault gelesen
  * (ServerProfiles.codeOf) und NIE geloggt.
  *
+ * WELLE 16 / P21 (Sir): KOMPAKTE ZEILEN-Form — [Status-Dot] Domain
+ * [Aktiv-Chip] + ICON-Buttons (Stift = Bearbeiten-Dialog, ✗ = Entfernen mit
+ * Bestätigung; contentDescription je Icon für TalkBack). Die große URL-Dar-
+ * stellung ENTfällt (volle URL nur im Bearbeiten-Dialog) und Inaktive-Kacheln
+ * öffnen per ZEILEN-TAP den Wechseln-Dialog (kein „Wechseln“-Textbutton mehr).
+ * Das alte extra „Server-Adresse“-Feld unter der Liste (P21-Nachtrag) wurde
+ * im BridgeScreen entfernt — Connect/Wechsel läuft EINDRUCKSICH über die
+ * Profil-Liste (connectViaProfile), kein toter Code-Faden.
+ *
  * DRILL-ACKER (Profil-Wechsel-Beweis-Stellen, Emulator):
  *  1. „+ Server hinzufügen“ → Dialog erscheint; URL-Plausi (leer → Fehler),
  *     Code verborgen → Einblenden-Schalter zeigt Klartext.
- *  2. Umschalten → Bestätigung nennt ALT- und NEU-Label; bestätigt →
- *     logcat `Connecting to ws://<neu…>` + Statuszeile wechselt auf
+ *  2. TAP auf eine INAKTIVE Zeile → Bestätigung nennt ALT- und NEU-Label;
+ *     bestätigt → logcat `Connecting to ws://<neu…>` + Statuszeile wechselt auf
  *     „Verbinde …“/„Verbunden“ NUR am neuen Eintrag.
  *  3. Relay-Log: genau EIN `Phone connected` je Wechsel (kein Doppel-WS).
- *  4. Nach onOpen: „Letzt-Verbunden“ des aktiven Eintrags = „Gerade eben“.
- *  5. Bearbeiten des aktiven Codes → nach Speichern logcat-Adoption
- *     (`Code adoptiert (Quelle: profil:<id>)`) beim nächsten Umschalten.
- *  6. Aktives Profil löschen → Banner „Verbindung geschlossen“, Zeilen bleiben,
- *     kein Auto-Connect (erfolgtes Umschalten erzeugt ihn wieder).
- *  7. Kaltstart: Liste gezeichnet aus dem JSON; aktiver Eintrag = letzter
+ *  4. Bearbeiten (Stift) öffnet den Dialog mit voller URL + Code.
+ *  5. Aktives Profil löschen (✗ + Bestätigung) → Banner „Verbindung geschlossen“,
+ *     Zeilen bleiben, kein Auto-Connect (erfolgtes Umschalten erzeugt ihn wieder).
+ *  6. Kaltstart: Liste gezeichnet aus dem JSON; aktiver Eintrag = letzter
  *     bestätigter Wechsel (serverUrl-Prefs).
  */
 @Composable
@@ -267,127 +278,77 @@ private fun RelayProfileRow(
     onEditRequest: () -> Unit,
     onDeleteRequest: () -> Unit,
 ) {
+    val (dot, chip) = when {
+        active && liveStatus is BridgeStatus.ConnectionState.CONNECTED ->
+            FlipsiColors.SignalGreen to stringResource(R.string.ms_active_chip)
+        active -> FlipsiColors.SignalAmber to stringResource(R.string.ms_active_chip)
+        else -> FlipsiColors.TextSecondary to stringResource(R.string.ms_inactive_chip)
+    }
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (active) FlipsiColors.PanelElev else FlipsiColors.Panel,
         ),
         shape = MaterialTheme.shapes.large,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            // W16 P21: inaktive Kachel = Wechseln-Dialog per Zeilen-Tap ( TalkBack
+            // meldet die Aktion über das onClickLabel); aktiv = kein Tap-Verband.
+            .clickable(
+                enabled = !active,
+                onClickLabel = stringResource(R.string.ms_switch_confirm),
+            ) { onSwitchRequest() },
     ) {
-        Column(Modifier.fillMaxWidth().padding(12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val (dot, chip) = when {
-                    active && liveStatus is BridgeStatus.ConnectionState.CONNECTED ->
-                        FlipsiColors.SignalGreen to stringResource(R.string.ms_active_chip)
-                    active -> FlipsiColors.SignalAmber to stringResource(R.string.ms_active_chip)
-                    else -> FlipsiColors.TextSecondary to stringResource(R.string.ms_inactive_chip)
-                }
-                Box(Modifier.size(10.dp).background(dot, CircleShape))
-                Text(
-                    profile.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    // W15c (KLEIN A, Jäger): Name + Chip teilen sich die Zeile —
-                    // ein langer Profil-Name drückte den Chip raus (kein
-                    // weight, Row lief über). maxLines=1 + Ellipsis halten
-                    // die Zeile einzeilig ehrlich.
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = 10.dp, end = 8.dp),
-                )
-                Text(
-                    chip,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = FlipsiColors.OnEmber,
-                    modifier = Modifier
-                        .background(
-                            if (active) FlipsiColors.Ember else FlipsiColors.PanelElev,
-                            RoundedCornerShape(6.dp),
-                        )
-                        .padding(horizontal = 6.dp, vertical = 3.dp),
-                )
-                Spacer(Modifier.weight(1f))
-            }
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .padding(start = 16.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(10.dp).background(dot, CircleShape))
             Text(
-                profile.url,
-                style = FlipsiType.Code,
-                // W15c (KLEIN A, Jäger): lange Server-URLs liefen als
-                // Mehrzeiler in die Karte — maxLines=1 + Ellipsis (die volle
-                // URL bleibt im Bearbeiten-Dialog sichtbar).
+                profile.label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = 8.dp),
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .weight(1f),
             )
-            LetztVerbundenRow(profile.lastConnectedMs)
-            // Code je Profil NUR reduziert sichtbar (Reduced-Pass-Faser) —
-            // der Bearbeiten-Dialog liest ihn aus dem Vault, hier bleibt
-            // die Zeile bewusst klartext-frei.
-            Row(
-                Modifier.fillMaxWidth().padding(top = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (!active) {
-                    OutlinedButton(
-                        onClick = onSwitchRequest,
-                        modifier = Modifier.height(40.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-                    ) {
-                        Text(stringResource(R.string.ms_switch), fontWeight = FontWeight.Medium)
-                    }
-                }
-                OutlinedButton(
-                    onClick = onEditRequest,
-                    modifier = Modifier.height(40.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-                ) {
-                    Text(stringResource(R.string.ms_edit))
-                }
-                OutlinedButton(
-                    onClick = onDeleteRequest,
-                    modifier = Modifier.height(40.dp),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.SignalRedText),
-                ) {
-                    Text(stringResource(R.string.ms_remove))
-                }
+            Text(
+                chip,
+                style = MaterialTheme.typography.labelSmall,
+                color = FlipsiColors.OnEmber,
+                modifier = Modifier
+                    .background(
+                        if (active) FlipsiColors.Ember else FlipsiColors.PanelElev,
+                        RoundedCornerShape(6.dp),
+                    )
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+            // P21: ICON-Buttons statt Text-Buttons — Stift = Bearbeiten-Dialog
+            // (volle URL + Code NUR dort), ✗ = Entfernen mit Bestätigung.
+            IconButton(onClick = onEditRequest) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = stringResource(R.string.ms_row_edit_a11y),
+                    tint = FlipsiColors.TextSecondary,
+                )
+            }
+            IconButton(onClick = onDeleteRequest) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.ms_row_remove_a11y),
+                    tint = FlipsiColors.SignalRedText,
+                )
             }
         }
     }
 }
 
-/** „Letzt-Verbunden“-Zeile je Profil (Bucket-Regel im reinen Store). */
-@Composable
-private fun LetztVerbundenRow(lastConnectedMs: Long) {
-    val bucket = remember(lastConnectedMs) {
-        ServerProfileRules.lastConnectedBucket(lastConnectedMs, System.currentTimeMillis())
-    }
-    val label = when (bucket) {
-        ServerProfileRules.LastConnectedBucket.NEVER ->
-            stringResource(R.string.ms_last_never)
-        ServerProfileRules.LastConnectedBucket.NOW ->
-            stringResource(R.string.ms_last_now)
-        ServerProfileRules.LastConnectedBucket.MINUTES ->
-            // stringResource-Platzhalter %1$d verlangt Int (Long würde werfen).
-            stringResource(
-                R.string.ms_last_minutes,
-                ((System.currentTimeMillis() - lastConnectedMs) / 60_000L).toInt(),
-            )
-        ServerProfileRules.LastConnectedBucket.HOURS ->
-            stringResource(
-                R.string.ms_last_hours,
-                ((System.currentTimeMillis() - lastConnectedMs) / 3_600_000L).toInt(),
-            )
-        ServerProfileRules.LastConnectedBucket.HISTORY ->
-            DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT)
-                .format(Date(lastConnectedMs))
-    }
-    Text(
-        stringResource(R.string.ms_last_connected) + ": " + label,
-        style = MaterialTheme.typography.labelSmall,
-        color = FlipsiColors.TextSecondary,
-        modifier = Modifier.padding(top = 6.dp),
-    )
-}
+/** „Letzt-Verbunden“-Tracking bleibt im Store (ServerProfiles) gepflegt; die
+ *  kompakte W16-P21-Zeile zeigt es bewusst NICHT mehr (Sir-Format: eine Zeile). */
 
 /**
  * Ein Dialog für +Server und Bearbeiten: Name (freiwillig), URL, Code

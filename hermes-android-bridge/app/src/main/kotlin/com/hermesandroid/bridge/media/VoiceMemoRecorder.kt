@@ -28,6 +28,13 @@ class VoiceMemoRecorder(
         const val MIN_DURATION_MS = 800L
         /** Härte Deckel (keine Endlos-Diktate — Relay-Media-Deckel gilt zusätzlich). */
         const val MAX_DURATION_MS = 10 * 60_000L
+
+        /**
+         * W16 B2 (Fixliste 30b): WA-Muster Hold-to-Record — die GESTE verwirft
+         * Aufnahmen, deren Haltezeit kürzer als diese Schwelle ist ([stop] mit
+         * dieser Mindestlänge konstruiert — s. [VoiceHoldRecorder]).
+         */
+        const val HOLD_MIN_MS = 500L
     }
 
     private var recorder: MediaRecorder? = null

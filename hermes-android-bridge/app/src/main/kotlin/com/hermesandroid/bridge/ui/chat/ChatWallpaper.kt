@@ -3,6 +3,7 @@ package com.hermesandroid.bridge.ui.chat
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -22,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.ui.FlipsiColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * WELLE-13 P11a (Chat-Hintergrund): zwei Zustände, ehrlich getrennt —
@@ -31,32 +33,79 @@ import kotlinx.coroutines.withContext
  *    ([DefaultChatPattern]). „Anmutung ja, Assets nein“ (Fixplan-Grundregel):
  *    es wird KEIN fremdes Muster kopiert, das Muster ist deterministisch aus
  *    der Flipsi-Palette gerechnet.
- * 2. Nutzer-Foto: [ChatWallpaperPrefs.wallpaperUri] (ContentResolver-Pick,
- *    Settings-Seite setzt ihn) — das Foto füllt flächendeckend (Crop), ein
- *    dunkler Scrim (55 %) liegt darüber, damit die Bubbles lesbar bleiben
- *    (WhatsApp-Lesbarkeits-Trick, mit eigener Umsetzung).
+ * 2. Nutzer-Foto: [ChatWallpaperPrefs.wallpaperPath] — W16.3 (F6) liegt die
+ *    Pick-Datei als JPEG app-privat (filesDir/chat_wallpaper); das Foto
+ *    füllt flächendeckend (Crop), ein dunkler Scrim (55 %) liegt darüber,
+ *    damit die Bubbles lesbar bleiben (WhatsApp-Lesbarkeits-Trick, mit
+ *    eigener Umsetzung).
  *
- * Leere/fehlende URI = Eigenmuster (nie ein weißer Blitz).
+ * Leere/fehlende Kopie (oder URI-AltStand) = Eigenmuster (nie ein weißer Blitz).
  */
 object ChatWallpaperPrefs {
     private const val FILE = "chat_wallpaper"
-    private const val KEY_URI = "wallpaperUri"
+    private const val KEY_PATH = "wallpaperImagePath"
+    private const val DIR_NAME = "chat_wallpaper"
+    private const val TARGET_FILE = "wallpaper.jpg"
 
-    /** Gewähltes Nutzer-Foto als content-URI (leer = Eigenmuster). */
-    fun wallpaperUri(context: Context): String =
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .getString(KEY_URI, "") ?: ""
+    /** Verzeichnis der Wallpaper-Kopie (app-privat). */
+    private fun storeDir(context: Context): File =
+        File(context.applicationContext.filesDir, DIR_NAME)
 
     /**
-     * Wallpaper setzen (Settings-Pick); null/leer räumt den Schlüssel →
-     * zurück zum Eigenmuster. Speichern als URI-String, KEIN Kopieren der
-     * Datei — das Foto bleibt in Sirs Gallery-Ordner, die App hält nur den
-     * Verweis (ContentResolver-Persistenz übernimmt der Pick-Aufrufer).
+     * W16.3 (F6): Gewähltes Nutzer-Foto als APP-PRIVATE JPEG-Datei unter
+     * filesDir/chat_wallpaper (leer = Eigenmuster). Nur echte Dateipfade
+     * gelten — ein Alt-Stand aus der URI-Ära (content://…) fällt auf das
+     * Eigenmuster zurück, statt an einem zurückgezogenen Verweis still
+     * leerzulaufen (URI-Fall entfällt).
      */
-    fun setWallpaperUri(context: Context, uri: String?) {
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit().apply {
-            if (uri.isNullOrBlank()) remove(KEY_URI) else putString(KEY_URI, uri)
-        }.apply()
+    fun wallpaperPath(context: Context): String {
+        val path = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getString(KEY_PATH, "") ?: ""
+        return path.takeIf { it.startsWith("/") && File(it).exists() } ?: ""
+    }
+
+    /**
+     * W16.3 (F6): Wallpaper setzen (Chatdesign-Pick) — die Galerie-Datei wird
+     * sampled dekodiert und als JPEG app-privat KOPIERT (Parität
+     * AgentAvatarStore.setAvatar): die Kopie überlebt Content-Uri-Revokes der
+     * Galerie-Quelle; ein reiner URI-Verweis kann jederzeit weggezogen werden.
+     * true = Kopie+Prefs-Eintrag erfolgreich; false = ehrlicher Fail (Zustand
+     * bleibt „Eigenmuster", der Tap-Aufrufer zeigt nichts an).
+     */
+    fun setWallpaperImage(context: Context, uri: Uri): Boolean {
+        return runCatching {
+            val bitmap = decodeImageSampled(context, uri, targetMin = 1080)
+                ?: throw IllegalStateException("Wallpaper unlesbar")
+            val dir = storeDir(context)
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, TARGET_FILE)
+            val tmp = File(dir, ".${target.name}.part")
+            tmp.outputStream().use { out ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+            }
+            if (!tmp.renameTo(target)) {
+                // Plattformbedingtes Rename-Scheitern — copy+delete-Fallback
+                // (Parität zum writeAtomic-Muster des ChatHistoryStores).
+                target.outputStream().use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                }
+                tmp.delete()
+            }
+            bitmap.recycle()
+            target.absolutePath
+        }.onSuccess { savedPath ->
+            context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
+                .putString(KEY_PATH, savedPath).apply()
+        }.isSuccess
+    }
+
+    /** Wallpaper entfernen → zurück zum Eigenmuster (Kopie + Prefs-Eintrag räumen). */
+    fun clearWallpaper(context: Context) {
+        runCatching {
+            File(storeDir(context), TARGET_FILE).delete()
+        }
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE).edit()
+            .remove(KEY_PATH).apply()
     }
 }
 
@@ -68,16 +117,18 @@ object ChatWallpaperPrefs {
 @Composable
 fun ChatWallpaper(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-    val uri = ChatWallpaperPrefs.wallpaperUri(context)
-    if (uri.isBlank()) {
+    // W16.3 (F6): der Prefs-Stand ist jetzt ein APP-privater Dateipfad —
+    // kein Content-URI mehr (URI-Falle: Galerie-Revokes = stilles Weiß).
+    val path = ChatWallpaperPrefs.wallpaperPath(context)
+    if (path.isBlank()) {
         DefaultChatPattern(modifier)
         return
     }
     // Nutzer-Foto: dekodiert auf IO (Downsampling als RAM-Schutz — derselbe
     // Sampling-Gedanke wie decodeImageThumbnail in ChatMediaWidgets).
-    val bitmap by produceState<Bitmap?>(initialValue = null, uri) {
+    val bitmap by produceState<Bitmap?>(initialValue = null, path) {
         value = withContext(Dispatchers.IO) {
-            decodeWallpaperSampled(context, uri, targetMin = 1080)
+            decodeWallpaperFile(path, targetMin = 1080)
         }
     }
     Box(modifier) {
@@ -159,15 +210,15 @@ private fun DrawScope.drawPatternAnchors() {
 }
 
 /**
- * Wallpaper-Foto RAM-schonend dekodieren: erst Bounds, dann Sampling-Faktor
- * bis ~[targetMin] px — nie das Original in voller Auflösung im Speicher.
- * Null = unlesbar (ContentResolver-Weg bereits weggezogen etc.) → Eigenmuster.
+ * W16.3 (F6): Galerie-Pick RAM-schonend dekodieren (Bounds → Sampling bis
+ * ~[targetMin] px, Parität AgentAvatarStore.decodeSampled) — für die
+ * app-private JPEG-Kopie in [setWallpaperImage], nie das Original voll.
  */
-private fun decodeWallpaperSampled(context: Context, uri: String, targetMin: Int): Bitmap? {
+private fun decodeImageSampled(context: Context, uri: Uri, targetMin: Int): Bitmap? {
     return runCatching {
         val resolver = context.contentResolver
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(android.net.Uri.parse(uri))?.use { BitmapFactory.decodeStream(it, null, bounds) }
+        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
         var sample = 1
         while (bounds.outWidth / (sample * 2) >= targetMin &&
@@ -175,8 +226,31 @@ private fun decodeWallpaperSampled(context: Context, uri: String, targetMin: Int
         ) {
             sample *= 2
         }
-        resolver.openInputStream(android.net.Uri.parse(uri))?.use {
+        resolver.openInputStream(uri)?.use {
             BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample })
         }
+    }.getOrNull()
+}
+
+/**
+ * W16.3 (F6): Wallpaper-Kopie RAM-schonend vom app-privaten Pfad dekodieren
+ * (URI-Fall entfällt — Parität AgentAvatarStore.decodeAvatarFile).
+ * Null = unlesbar/Datei weg → Eigenmuster.
+ */
+private fun decodeWallpaperFile(path: String, targetMin: Int): Bitmap? {
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= targetMin &&
+            bounds.outHeight / (sample * 2) >= targetMin
+        ) {
+            sample *= 2
+        }
+        BitmapFactory.decodeFile(
+            path,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        )
     }.getOrNull()
 }

@@ -111,7 +111,7 @@ object PinSource {
     }
 
     /**
-     * Pinner für OkHttp-Clients (RelayClient-Hauptclient + UpdateInstaller-
+     * Pinner für OkHttp-Clients (RelayClient-Hauptclient + UpdateCheck-
      * Client — Verband „beide Clients pinnen"). null = Pins aus (nur
      * Debug-Kill-Switch); hostname-only-Hosts treffen KEIN Pin-Muster.
      */

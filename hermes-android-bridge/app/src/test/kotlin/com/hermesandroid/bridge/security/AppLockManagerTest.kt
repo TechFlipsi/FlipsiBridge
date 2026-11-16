@@ -74,7 +74,7 @@ class AppLockManagerTest {
         assertFalse(m.evaluateGate())
     }
 
-    // ── Hash + Verifikation ────────────────────────────────────────────────
+    // ── Hash + Verifikation ───────────────────────────────────────────────
 
     @Test
     fun verify_unterscheidet_richtig_und_falsch() {
@@ -84,6 +84,28 @@ class AppLockManagerTest {
         val m2 = manager() // neue Instanz = neue Session, Hash bleibt gleich
         assertTrue(m2.verifyPin("482615") is PinVerifyResult.Success)
         assertFalse(m2.verifyPin("482614") is PinVerifyResult.Success)
+    }
+
+    /**
+     * W16 P25 (R2-Audit-Nachziehung): transparente Hash-Migration — ein mit
+     * einer NIEDRIGEREN Iterationszahl erzeugter Bestandstitel wird beim
+     * ersten korrekten Login still auf PBKDF2_ITERATIONS (130 000 ≥ 120 000 =
+     * R2-Floor) gehoben; die PIN bleibt dieselbe und bleibt verifizierbar.
+     */
+    @Test
+    fun verify_migriert_alt_hash_transparent_auf_aktuelle_iterationen() {
+        val m = manager()
+        m.setPin("482615") // erzeugt mit iterations = 1_000 (Test-Injektion)
+        assertEquals(1_000, prefs.getInt("pin_iterations", -1))
+        assertTrue(m.verifyPin("482615") is PinVerifyResult.Success)
+        // Migration lief beim erfolgreichen Login:
+        assertEquals(AppLockManager.PBKDF2_ITERATIONS, prefs.getInt("pin_iterations", -1))
+        // Nach der Migration: dieselbe PIN verifiziert WEITERHIN (frische
+        // Manager-Instanz = App-Restart-Sicht):
+        assertTrue(manager().verifyPin("482615") is PinVerifyResult.Success)
+        assertFalse(manager().verifyPin("482614") is PinVerifyResult.Success)
+        // Keine Dauerschleife: pin_iterations bleibt auf dem Sollwert.
+        assertEquals(AppLockManager.PBKDF2_ITERATIONS, prefs.getInt("pin_iterations", -1))
     }
 
     @Test

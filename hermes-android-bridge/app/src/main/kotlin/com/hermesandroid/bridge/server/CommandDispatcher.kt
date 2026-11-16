@@ -18,7 +18,6 @@ import com.hermesandroid.bridge.event.EventStore
 import com.hermesandroid.bridge.executor.ActionExecutor
 import com.hermesandroid.bridge.executor.ScreenReader
 import com.hermesandroid.bridge.files.DeviceFiles
-import com.hermesandroid.bridge.files.UpdateInstaller
 import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.model.ScreenNode
@@ -692,35 +691,6 @@ object CommandDispatcher {
                 }
                 if (err != null) return mapOf("error" to err) to 400
                 mapOf("replied" to true) to 200
-            }
-
-            method == "POST" && path == "/apk_install" -> {
-                // PH-7/PS-A-11 (play-Edition): Zwei Schutzebenen. (1) Die
-                // UI-Liste blendet die Capability in play aus (CapabilityUi,
-                // Jäger-Fix J3-F1/F4-Root). (2) isEnabled liest NUR den Prefs-
-                // Toggle — ein Alt-Wert cap_selfupdate=true würde das Gate
-                // NICHT schlagen; dieser Klarfehler-403 fängt das ab und ist
-                // der letzte Block, bevor UpdateInstaller überhaupt Download
-                // anstößt (Doppelt-Verankerung = UI-Filter + Dispatcher-403).
-                if (BuildConfig.EDITION_PLAY) {
-                    return mapOf(
-                        "ok" to false,
-                        "error" to "Play-Edition: Updates kommen über den Play Store.",
-                    ) to 403
-                }
-                // v0.10.8 (Review-Blocking-1-Fix): Der Aufrufer kann keine URL mehr
-                // vorgeben — die Update-Quelle ist FIX das konfigurierte Relay.
-                // Ein beliebiger "url"-Parameter wird ignoriert, der Pairing-Token
-                // verlässt das Gerät nur Richtung Relay-Host.
-                val result = withContext(Dispatchers.IO) {
-                    UpdateInstaller.start(BridgeApplication.instance)
-                }
-                mapOf(
-                    "ok" to result.ok,
-                    "message" to result.message,
-                    "bytes" to result.bytesDownloaded,
-                    "sha256" to result.sha256,
-                ) to result.status
             }
 
             else -> {

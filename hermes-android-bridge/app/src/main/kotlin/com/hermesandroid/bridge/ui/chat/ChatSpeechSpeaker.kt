@@ -1,11 +1,16 @@
 package com.hermesandroid.bridge.ui.chat
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import java.io.File
+import java.util.Locale
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.Locale
 
 /**
  * WELLE-13 P9 (Sir-Wunsch: das HANDY spricht): Vorlesen von Agenten-Antworten
@@ -81,6 +86,17 @@ object ChatSpeechSpeaker {
     private var tts: TextToSpeech? = null
 
     private val lock = Any()
+    private val synthLock = Any()
+
+    /** Utterance-Präfix der Datei-Synthese (nie mit den Chip-IDs verwechseln). */
+    private const val SYNTH_PREFIX = "ttsfile-"
+    /** App-privater Cache je msgId (W16 B2: Agenten-Antwort als Audio-Datei). */
+    private const val SYNTH_DIR = "voice_tts"
+
+    /** Callbacks der laufenden/erwarteten Synthesen je msgId + Ziel-Dateien. */
+    private val synthCallbacks = HashMap<Long, MutableList<(String?) -> Unit>>()
+    private val synthTargets = HashMap<Long, File>()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     /** Zustand der Engine — Idle bis zur ersten Anforderung (sparsam). */
     private val stateFlow = MutableStateFlow<ChatSpeechState>(ChatSpeechState.Idle)
@@ -99,13 +115,29 @@ object ChatSpeechSpeaker {
         synchronized(lock) {
             if (tts != null) return
             stateFlow.value = ChatSpeechState.Initializing
+            // W16-Fix (Compile 05:15): der Init-Listener darf sein eigenes Val
+            // nicht direkt schließen (Kotlin: Unresolved) — Holder-Ref, gesetzt
+            // nach dem Konstruktor; im Callback NUR über das Handle.
+            val engineRef = java.util.concurrent.atomic.AtomicReference<TextToSpeech?>(
+                null,
+            )
             val engine = TextToSpeech(context.applicationContext) { status ->
                 if (status == TextToSpeech.SUCCESS) {
                     // Deutsch als Zielsprache; fehlende Sprachdaten = ehrlicher
-                    // Fail statt Kauderwelsch-Rate.
-                    val result = runCatching {
-                        tts?.setLanguage(Locale.GERMANY)
-                    }.getOrNull()
+                    // Fail statt Kauderwelsch-Rate. W16 B2: SPEECH-Attribute auch
+                    // für die Datei-Synthese (Agenten-Antwort als Audio-Datei).
+                    val handle = engineRef.get()
+                    val result = if (handle != null) runCatching {
+                        handle.setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_MEDIA)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                                .build(),
+                        )
+                        // Handle statt tts?: der Init-Callback kann NACH dem Assign
+                        // an tts= laufen — das lokale Engine-Handle ist immer da.
+                        handle.setLanguage(Locale.GERMANY)
+                    }.getOrNull() else null
                     stateFlow.value = when (result) {
                         TextToSpeech.LANG_MISSING_DATA, TextToSpeech.LANG_NOT_SUPPORTED ->
                             ChatSpeechState.Failed("Keine deutschen Sprachdaten installiert — Vorlesen nicht möglich")
@@ -115,8 +147,11 @@ object ChatSpeechSpeaker {
                     stateFlow.value = ChatSpeechState.Failed("Keine Sprachausgabe-Engine gefunden — Vorlesen nicht verfügbar")
                 }
             }
+            engineRef.set(engine)
             engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                 override fun onStart(utteranceId: String?) {
+                    // Datei-Synthese hat keine Chip-Wirkung — nur Vorlese-IDs.
+                    if (utteranceId?.startsWith(SYNTH_PREFIX) == true) return
                     // Speaking-Chip zeigen, sobald die Engine wirklich spricht
                     // (nicht schon beim Einreihen — kein Phantom-Chip).
                     utteranceId?.toLongOrNull()?.let { id ->
@@ -125,6 +160,18 @@ object ChatSpeechSpeaker {
                 }
 
                 override fun onDone(utteranceId: String?) {
+                    // W16 B2: Datei-Synthese → Callbacks mit dem Dateipfad füttern.
+                    if (utteranceId?.startsWith(SYNTH_PREFIX) == true) {
+                        val messageId = utteranceId.removePrefix(SYNTH_PREFIX).toLongOrNull()
+                        if (messageId != null) {
+                            val file = synchronized(synthLock) { synthTargets[messageId] }
+                            val produced = file
+                                ?.takeIf { it.exists() && it.length() > 0 }
+                                ?.absolutePath
+                            deliverSynthResult(messageId, produced)
+                        }
+                        return
+                    }
                     utteranceId?.toLongOrNull()?.let { id ->
                         speakingFlow.value = speakingFlow.value - id
                     }
@@ -133,6 +180,12 @@ object ChatSpeechSpeaker {
                 @Deprecated("Deprecated in Android-API — neuer Pfad onError(id, errorCode)")
                 override fun onError(utteranceId: String?) {
                     // Auch Fehler räumen den Chip — nie ein hängender Chip.
+                    if (utteranceId?.startsWith(SYNTH_PREFIX) == true) {
+                        utteranceId.removePrefix(SYNTH_PREFIX).toLongOrNull()?.let { messageId ->
+                            deliverSynthResult(messageId, null)
+                        }
+                        return
+                    }
                     utteranceId?.toLongOrNull()?.let { id ->
                         speakingFlow.value = speakingFlow.value - id
                     }
@@ -154,11 +207,88 @@ object ChatSpeechSpeaker {
         ensure(context)
         val engine = tts ?: return
         if (stateFlow.value is ChatSpeechState.Failed) return
+        // W16 B2 (Fixliste 31): EIN Audio-Pfad je App — Bubble-Wiedergabe
+        // räumen, bevor das Vorlesen ansetzt (keine zwei parallelen Spuren).
+        ChatVoicePlayback.stop()
         // Reihenfolge bewusst: erst Engine prüfen, dann sprechen — ein
         // enqueue während Initializing verwirft der Engine intern sauber
         // (speak vor OnInit liefert ERROR an den Listener → Chip nie falsch).
         runCatching {
             engine.speak(text, TextToSpeech.QUEUE_ADD, null, messageId.toString())
+        }
+    }
+
+    /**
+     * W16 B2 (Fixliste 31, Agenten-Richtung): die Agenten-Antwort als
+     * AUDIO-DATEI erzeugen (TextToSpeech.synthesizeToFile) — die WA-Voice-
+     * Bubble ([VoiceBubbleAgentTts] in VoiceBubbleWidget.kt) spielt sie danach
+     * wie eine echte Sprachnachricht (Wellenform + Dauer aus dem Audio, keine
+     * Deko-Fakes). Ergebnis je msgId app-privat gecachet (cache/voice_tts/,
+     * Galerie-Verbot unberührt) — erneutes Play ist sofort bereit.
+     *
+     * [onReady] = Main-Thread-Callback; null = Engine fehl/Datei nicht
+     * erzeugt (die Bubble zeigt den ehrlichen Nicht-verfügbar-Text).
+     * Mehrere Anfragen je msgId sind erlaubt: alle Callbacks feuern einmal.
+     */
+    fun synthesizeMessageFile(
+        context: Context,
+        messageId: Long,
+        text: String,
+        onReady: (String?) -> Unit,
+    ) {
+        if (text.isBlank()) {
+            onReady(null)
+            return
+        }
+        val dir = File(context.cacheDir, SYNTH_DIR)
+        val target = File(dir, "tts-$messageId.wav")
+        if (target.exists() && target.length() > 0) {
+            onReady(target.absolutePath)
+            return
+        }
+        ensure(context)
+        if (stateFlow.value is ChatSpeechState.Failed) {
+            onReady(null)
+            return
+        }
+        val engine = tts
+        if (engine == null) {
+            onReady(null)
+            return
+        }
+        synchronized(synthLock) {
+            synthTargets[messageId] = target
+            synthCallbacks.getOrPut(messageId) { mutableListOf() }.add(onReady)
+        }
+        val started = runCatching {
+            dir.mkdirs()
+            // Alte Teildatei löschen (Neu-Erzeugung gewinnt, kein gemischter Stand).
+            target.delete()
+            engine.synthesizeToFile(
+                text,
+                Bundle(),
+                target,
+                "$SYNTH_PREFIX$messageId",
+            )
+        }.getOrDefault(TextToSpeech.ERROR)
+        // Sofortiger Start-Fail (z. B. Synthese abgewiesen): Callbacks ehrlich
+        // beenden statt sie an der Registrierung zu binden.
+        if (started != TextToSpeech.SUCCESS) {
+            deliverSynthResult(messageId, null)
+        }
+    }
+
+    /** Synthese-Ergebnis je msgId ausliefern (Callbacks räumen, Main-Thread). */
+    private fun deliverSynthResult(messageId: Long, path: String?) {
+        val callbacks: List<(String?) -> Unit> = synchronized(synthLock) {
+            synthTargets.remove(messageId)
+            synthCallbacks.remove(messageId).orEmpty()
+        }
+        if (callbacks.isEmpty()) return
+        mainHandler.post {
+            callbacks.forEach { callback ->
+                runCatching { callback(path) }
+            }
         }
     }
 
@@ -181,6 +311,20 @@ object ChatSpeechSpeaker {
             tts = null
             stateFlow.value = ChatSpeechState.Idle
             speakingFlow.value = emptySet()
+        }
+        // W16 B2: wartende Synthese-Callbacks ehrlich beenden (kein Hängen).
+        val pending: List<Pair<Long, List<(String?) -> Unit>>> = synchronized(synthLock) {
+            val drained = synthCallbacks.map { it.key to it.value.toList() }
+            synthCallbacks.clear()
+            synthTargets.clear()
+            drained
+        }
+        pending.forEach { (messageId, callbacks) ->
+            mainHandler.post {
+                callbacks.forEach { callback ->
+                    runCatching { callback(null) }
+                }
+            }
         }
     }
 }

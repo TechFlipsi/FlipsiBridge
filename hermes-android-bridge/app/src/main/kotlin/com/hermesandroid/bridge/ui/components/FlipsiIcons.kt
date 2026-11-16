@@ -30,7 +30,6 @@ fun capIconRes(cap: String): Int = when (cap) {
     "device" -> R.drawable.ic_build
     "notify_reply" -> R.drawable.ic_send
     "files_write" -> R.drawable.ic_delete
-    "selfupdate" -> R.drawable.ic_refresh
     "location" -> R.drawable.ic_location
     "sms" -> R.drawable.ic_sms
     "calls" -> R.drawable.ic_call

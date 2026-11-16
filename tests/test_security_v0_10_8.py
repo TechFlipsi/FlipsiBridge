@@ -4,9 +4,11 @@ Covers the three review requirements that had no tests:
 - CapabilityGate deny-unknown (Blocking-2)
 - DeviceFiles.sanitize root-escape (Blocking-5)
 - UpdateInstaller without caller-supplied URL (Blocking-1, source-level)
+
+W16 (Fixliste-Punkt 26): der In-App-Install-Pfad (UpdateInstaller +
+android_apk_install-Tool + /apk_install-Route + Capability selfupdate) ist
+RAUS — die ehemals harten Assertions sind jetzt Absenz-Assertions.
 """
-import json
-import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,8 @@ import pytest
 REPO = __import__("pathlib").Path(__file__).resolve().parent.parent
 GATE_KT = REPO / "hermes-android-bridge/app/src/main/kotlin/com/hermesandroid/bridge/security/CapabilityGate.kt"
 INSTALLER_KT = REPO / "hermes-android-bridge/app/src/main/kotlin/com/hermesandroid/bridge/files/UpdateInstaller.kt"
+MAIN_MANIFEST = REPO / "hermes-android-bridge/app/src/main/AndroidManifest.xml"
+PLAY_MANIFEST = REPO / "hermes-android-bridge/app/src/play/AndroidManifest.xml"
 DISPATCHER_KT = REPO / "hermes-android-bridge/app/src/main/kotlin/com/hermesandroid/bridge/server/CommandDispatcher.kt"
 ROUTER_KT = REPO / "hermes-android-bridge/app/src/main/kotlin/com/hermesandroid/bridge/server/BridgeRouter.kt"
 RELAY_KT = REPO / "hermes-android-bridge/app/src/main/kotlin/com/hermesandroid/bridge/client/RelayClient.kt"
@@ -48,31 +52,58 @@ class TestDenyUnknownGate:
 
 
 class TestApkInstallHardening:
-    """Blocking-1: pairing token must never reach caller-supplied URLs."""
+    """Blocking-1 (damals) + W16/Punkt-26 (jetzt): der Install-Pfad ist weg.
 
-    def test_installer_has_no_url_parameter(self):
-        src = INSTALLER_KT.read_text(encoding="utf-8")
-        sig = re.search(r"fun start\(([^)]*)\)", src)
-        assert sig, "UpdateInstaller.start signature not found"
-        assert "url" not in sig.group(1), (
-            "UpdateInstaller.start still takes a caller-supplied URL"
+    Der Pairing-Token durfte nie an caller-supplied URLs; seit W16 existiert
+    der In-App-Install-Weg GAR NICHT mehr — Updates laufen je Edition über
+    Play Store/GitHub, in-app nur der Update-Check (kein APK-Download, keine
+    Installer-Fähigkeit)."""
+
+
+    def test_installer_file_is_gone(self):
+        assert not INSTALLER_KT.exists(), (
+            "UpdateInstaller.kt wurde in W16 (Punkt 26) entfernt — der "
+            "In-App-Install-Code darf nicht im Tree zurückbleiben"
         )
-        assert "/apk/latest" in src, "installer must use the fixed relay path"
 
-    def test_installer_has_no_bearer_to_arbitrary_url(self):
-        src = INSTALLER_KT.read_text(encoding="utf-8")
-        assert 'header("Authorization"' in src  # token an Relay ok
-        # kein Request.Builder().url(variable) mit caller-URL:
-        assert 'url(trimmed)' not in src, "caller-supplied URL still in use"
+    def test_no_in_app_install_left_in_app(self):
+        # Dispatcher: kein /apk_install-Handler mehr (deny-unknown 404).
+        dispatcher = DISPATCHER_KT.read_text(encoding="utf-8")
+        assert 'path == "/apk_install"' not in dispatcher
+        assert "UpdateInstaller" not in dispatcher
+        # Gate: Capability „selfupdate“ entfällt (Route-Map + UI-Liste).
+        # Absenz-Assert am CODE-BINDung-Niveau — der Verband-Kommentar darf
+        # die Geschichte erwähnen, der Code darf sie nicht mehr laden.
+        gate = GATE_KT.read_text(encoding="utf-8")
+        assert 'to "selfupdate"' not in gate and '"selfupdate" to' not in gate, (
+            "Capability-Rest von selfupdate in Route-/UI-Liste"
+        )
+        # Manifest: keine Install-Permission mehr (Basis ohne, play-Overlay
+        # braucht den remove-Node nicht mehr). Assert auf die volle
+        # Permission-Bindung — der Entfall-Kommentar darf den Namen nennen.
+        assert "android.permission.REQUEST_INSTALL_PACKAGES" not in MAIN_MANIFEST.read_text(encoding="utf-8")
+        assert "android.permission.REQUEST_INSTALL_PACKAGES" not in PLAY_MANIFEST.read_text(encoding="utf-8")
+
+    def test_tool_has_no_install_function(self):
+        src = TOOL_PY.read_text(encoding="utf-8")
+        assert "android_apk_install" not in src, (
+            "Agent-Tool android_apk_install ist in W16 (Punkt 26) entfernt"
+        )
+        assert '"/apk_install"' not in src
+
+    def test_relay_apk_install_route_removed(self):
+        src = RELAY_PY.read_text(encoding="utf-8")
+        assert '"/apk_install"' not in src, (
+            "Relay-Route /apk_install ist in W16 (Punkt 26) entfernt"
+        )
+        # /apk/latest bleibt (Download-Hinweis + HEAD-Update-Check):
+        assert "/apk/latest" in src
+        # HEAD-Update-Check: Versions-Header für die App (fail-closed ohne).
+        assert "X-APK-Version" in src
 
     def test_relay_sends_sha_header(self):
         src = RELAY_PY.read_text(encoding="utf-8")
         assert "X-APK-SHA256" in src, "relay must serve X-APK-SHA256 header"
-
-    def test_tool_has_no_url_parameter(self):
-        src = TOOL_PY.read_text(encoding="utf-8")
-        fn = re.search(r"def android_apk_install\(([^)]*)\)", src)
-        assert fn and fn.group(1).strip() == "", "android_apk_install must take no args"
 
 
 class TestSanitize:

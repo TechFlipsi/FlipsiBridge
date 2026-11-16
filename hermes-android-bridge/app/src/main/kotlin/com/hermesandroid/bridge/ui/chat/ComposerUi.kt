@@ -165,11 +165,19 @@ fun ChatModelSheet(
     // WELLE-13 P9: Vorlesen-Regler (pro Agent, Persistenz via ChatSpeechPrefs).
     currentReadAloud: Boolean = false,
     onToggleReadAloud: (Boolean) -> Unit = {},
+    // W16 (Fixliste 35): Modell-Katalog DIESES Agenten aus agent.models /
+    // agent.models.enc (RelayClient.agentModels). null/leer = fail-soft:
+    // nur Auto-Modus + Hinweis; eigenes Modell bleibt erweiterte Option.
+    gatewayModels: List<String>? = null,
 ) {
     val context = LocalContext.current
     var customRefresh by remember { mutableIntStateOf(0) }
     var addText by remember { mutableStateOf("") }
     val custom = remember(customRefresh) { ChatComposerPrefs.models(context) }
+    // W16 (Fixliste 35): Freitext-Eingabe = ERWEITERTE OPTION (zugeklappt) —
+    // statt Freitext-Pflicht ist die Gateway-Liste die Quelle; das Eingabefeld
+    // legt man bewusst frei (Label „Eigenes Modell …“).
+    var customAddOpen by remember { mutableStateOf(false) }
     val stageIndex = THINK_STAGES.indexOfFirst { it.second == currentEffort }
         .takeIf { it >= 0 } ?: 0
 
@@ -193,6 +201,7 @@ fun ChatModelSheet(
                  style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
+            // W16 (Fixliste 35): „Auto" bleibt STAND OBEN — der Gateway-Standard.
             ChipRow(
                 label = stringResource(R.string.composer_auto),
                 sub = stringResource(R.string.composer_auto_sub),
@@ -201,6 +210,30 @@ fun ChatModelSheet(
                 ChatComposerPrefs.setModel(context, agentId, null)
                 onPickModel(null)
             }
+            // W16 (Fixliste 35): fail-soft ohne Liste — nur Auto-Modus + Hinweis.
+            // (Liste fehlt = Adapter/Gateway liefert agent.models noch nicht;
+            // eigenes Modell bleibt unten als erweiterte Option frei.)
+            if (gatewayModels.isNullOrEmpty() && custom.isEmpty()) {
+                Text(
+                    stringResource(R.string.composer_no_list),
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.TextSecondary,
+                )
+                Spacer(Modifier.height(4.dp))
+            }
+            // W16 (Fixliste 35): wählbare Liste — NUR die vom Gateway gelieferten
+            // Modell-IDs (agent.models), KEINE Entfern-Wege (Quelle ist der Server).
+            gatewayModels.orEmpty().forEach { m ->
+                ChipRow(
+                    label = m,
+                    selected = currentModel == m,
+                ) {
+                    ChatComposerPrefs.setModel(context, agentId, m)
+                    onPickModel(m)
+                }
+            }
+            // Eigene Einträge (bestandene Nutzer-Liste) — unverändert
+            // entfernbar (Jaeger-2: Prefs miträumen).
             custom.forEach { m ->
                 ChipRow(
                     label = m,
@@ -216,25 +249,44 @@ fun ChatModelSheet(
                     onPickModel(m)
                 }
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedTextField(
-                    value = addText,
-                    onValueChange = { addText = it },
-                    modifier = Modifier.weight(1f),
-                    singleLine = true,
-                    placeholder = { Text(stringResource(R.string.composer_add_placeholder),
-                                         color = FlipsiColors.TextSecondary) },
-                )
-                TextButton(
-                    onClick = {
-                        ChatComposerPrefs.addModel(context, addText)
-                        addText = ""
-                        customRefresh++
-                    },
-                    enabled = addText.isNotBlank(),
-                ) { Text(stringResource(R.string.composer_add),
+            // W16 (Fixliste 35): erweiterte Option — Freitext-Eingabe zugeklappt.
+            // Der Tap legt sie frei; die Auswahl selbst braucht KEINE Freitext-
+            // Pflicht mehr (Liste kommt vom Gateway).
+            val customAddA11y = stringResource(R.string.composer_custom_add)
+            Text(
+                text = stringResource(R.string.composer_custom_add),
+                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                color = FlipsiColors.Ember,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp)
+                    .background(color = FlipsiColors.PanelElev, shape = RoundedCornerShape(12.dp))
+                    .clickable { customAddOpen = !customAddOpen }
+                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .semantics { contentDescription = customAddA11y },
+            )
+            if (customAddOpen) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = addText,
+                        onValueChange = { addText = it },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text(stringResource(R.string.composer_add_placeholder),
+                                             color = FlipsiColors.TextSecondary) },
+                    )
+                    TextButton(
+                        onClick = {
+                            ChatComposerPrefs.addModel(context, addText)
+                            addText = ""
+                            customRefresh++
+                        },
+                        enabled = addText.isNotBlank(),
+                    ) { Text(stringResource(R.string.composer_add),
                          color = if (addText.isNotBlank()) FlipsiColors.Ember
                          else FlipsiColors.TextSecondary) }
+                }
             }
 
             Spacer(Modifier.height(16.dp))

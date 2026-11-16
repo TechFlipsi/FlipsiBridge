@@ -23,7 +23,7 @@ class CapabilityMasterTest {
 
     private val allCaps = listOf(
         "screen", "screen_capture", "notifications", "clipboard", "files", "health",
-        "interaction", "device", "notify_reply", "files_write", "selfupdate",
+        "interaction", "device", "notify_reply", "files_write",
         "location", "sms", "calls", "contacts", "microphone",
     )
     private val invasive = setOf("location", "sms", "calls", "contacts", "microphone")
@@ -40,15 +40,16 @@ class CapabilityMasterTest {
     fun enableAll_ohne_invasive_laesst_invasive_aus() {
         CapabilityMaster.enableAll(allCaps, includeInvasive = false, isInvasive = { it in invasive })
         val on = allCaps.filter { CapabilityGate.isEnabled(it) }
-        assertEquals(11, on.size)
+        // W16 (Punkt 26): selfupdate entfällt — 15 nicht-invasive, jetzt 10.
+        assertEquals(10, on.size)
         assertTrue(invasive.none { CapabilityGate.isEnabled(it) })
     }
 
     @Test
-    fun enableAll_mit_invasive_schaltet_alle_sechzehn() {
+    fun enableAll_mit_invasive_schaltet_alle_fünfzehn() {
         CapabilityMaster.enableAll(allCaps, includeInvasive = true, isInvasive = { it in invasive })
         val on = allCaps.count { CapabilityGate.isEnabled(it) }
-        assertEquals(16, on)
+        assertEquals(15, on)
     }
 
     @Test

@@ -333,6 +333,29 @@ object RelayClient {
         val startedAt: Long,
     )
 
+    /**
+     * W16 (Fixliste 14): Live-Arbeits-Kontext je Agent — Session-Quelle
+     * (platform: bridge/discord/telegram/cron/…), das aktive Modell und
+     * laufende Sub-Agenten. ALLE Felder optional: fehlt eines, lässt die
+     * Dashboard-Zeile es weg (kein Platzhalter-Geraffel, Sir-Vorgabe).
+     * Quelle: `session_meta`-Objekt am chat.activity-Frame (klare Felder,
+     * enc-Spiegel liest es gleich mit) bzw. das eigenständige Frame
+     * chat.session_meta / chat.session_meta.enc (Sub-Agent-Update MITTEN
+     * im Turn — der activity-Wechsel ist dafür zu grob).
+     */
+    data class AgentSessionMeta(
+        val platform: String? = null,
+        val model: String? = null,
+        val subAgents: List<AgentSubAgent> = emptyList(),
+    )
+
+    /** W16 (Fixliste 14): EIN Sub-Agent am Dashboard-Slot (eingerückte Zeile). */
+    data class AgentSubAgent(
+        val name: String,
+        val status: String? = null,
+        val model: String? = null,
+    )
+
     // ── MEDIA-T1: Medien-/Datei-Versand im Chat (chunked, E2E-only) ───────
 
     /**
@@ -420,6 +443,12 @@ object RelayClient {
     /** Obergrenze der Status-Map (Status ist transient, kein Archiv). */
     private const val MAX_CHAT_STATUS = 500
 
+    /** W16 (Fixliste 14): max. Sub-Agenten-Zeilen je Agent-Slot (Meta ist kein Archiv). */
+    private const val MAX_SESSION_META_SUB_AGENTS = 8
+
+    /** W16 (Fixliste 35): max. Einträge im Modell-Katalog (Parität Relay-Gate). */
+    private const val MAX_AGENT_MODELS = 24
+
     /** Agenten-Liste (relay.state) — letzte Meldung des Relays. */
     private val _agents = MutableStateFlow<List<AgentEntry>>(emptyList())
     val agents: StateFlow<List<AgentEntry>> = _agents.asStateFlow()
@@ -435,6 +464,26 @@ object RelayClient {
     /** PH2-T10: Arbeitsstatus je agent_id (letzter chat.activity-Frame). */
     private val _agentWorking = MutableStateFlow<Map<String, AgentActivity>>(emptyMap())
     val agentWorking: StateFlow<Map<String, AgentActivity>> = _agentWorking.asStateFlow()
+
+    /**
+     * W16 (Fixliste 14): Session-Quelle + aktives Modell + Sub-Agenten je
+     * agent_id — letzer bekannter chat.activity-`session_meta`-Wert bzw.
+     * eigenständiges chat.session_meta(-enc)-Frame. Räumen am selben
+     * Verbindungs-Punkt wie [agentWorking]: ohne Verbindung ist die
+     * Session-Quelle gelogen (fehlende Daten = Zeile weglassen).
+     */
+    private val _agentMeta = MutableStateFlow<Map<String, AgentSessionMeta>>(emptyMap())
+    val agentMeta: StateFlow<Map<String, AgentSessionMeta>> = _agentMeta.asStateFlow()
+
+    /**
+     * W16 (Fixliste 35): Modell-Katalog je agent_id — NUR die vom
+     * Gateway/Adapter gelieferte Liste (agent.models / agent.models.enc).
+     * REPLACE-Semantik je Frame; null = „models“-Feld fehlt → Bestand bleibt
+     * (fail-soft), leere Liste = Adapter sagt explizit „keine Modelle“.
+     * Räumen am selben Verbindungs-Punkt wie [agentMeta] (Parität).
+     */
+    private val _agentModels = MutableStateFlow<Map<String, List<String>>>(emptyMap())
+    val agentModels: StateFlow<Map<String, List<String>>> = _agentModels.asStateFlow()
 
     /** MEDIA-T1: Empfangene Agenten-Medien (vollständig reassembliert). */
     private val _chatMediaEvents = MutableStateFlow<List<ChatMediaEvent>>(emptyList())
@@ -713,6 +762,11 @@ object RelayClient {
         // PH-FIX-CHAT-A (F5): bewusstes Trennen räumt die working-States
         // ebenso — ohne Verbindung kann kein Agent „arbeiten“.
         _agentWorking.value = emptyMap()
+        // W16 (Fixliste 14): Session-Quelle/Modell/Sub-Agenten ebenso —
+        // ohne Verbindung ist die Meta gelogen (Parität agentWorking).
+        _agentMeta.value = emptyMap()
+        // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+        _agentModels.value = emptyMap()
         // PH-FIX-CHAT-A (F6): bewusstes Trennen markiert die Agenten ebenso
         // offline (onClosed läuft hier nicht — disconnect() bumpt generation,
         // die Callbacks kehren früh zurück).
@@ -934,6 +988,10 @@ object RelayClient {
                 // verwaist (activity-Reset-Frames laufen ins TCP-Nirvana) —
                 // räumen, sonst countet der Kopf-Spinner ewig weiter.
                 _agentWorking.value = emptyMap()
+                // W16 (Fixliste 14): Meta ebenso (Parität agentWorking).
+                _agentMeta.value = emptyMap()
+                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+                _agentModels.value = emptyMap()
                 // PH-FIX-CHAT-A (F6): die Agenten-Liste ist der letzte
                 // relay.state-Snapshot — ohne Verbindung ist JEDE „online“-
                 // Anzeige gelogen (Presence-Push ist Ein-Weg ohne Spool).
@@ -978,6 +1036,10 @@ object RelayClient {
                 // PH-FIX-CHAT-A (F5): wie onClosed — verwaiste working-States
                 // räumen (kein Spinner-Ewigzähler auf toter Verbindung).
                 _agentWorking.value = emptyMap()
+                // W16 (Fixliste 14): Meta ebenso (Parität agentWorking).
+                _agentMeta.value = emptyMap()
+                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+                _agentModels.value = emptyMap()
                 // PH-FIX-CHAT-A (F6): wie onClosed — Snapshot „online“ ist
                 // ohne Verbindung gelogen.
                 markAgentsOffline()
@@ -1280,6 +1342,15 @@ object RelayClient {
                 "chat.event.enc" -> { handleChatEventEnc(json); return }
                 "chat.read.enc" -> { handleChatReadEnc(json); return }
                 "chat.activity.enc" -> { handleChatActivityEnc(json); return }
+                // W16 (Fixliste 14): Session-Meta eigenständig — Sub-Agenten/
+                // Plattform-Update MITTEN im Turn (Aktivitätswechsel ist zu
+                // grob dafür). Klartext = Legacy-Pfad, enc = E2E-Spiegel.
+                "chat.session_meta" -> { handleChatSessionMetaFrame(json); return }
+                "chat.session_meta.enc" -> { handleChatSessionMetaEnc(json); return }
+                // W16 (Fixliste 35): Modell-Katalog eigenständig (klar + enc) —
+                // Quelle des Modell&Denken-Pickers (nur Gateway-gelieferte IDs).
+                "agent.models" -> { handleAgentModelsFrame(json); return }
+                "agent.models.enc" -> { handleAgentModelsEnc(json); return }
                 // MEDIA-T1: chunked Media (E2E-only) + Chunk-Acks (Progress).
                 "chat.media.enc" -> { handleChatMediaEnc(json); return }
                 "chat.media.chunk_ack" -> { handleMediaChunkAck(json); return }
@@ -1547,7 +1618,160 @@ object RelayClient {
         val activity = AgentActivity(agentId, chatId, working, startedAt)
         // SEC-W1 W1C-4: atomares update{} statt Read-Modify-Write.
         _agentWorking.update { it + (agentId to activity) }
+        // W16 (Fixliste 14): session_meta am Activity-Frame (KLARE Felder —
+        // im enc-Mirror liest der Phone-Handler das Klartext-Top-Level
+        // gleich mit; der verschlüsselte Payload ist reiner Kettensync).
+        applySessionMeta(agentId, parseSessionMeta(json.get("session_meta")))
         if (BuildConfig.DEBUG) Log.d(TAG, "chat.activity: agent ${agentId.take(24)} working=$working")
+    }
+
+    /**
+     * W16 (Fixliste 14): `session_meta`-Objekt streng lesen — nur
+     * wohlgeformte Felder übernehmen: platform/model sind kurze nicht-leere
+     * Strings, Sub-Agenten brauchen einen Namen; Name-freie Einträge fliegen
+     * (fehlende Daten = Zeile weglassen, nie Platzhalter). Ohne EINEN
+     * gültigen Inhalt → null (es gibt nichts anzuzeigen).
+     */
+    private fun parseSessionMeta(raw: Any?): AgentSessionMeta? {
+        val obj = raw as? JsonObject ?: return null
+        val platform = runCatching {
+            obj.get("platform")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull()?.ifBlank { null }
+        val model = runCatching {
+            obj.get("model")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+        }.getOrNull()?.ifBlank { null }
+        val subAgents = (runCatching {
+            obj.get("sub_agents") as? JsonArray
+        }.getOrNull())?.let { arr ->
+            arr.mapNotNull { element ->
+                val sa = element as? JsonObject ?: return@mapNotNull null
+                val name = runCatching {
+                    sa.get("name")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                }.getOrNull()?.ifBlank { null } ?: return@mapNotNull null
+                val status = runCatching {
+                    sa.get("status")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                }.getOrNull()?.ifBlank { null }
+                val model = runCatching {
+                    sa.get("model")?.takeIf { it.isJsonPrimitive }?.asString?.trim()
+                }.getOrNull()?.ifBlank { null }
+                AgentSubAgent(name, status, model)
+            }
+        } ?: emptyList()
+        if (platform == null && model == null && subAgents.isEmpty()) return null
+        return AgentSessionMeta(platform, model, subAgents.take(MAX_SESSION_META_SUB_AGENTS))
+    }
+
+    /**
+     * W16: geparste session_meta veröffentlichen (atomar). REPLACE-Semantik:
+     * das Frame trägt immer die VOLLSTÄNDIG gewollte Meta — ein Teil-Update
+     * (nur Sub-Agenten) schreibt die anderen Felder bewusst mit.
+     */
+    private fun applySessionMeta(agentId: String, meta: AgentSessionMeta?) {
+        if (agentId.isEmpty() || meta == null) return
+        _agentMeta.update { it + (agentId to meta) }
+    }
+
+    /**
+     * W16 (Fixliste 14): chat.session_meta → [agentMeta]-Flow. Der Adapter
+     * hat keine session_meta am laufenden activity-Wechsel (z. B. Sub-Agent
+     * spawnt mitten im Turn) — der Gateway-Hook schickt dieses Frame
+     * eigenständig. Downgrade-Guard wie chat.event: bei aktiver E2E-Session
+     * ist der Klartext-Frame verworfen (der Adapter sendet enc).
+     */
+    private fun handleChatSessionMetaFrame(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        runCatching { cryptoSessions[agentId] }.getOrNull()?.let { peer ->
+            if (peer.isActive()) {
+                Log.w(
+                    TAG,
+                    "chat.session_meta (Klartext) für Agent ${agentId.take(24)} verworfen — " +
+                        "E2E-Session aktiv (Downgrade-Schutz)",
+                )
+                return
+            }
+        }
+        applySessionMeta(agentId, parseSessionMeta(json.get("session_meta")))
+    }
+
+    /**
+     * W16 (Fixliste 14): chat.session_meta.enc-Spiegel — Payload
+     * entschlüsseln (Kettensync PFLICHT, sonst desync) und die
+     * session_meta NUR aus dem Payload lesen (kein Klartext-Inhalt).
+     */
+    private fun handleChatSessionMetaEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: chat.session_meta.enc verworfen (Entschlüsselung fehlgeschlagen)")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        applySessionMeta(agentId, parseSessionMeta(payload.get("session_meta")))
+    }
+
+    /**
+     * W16 (Fixliste 35): agent.models (Klartext-Legacy) → [agentModels]-Flow.
+     * Downgrade-Guard in chat.session_meta-Parität: bei aktiver
+     * E2E-Session ist der Klartext-Frame verworfen (der Adapter sendet enc).
+     */
+    private fun handleAgentModelsFrame(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        runCatching { cryptoSessions[agentId] }.getOrNull()?.let { peer ->
+            if (peer.isActive()) {
+                Log.w(
+                    TAG,
+                    "agent.models (Klartext) für Agent ${agentId.take(24)} verworfen — " +
+                        "E2E-Session aktiv (Downgrade-Schutz)",
+                )
+                return
+            }
+        }
+        applyAgentModels(agentId, parseAgentModels(json.get("models")))
+    }
+
+    /**
+     * W16 (Fixliste 35): agent.models.enc — Payload entschlüsseln (Kettensync
+     * PFLICHT, sonst desync) und die Liste NUR aus dem verschlüsselten
+     * Payload lesen (kein Klartext-Fallback).
+     */
+    private fun handleAgentModelsEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: agent.models.enc verworfen (Entschlüsselung fehlgeschlagen)")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        applyAgentModels(agentId, parseAgentModels(payload.get("models")))
+    }
+
+    /**
+     * W16 (Fixliste 35): models-Array streng lesen — Strings, getrimmt,
+     * nicht-leer, Dedup, Deckel [MAX_AGENT_MODELS] (Parität Relay-Gate
+     * _agent_models_ok). null (Feld fehlt) = Update auslassen (fail-soft).
+     */
+    private fun parseAgentModels(raw: Any?): List<String>? {
+        val arr = raw as? JsonArray ?: return null
+        val out = ArrayList<String>(arr.size())
+        for (element in arr) {
+            val s = runCatching {
+                element.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
+            }.getOrNull()?.trim() ?: continue
+            if (s.isEmpty() || s.length > 64) continue
+            if (out.size >= MAX_AGENT_MODELS) break
+            if (s !in out) out.add(s)
+        }
+        return out
+    }
+
+    /** W16 (Fixliste 35): geparsten Katalog veröffentlichen (atomar, REPLACE je Frame). */
+    private fun applyAgentModels(agentId: String, models: List<String>?) {
+        if (agentId.isEmpty() || models == null) return
+        _agentModels.update { it + (agentId to models) }
     }
 
     // ── PH-3 Welle 2: E2E-Handshake + chat.*.enc-Empfang ───────────────────
@@ -2099,6 +2323,13 @@ object RelayClient {
         name: String,
         mime: String,
         bytes: ByteArray,
+        // W16.3 (F2, C6-Verband): der UI-Bubble-Zeitstempel (ChatScreen
+        // submitMedia tippt ihn EINMAL beim Anhängen) — der Persist-Verband
+        // formatiert genau DIESEN ts, damit Disk-Restore-Dedupe
+        // (ChatTimelineMerge.dedupeKey, Minuten-Auflösung) und Anzeige-Bubble
+        // sich nicht an einem Minuten-Roll (Submit vs. Upload-Finale) zu
+        // Dubletten verzählen (Parität zum sendChat-Pfad).
+        sentAtMs: Long = System.currentTimeMillis(),
         onResult: (ok: Boolean, error: String?, mediaId: String?, msgId: String?) -> Unit,
     ) {
         val activeScope = scope
@@ -2140,12 +2371,19 @@ object RelayClient {
                             // Upload angenommen — Bubble-Text für Verlauf/UI.
                             val label = MediaProtocol.kindLabel(kind)
                             val sizeText = MediaProtocol.formatBytes(bytes.size.toLong())
+                            // W16.3 (F1): app-privat Kopie persistieren wie
+                            // incoming (2567) — ohne mediaPath stirbt der
+                            // Play-Schalter der disk-restaurierten OWN-Bubble.
+                            val localPath = runCatching {
+                                persistOutboundMedia(name, bytes)
+                            }.getOrNull()
                             persistChatBubble(
                                 agentId, chatId, fromAgent = false,
                                 text = "[$label] $name ($sizeText)",
-                                ts = System.currentTimeMillis(), status = null,
+                                ts = sentAtMs, status = null,
                                 mediaKind = kind, mediaName = name, mediaMime = mime,
-                                mediaSize = bytes.size.toLong(), mediaId = mediaId,
+                                mediaSize = bytes.size.toLong(), mediaPath = localPath,
+                                mediaId = mediaId,
                             )
                             // W4-01c (B3-Verband): Broker-msg_id des Final-Chunks
                             // an die UI (ChatScreen-Bindung → msgIdByLocalId →
@@ -2824,6 +3062,9 @@ class ReconnectAlarmReceiver : BroadcastReceiver() {
             Log.i("ReconnectAlarm", "Doze-Alarm kam — Verbindungsversuch")
             RelayClient.reconnectNow()
         }
+        // W16 (Fixliste-Punkt 26): Update-Check am bestehenden Weckrhythmus —
+        // intern 24h-Fenster + Dedupe, eigener Thread, kein Extra-Alarm.
+        com.hermesandroid.bridge.files.UpdateCheck.periodic(context)
         // Service anheben, falls er inzwischen verstorben ist (FGS-Anzeige).
         if (BridgeConnectionService.instance == null) {
             // JÄGER-J10 (P2): bewusst getrennt (userDisconnected) = KEIN

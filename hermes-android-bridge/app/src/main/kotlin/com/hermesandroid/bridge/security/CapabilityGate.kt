@@ -70,7 +70,6 @@ object CapabilityGate {
         Pair("GET", "/files_permission") to "files",
         Pair("POST", "/files_permission") to "files",
         Pair("GET", "/file") to "files",
-        // selfupdate (Phase 4) — APK herunterladen + Installer starten
         Pair("POST", "/photo") to "device",
         Pair("POST", "/torch") to "device",
         Pair("GET", "/network") to "device",
@@ -83,7 +82,6 @@ object CapabilityGate {
         // den Schalter NICHT mehr mit dem Lesezugriff.
         Pair("POST", "/files_push") to "files_write",
         Pair("POST", "/files_delete") to "files_write",
-        Pair("POST", "/apk_install") to "selfupdate",
         // v0.11.0: Health Connect (read-only) — eigene Capability, Default AUS.
         Pair("POST", "/health_data") to "health",
         // misc ohne eigene Kategorie
@@ -93,8 +91,10 @@ object CapabilityGate {
     )
 
     /** Anzeigbare Capabilities (für die UI-Liste).
-     *  PH-7/PS-G-1: play-Edition blendet selfupdate aus (Play-Updates-Regel,
-     *  PS-A-11) und benennt sms ehrlich um (Intent-Entwurf, PS-A-14). */
+     *  PH-7/PS-G-1: play-Edition benennt sms ehrlich um (Intent-Entwurf,
+     *  PS-A-14). W16 (Punkt 26): die Capability „selfupdate“ entfällt ganz —
+     *  Updates laufen je Edition über Play Store/GitHub, in-app nur noch der
+     *  Update-Check (UpdateCheck, ohne Install-Fähigkeit). */
     val userFacing: List<Pair<String, String>> by lazy {
         val base = listOf(
             "screen" to "Bildschirm lesen",
@@ -112,12 +112,10 @@ object CapabilityGate {
             "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
             "files_write" to "Dateien schreiben & löschen (destruktiv!)",
             "notify_reply" to "Antworten in Benachrichtigungen senden",
-            "selfupdate" to "App-Update installieren (mit Bestätigung)",
         )
         when {
-            BuildConfig.EDITION_PLAY -> base
-                .filter { it.first != "selfupdate" }
-                .map { if (it.first == "sms") "sms" to "SMS-Entwurf öffnen (GitHub-Edition: Direktversand)" else it }
+            BuildConfig.EDITION_PLAY ->
+                base.map { if (it.first == "sms") "sms" to "SMS-Entwurf öffnen (GitHub-Edition: Direktversand)" else it }
             else -> base
         }
     }

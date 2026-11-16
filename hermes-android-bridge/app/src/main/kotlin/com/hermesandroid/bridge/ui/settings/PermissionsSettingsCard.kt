@@ -88,16 +88,25 @@ fun PermissionsSettingsCard(
 
     SettingsCard(
         titleRes = R.string.settings_permissions_title,
-        subtitle = stringResource(R.string.settings_permissions_desc),
         iconRes = SettingsIcons.permissions,
         expanded = expanded,
         onExpandedChange = onExpandedChange,
         modifier = modifier,
     ) {
+        // W16 P19: Beschreibung lebt IN der geöffneten Karte (Kachel-Untertitel entfernt).
+        Text(
+            stringResource(R.string.settings_permissions_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = FlipsiColors.TextSecondary,
+        )
         PERM_ROWS
             .filter { it.manifestPermission == null || it.manifestPermission in requested }
             .forEach { row ->
-                val granted = remember(refreshTick, row.id) { row.isGranted(context) }
+                // W16.3 (F8): Bewertung fail-soft — eine wirfende isGranted-
+                // Lambda (siehe allfiles) darf niemals die Komposition reißen.
+                val granted = remember(refreshTick, row.id) {
+                    runCatching { row.isGranted(context) }.getOrDefault(false)
+                }
                 PermissionSettingsRow(
                     iconRes = row.iconRes,
                     title = stringResource(row.titleRes),
@@ -282,7 +291,15 @@ private val PERM_ROWS = listOf(
         titleRes = R.string.perm_allfiles_title,
         descRes = R.string.perm_allfiles_desc,
         manifestPermission = "android.permission.MANAGE_EXTERNAL_STORAGE",
-        isGranted = { Environment.isExternalStorageManager() },
+        isGranted = {
+            // W16.3 (F8): API-30-Gate + fail-soft. maxSdk-minSdk 26:
+            // Environment.isExternalStorageManager existiert erst ab Android 11
+            // (R) — unterhalb wäre der Aufruf NoSuchMethod-gefährdet; System-
+            // Weigerungen (SecurityException) lassen die Zeile ehrlich auf
+            // „Nicht erteilt" fallen statt zu crashen.
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                runCatching { Environment.isExternalStorageManager() }.getOrDefault(false)
+        },
     ),
     PermUi(
         id = "sms",

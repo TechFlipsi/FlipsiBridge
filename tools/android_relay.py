@@ -529,6 +529,10 @@ _CHAT_STATUS_MAX = 256
 # (~10 MB Worst Case, Jahre Betrieb) — weit jenseits jeder realen Nutzung.
 _CHAT_OWNER_MAX = 50_000
 _AGENT_LIGHT_FRAME_MAX_PER_SECOND = 10  # SEC-W1 W1C-9: keepalive/ping/presence
+# W16-J4F1: Meta/Models-Handler haben einen EIGENEN Light-Bucket —
+# sonst verdrängt ein session_meta/models-Push die Rate-Plätze von
+# chat.reply (gleiches chat_event-Bucket = stiller Nachrichtenverlust).
+_AGENT_META_LIGHT_MAX_PER_SECOND = 6  # ~2 Frames je Meta-Event, Puffer
 _CHAT_RATE_MAX_KEYS = 1024          # SEC-W1 W1C-7: Sweep-Schwelle der Rate-Map
 # SEC-W2 W2-2: Broker-Routen ohne eigenes Rate-Limit — /crypto_hello füllte
 # state.crypto_sessions ungedrosselt (PoC: 30 Hellos in <0.5 s = 30 Sessions,
@@ -1065,7 +1069,6 @@ _ROUTES = {
 "/events/stream": "POST",
 "/mic_start":     "POST",
 "/mic_stop":      "POST",
-"/apk_install":   "POST",
 "/files_push":    "POST",
 "/photo":         "POST",
 "/torch":         "POST",
@@ -1161,7 +1164,9 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
             "fingerprint": crypto_registry.get(_aid, {}).get("fingerprint", ""),
         }
 
-    # Authenticated APK distribution for /apk_install self-update (FlipsiBridge).
+    # Authenticated APK distribution for /apk/latest (FlipsiBridge self-update
+    # downloads; W16/Punkt-26: the /apk_install device route is gone — the app's
+    # installer capability was removed, updates run via Play/GitHub).
     # Serves the newest APK in the relay's apk_dir; refuses without valid token.
     apk_dir = os.environ.get("ANDROID_RELAY_APK_DIR") or _default_state_dir()
 
@@ -1203,6 +1208,17 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
         if not candidates:
             logger.warning("APK latest: no APK available in %s", apk_dir)
             return web.json_response({"error": "No APK available"}, status=404)
+        # W16 (Fixliste-Punkt 26): HEAD = reiner Update-Check der App (ohne
+        # APK-Body, ohne SHA-Hash). aiohttp serviert HEAD auf add_get; der
+        # GET-Pfad (altes Self-Update / manuelle Downloads) bleibt unberührt.
+        # X-APK-Version kommt aus dem neuesten APK-Dateinamen — ohne lesbarer
+        # Version FEHLT der Header (fail-closed: die App bleibt still).
+        if request.method == "HEAD":
+            version_match = _APK_VERSION_PATTERN.search(candidates[0])
+            head_headers = {"Cache-Control": "no-store"}
+            if version_match:
+                head_headers["X-APK-Version"] = version_match.group(0)
+            return web.Response(status=200, headers=head_headers)
         path = os.path.join(apk_dir, candidates[0])
         # v0.10.8: SHA-256 des APK als Header mitschicken — die App verifiziert
         # gegen DIESEN Server-Kontrollierten Wert (nie caller-supplied).
@@ -1888,11 +1904,16 @@ _CHAT_QUEUE_MAXLEN = 500
 # Warnungen.
 _AGENT_FRAME_TYPES = frozenset(
     {"keepalive", "ping", "presence", "agent.register",
+     # W16 (Fixliste 35): Modell-Katalog je Agent (klar + enc) — Fail-soft.
+     "agent.models", "agent.models.enc",
      "chat.reply", "chat.read", "chat.activity",
      # PH-3-T2: E2E-Frames — der Relay ist opaker Pass-Through (kein Key-
      # Material, ct wird nie geöffnet); Validierung = Struktur + Session.
      "crypto.hello_ack", "crypto.session_reset",
      "chat.reply.enc", "chat.read.enc", "chat.activity.enc",
+     # W16 (Fixliste 14): Session-Meta eigenständig (klar + enc) — Sub-Agent
+     # / Plattform-Update MITTEN im Turn; Relay = opaker Pass-Through.
+     "chat.session_meta", "chat.session_meta.enc",
      # MEDIA-T1: chunked Media (Agent→Phone, opak) + Chunk-Ack (klar, light).
      "chat.media.enc", "chat.media.chunk_ack"}
 )
@@ -1967,42 +1988,71 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
             return
     # PH-FIX-BACKEND-B: agent.register = Display-Name-Pflege (kein Verwerfen).
     if msg_type == "agent.register":
-        await _handle_agent_register(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_register, state, agent_id, data, "_handle_agent_register")
         return
     # PH-3-T2: E2E-Frames zuerst (opaker Pass-Through + Session-Broker).
     if msg_type == "crypto.hello_ack":
-        await _handle_agent_hello_ack(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_hello_ack, state, agent_id, data, "_handle_agent_hello_ack")
         return
     if msg_type == "crypto.session_reset":
-        await _handle_agent_session_reset(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_session_reset, state, agent_id, data, "_handle_agent_session_reset")
         return
     if msg_type == "chat.reply.enc":
-        await _handle_agent_chat_reply_enc(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_reply_enc, state, agent_id, data, "_handle_agent_chat_reply_enc")
         return
     if msg_type == "chat.read.enc":
-        await _handle_agent_chat_read_enc(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_read_enc, state, agent_id, data, "_handle_agent_chat_read_enc")
         return
     if msg_type == "chat.activity.enc":
-        await _handle_agent_chat_activity_enc(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_activity_enc, state, agent_id, data, "_handle_agent_chat_activity_enc")
+        return
+    # W16 (Fixliste 14): Session-Meta eigenständig (klar + enc).
+    if msg_type == "chat.session_meta.enc":
+        await _guard_agent_frame(_handle_agent_chat_session_meta_enc, state, agent_id, data, "_handle_agent_chat_session_meta_enc")
+        return
+    if msg_type == "chat.session_meta":
+        await _guard_agent_frame(_handle_agent_chat_session_meta, state, agent_id, data, "_handle_agent_chat_session_meta")
+        return
+    # W16 (Fixliste 35): Modell-Katalog (klar + enc).
+    if msg_type == "agent.models.enc":
+        await _guard_agent_frame(_handle_agent_models_enc, state, agent_id, data, "_handle_agent_models_enc")
+        return
+    if msg_type == "agent.models":
+        await _guard_agent_frame(_handle_agent_models, state, agent_id, data, "_handle_agent_models")
         return
     # MEDIA-T1: chunked Media Agent→Phone (opak) + Chunk-Ack (klar, light).
     if msg_type == "chat.media.enc":
-        await _handle_agent_media_enc(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_media_enc, state, agent_id, data, "_handle_agent_media_enc")
         return
     if msg_type == "chat.media.chunk_ack":
-        await _handle_agent_media_ack(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_media_ack, state, agent_id, data, "_handle_agent_media_ack")
         return
     if msg_type == "chat.reply":
-        await _handle_agent_chat_reply(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_reply, state, agent_id, data, "_handle_agent_chat_reply")
         return
     if msg_type == "chat.read":
-        await _handle_agent_chat_read(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_read, state, agent_id, data, "_handle_agent_chat_read")
         return
     if msg_type == "chat.activity":
-        await _handle_agent_chat_activity(state, agent_id, data)
+        await _guard_agent_frame(_handle_agent_chat_activity, state, agent_id, data, "_handle_agent_chat_activity")
         return
     # keepalive/ping/presence: nur Presence (oben bereits gepflegt).
     logger.debug("Agent %s: frame type=%r (Presence)", agent_id, msg_type)
+
+
+async def _guard_agent_frame(handler, state: _RelayState, agent_id: str,
+                             data: dict, name: str) -> None:
+    """J4-F4 (W16): Frame-Handler nicht fatal — eine Exception eines
+    Handlers reißt die Agent-WS nicht mit; Fail-soft, Frame verworfen,
+    Log mit Traceback (kein Abort). CancelledError läuft weiter durch."""
+    try:
+        await handler(state, agent_id, data)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Agent %s: Frame-Handler %s fehlgeschlagen — Frame verworfen (WS bleibt)",
+            agent_id, name)
 
 
 async def _handle_agent_register(state: _RelayState, agent_id: str, data: dict) -> None:
@@ -2347,9 +2397,206 @@ async def _handle_agent_chat_activity_enc(state: _RelayState, agent_id: str,
         "ct": data["ct"],
         "ts": int(time.time() * 1000),
     }
+    # W16 (Fixliste 14): klare session_meta auch im enc-Mirror (App liest das
+    # Klartext-Top-Level im Phone-Handler gleich mit; ct = Kettensync).
+    session_meta = data.get("session_meta")
+    if session_meta is not None and not _session_meta_ok(session_meta):
+        logger.warning("Agent %s: chat.activity.enc mit ungültiger session_meta — Feld verworfen", agent_id)
+        session_meta = None
+    if session_meta is not None:
+        frame["session_meta"] = session_meta
     delivered = await _deliver_to_phone(state, frame)
     if not delivered:
         logger.debug("Agent %s: chat.activity.enc gespoolt (Phone offline)", agent_id)
+
+
+def _session_meta_ok(value) -> bool:
+    """W16 (Fixliste 14): Struktur-Gate für session_meta-Objekte (Parität zum
+    Kotlin-Parser: platform/model = kurze Strings, sub_agents ≤ 8 je
+    {name Pflicht, status?, model? — alle ≤ 64), Gesamtpayload ≤ 2 KiB.
+    Fail-closed: alles Unbekannte/Übergröße = Frame ohne session_meta."""
+    if value is None:
+        return True
+    if not isinstance(value, dict):
+        return False
+    encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=True)
+    if len(encoded) > 2048:
+        return False
+    for key in ("platform", "model"):
+        item = value.get(key)
+        if item is not None and (not isinstance(item, str) or len(item) > 64):
+            return False
+    subs = value.get("sub_agents")
+    if subs is not None:
+        if not isinstance(subs, list) or len(subs) > 8:
+            return False
+        for sub in subs:
+            if not isinstance(sub, dict):
+                return False
+            name = sub.get("name")
+            if not isinstance(name, str) or not name.strip() or len(name) > 64:
+                return False
+            for opt in ("status", "model"):
+                item = sub.get(opt)
+                if item is not None and (not isinstance(item, str) or len(item) > 64):
+                    return False
+    return True
+
+
+async def _handle_agent_chat_session_meta_enc(state: _RelayState, agent_id: str,
+                                              data: dict) -> None:
+    """W16 (Fixliste 14): chat.session_meta.enc → opak ans Phone (Typ bleibt).
+    session_meta liegt NUR im ct (Adapter versetzt die Meta ins ct); der
+    Relay öffnet nie. Guards wie chat.reply.enc: Rate-Limit, chat_id,
+    Struktur, bestätigte E2E-Session, Replay-Fenster + Owner-Claim."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"agentmeta:{agent_id}", _AGENT_META_LIGHT_MAX_PER_SECOND):
+        logger.info("Agent %s: chat.session_meta.enc verworfen — Meta-Rate-Limit", agent_id)
+        return
+    chat_id = data.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id.strip():
+        logger.warning("Agent %s: chat.session_meta.enc ohne gültiges chat_id — verworfen", agent_id)
+        return
+    chat_id = chat_id.strip()
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: chat.session_meta.enc ungültig (%s) — verworfen", agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: chat.session_meta.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Agent %s: chat.session_meta.enc Replay/Fenster-Verletzung — verworfen", agent_id)
+        return
+    frame = {
+        "type": "chat.session_meta.enc", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if not delivered:
+        logger.debug("Agent %s: chat.session_meta.enc gespoolt (Phone offline)", agent_id)
+
+
+async def _handle_agent_chat_session_meta(state: _RelayState, agent_id: str,
+                                          data: dict) -> None:
+    """W16 (Fixliste 14): chat.session_meta (Klartext-Legacy). Guards wie
+    chat.activity (Downgrade: bei E2E verworfen — das spart dem Phone das
+    Drop-Frame), Struktur-Gate, Owner-Claim; session_meta bleibt oben-Level
+    klar (Legacy-Session braucht den Plain-Pfad)."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"agentmeta:{agent_id}", _AGENT_META_LIGHT_MAX_PER_SECOND):
+        logger.info("Agent %s: chat.session_meta verworfen — Chat-Rate-Limit", agent_id)
+        return
+    chat_id = data.get("chat_id")
+    if not isinstance(chat_id, str) or not chat_id.strip():
+        logger.warning("Agent %s: chat.session_meta ohne gültiges chat_id — verworfen", agent_id)
+        return
+    chat_id = chat_id.strip()
+    session_meta = data.get("session_meta")
+    if session_meta is not None and not _session_meta_ok(session_meta):
+        logger.warning("Agent %s: chat.session_meta ungültige session_meta-Struktur — verworfen", agent_id)
+        return
+    if await _agent_has_e2e_session(state, agent_id):
+        logger.warning(
+            "Agent %s: Klartext-chat.session_meta verworfen — E2E-Session aktiv (Downgrade-Schutz)",
+            agent_id)
+        return
+    if not await _chat_owner_allows(state, agent_id, chat_id):
+        return
+    frame = {
+        "type": "chat.session_meta", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "ts": int(time.time() * 1000),
+    }
+    if session_meta is not None:
+        frame["session_meta"] = session_meta
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if not delivered:
+        logger.debug("Agent %s: chat.session_meta gespoolt (Phone offline)", agent_id)
+
+
+def _agent_models_ok(models) -> bool:
+    """W16 (Fixliste 35): Struktur-Gate für agent.models-Listen — Liste ≤ 24,
+    je Eintrag nicht-leerer String ≤ 64. Fail-closed: sonst verwerfen."""
+    if models is None:
+        return True
+    if not isinstance(models, list) or len(models) > 24:
+        return False
+    for entry in models:
+        if not isinstance(entry, str) or not entry.strip() or len(entry) > 64:
+            return False
+    return True
+
+
+async def _handle_agent_models_enc(state: _RelayState, agent_id: str,
+                                   data: dict) -> None:
+    """W16 (Fixliste 35): agent.models.enc → opak ans Phone (Typ bleibt,
+    Listen liegen NUR im ct). Guards wie chat.reply.enc (Rate/Struktur/
+    Session/Replay + Owner-Claim)."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"agentmeta:{agent_id}", _AGENT_META_LIGHT_MAX_PER_SECOND):
+        logger.info("Agent %s: agent.models.enc verworfen — Meta-Rate-Limit", agent_id)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: agent.models.enc ungültig (%s) — verworfen", agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: agent.models.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Agent %s: agent.models.enc Replay/Fenster-Verletzung — verworfen", agent_id)
+        return
+    frame = {
+        "type": "agent.models.enc", "v": 1,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.debug("Agent %s: agent.models.enc gespoolt (Phone offline)", agent_id)
+
+
+async def _handle_agent_models(state: _RelayState, agent_id: str, data: dict) -> None:
+    """W16 (Fixliste 35): agent.models (Klartext-Legacy). Struktur-Gate +
+    Durchreich ans Phone (App entscheidet Downgrade selbst)."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"agentmeta:{agent_id}", _AGENT_META_LIGHT_MAX_PER_SECOND):
+        logger.info("Agent %s: agent.models verworfen — Meta-Rate-Limit", agent_id)
+        return
+    models = data.get("models")
+    if models is not None and not _agent_models_ok(models):
+        logger.warning("Agent %s: agent.models ungültige Liste — verworfen", agent_id)
+        return
+    frame = {
+        "type": "agent.models", "v": 1,
+        "agent_id": agent_id,
+        "ts": int(time.time() * 1000),
+    }
+    if models is not None:
+        frame["models"] = models
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.debug("Agent %s: agent.models gespoolt (Phone offline)", agent_id)
 
 
 # ── MEDIA-T1: Agent→Phone Media (chunked, opak) + Chunk-Ack ───────────────────
@@ -2684,6 +2931,13 @@ async def _handle_agent_chat_activity(state: _RelayState, agent_id: str, data: d
             return  # Dedup: je Wechsel genau 1 Frame
         state.chat_activity[key] = working
         _cap_chat_activity(state)
+    # W16 (Fixliste 14): klare session_meta am Activity-Frame (Adapter
+    # _send_activity) — Struktur-Gate + Pass-Through; App liest sie im
+    # Activity-Handler.
+    session_meta = data.get("session_meta")
+    if session_meta is not None and not _session_meta_ok(session_meta):
+        logger.warning("Agent %s: chat.activity mit ungültiger session_meta — Feld verworfen", agent_id)
+        session_meta = None
     frame = {
         "type": "chat.activity",
         "v": 1,
@@ -2693,6 +2947,8 @@ async def _handle_agent_chat_activity(state: _RelayState, agent_id: str, data: d
         "started_at": int(started_at),
         "ts": int(time.time() * 1000),
     }
+    if session_meta is not None:
+        frame["session_meta"] = session_meta
     delivered = await _deliver_to_phone(state, frame)
     if not delivered:
         logger.debug("chat.activity (working=%s) gespoolt (Phone offline)", working)

@@ -43,7 +43,7 @@ After the user taps Connect in the app, the phone dials out to this relay via We
 - USB, ADB, or developer options
 - The phone's IP address (the phone connects out to the relay — not the other way around)
 
-**Risk-gated tools ask for approval:** `android_send_sms`, `android_call`, `android_file_delete`, `android_apk_install`, `android_send_intent`, `android_broadcast` and `android_setup` surface Hermes' human-approval prompt before they run; unattended runs (cron/gateway without an approver) refuse them. `android_macro` refuses those tools as steps — call them individually.
+**Risk-gated tools ask for approval:** `android_send_sms`, `android_call`, `android_file_delete`, `android_send_intent`, `android_broadcast` and `android_setup` surface Hermes' human-approval prompt before they run; unattended runs (cron/gateway without an approver) refuse them. `android_macro` refuses those tools as steps — call them individually.
 
 ## Available Tools
 

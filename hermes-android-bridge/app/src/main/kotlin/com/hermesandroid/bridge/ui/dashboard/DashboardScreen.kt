@@ -20,13 +20,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -49,9 +46,6 @@ import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.ui.BridgeStatus
 import com.hermesandroid.bridge.ui.FlipsiColors
 import com.hermesandroid.bridge.ui.components.BadgeState
-import com.hermesandroid.bridge.ui.components.CountBadge
-import com.hermesandroid.bridge.ui.components.GroupIcons
-import com.hermesandroid.bridge.ui.components.ResourceIcon
 import com.hermesandroid.bridge.ui.components.SectionTitle
 import com.hermesandroid.bridge.ui.components.StateBanner
 import kotlinx.coroutines.delay
@@ -60,19 +54,23 @@ import kotlinx.coroutines.isActive
 /**
  * W15 (Sir-Fixliste 9): Startseite = STATUS-DASHBOARD.
  *
- * VORNE steht neu, was Sir am Start sehen will: die Agenten-Slots mit
- * Live-Status (Online/Offline/Beschäftigt), was der Agent gerade tut
- * (chat.activity-Working-Zustand mit mm:ss-Ticker) und seine letzte
- * Aktivität (letzter chat.event-Text + relative Zeit). Die alten Start-
- * Elemente wandern NICHT weg — sie leben weiter unten als „Verbindung“-
- * Karte (URL-Feld + Verbinden/Trennen, gleiche SSOT wie das Einstellungs-
- * Feld) plus Fähigkeiten-Kompakt-Ansicht und LAN-Fußzeile.
+ * W16 (Fixliste 17, Sir): die Karten unter der Agenten-Liste sind RAUS —
+ * Verbindungskarte (Status = SSOT im Banner oben, Trennen lebt in
+ * Einstellungen › Server), Kompakt-Fähigkeitsanzeige (Schalter leben im
+ * Agenten-Tab) und LAN-Fußzeile. Übrig bleibt NUR das, was Sir am Start
+ * sehen will: die Agenten-Slots mit Live-Arbeits-Kontext (Fixliste 14) —
+ * Online/Offline/Beschäftigt, was der Agent gerade tut (chat.activity-
+ * Working-Zustand mit mm:ss-Ticker), die SESSION-QUELLE + aktives Modell
+ * (chat.activity-`session_meta` → [RelayClient.agentMeta]), laufende
+ * SUB-AGENTEN (eingerückte Zeilen) und die letzte Aktivität (chat.event).
  *
  * Daten-Verband: ALLE Zustände kommen aus vorhandenen RelayClient-Flows
  * (relay.state → [RelayClient.agents], chat.activity →
- * [RelayClient.agentWorking], chat.event → [RelayClient.chatEvents],
- * E2E-Sitzungen → [RelayClient.e2eSessions]) — KEIN neuer Endpunkt, KEIN
- * neuer Store; die Sichtregeln rechnen in [DashboardRules] (JVM-getestet).
+ * [RelayClient.agentWorking], chat.session_meta → [RelayClient.agentMeta],
+ * chat.event → [RelayClient.chatEvents], E2E-Sitzungen →
+ * [RelayClient.e2eSessions]) — KEIN neuer Endpunkt, KEIN neuer Store; die
+ * Sichtregeln rechnen in [DashboardRules] (JVM-getestet). Fehlende
+ * Meta-Daten = die Zeile entfällt (kein Platzhalter-Geraffel).
  *
  * Live-Ticker: solange ein Agent frisch „beschäftigt“ ist, tickt die Uhr
  * sekündlich (mm:ss wie im Conversation-Kopf), sonst reicht ein 30-s-Raster
@@ -81,16 +79,12 @@ import kotlinx.coroutines.isActive
 @Composable
 fun DashboardScreen(
     padding: PaddingValues,
-    // W15b (Fix E): URL-Feld + Verbinden leben nur noch in der Server-Gruppe
-    // der Einstellungen — hier bleibt nur die Trenn-Aktion der Verbindungskarte.
-    onDisconnect: () -> Unit,
-    enabledCapabilityCount: Int,
-    totalCapabilityCount: Int,
     onOpenAgentChat: (String) -> Unit,
 ) {
     // ── Live-Daten (vorhandene RelayClient-Flows) ───────────────────────────
     val agents by RelayClient.agents.collectAsState()
     val agentWorking by RelayClient.agentWorking.collectAsState()
+    val agentMeta by RelayClient.agentMeta.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
     val e2eSessions by RelayClient.e2eSessions.collectAsState()
     // Verbindungs-Zustand für das Statusbanner (eine Warn-Instanz, oben).
@@ -156,6 +150,7 @@ fun DashboardScreen(
                     AgentSlotCard(
                         agent = entry,
                         working = agentWorking[entry.agentId],
+                        meta = agentMeta[entry.agentId],
                         lastEvent = chatEvents.lastOrNull { it.agentId == entry.agentId },
                         e2eActive = e2eSessions.containsKey(entry.agentId),
                         nowMs = nowMs,
@@ -164,24 +159,6 @@ fun DashboardScreen(
                 }
             }
         }
-
-        // ── Verbindung: schlanke Karte (W15b) — nur Status + Trennen ───────
-        item(key = "verbindung") {
-            VerbindungCard(
-                onDisconnect = onDisconnect,
-            )
-        }
-
-        // ── Fähigkeiten kompakt (reine Ansicht — Schalter im Agenten-Tab) ──
-        item(key = "masterCompact") {
-            MasterCompactCard(
-                enabledCount = enabledCapabilityCount,
-                totalCount = totalCapabilityCount,
-            )
-        }
-
-        // ── Fußzeile: lokale LAN-Steuerung ─────────────────────────────────
-        item(key = "footer") { FooterCard() }
     }
 }
 
@@ -203,14 +180,17 @@ private fun labelRes(label: DashboardRules.LabelRes): String =
 
 /**
  * EIN Agent-Slot: Avatar mit Anfangsbuchstaben (Zustandsfarbe), Name +
- * E2E-Kleppel, Live-Arbeitszeile („arbeitet … 2:14“ mit Spinner), letzte
- * Aktivität (chat.event-Text, 1 Zeile) mit relativer Zeit und die Status-
- * Pille rechts. Tap öffnet die Conversation dieses Agenten (Chat-Tab).
+ * E2E-Kleppel, Live-Arbeitszeile („arbeitet … 2:14“ mit Spinner), die
+ * SESSION-QUELLE + aktives Modell (W16, Fixliste 14 — fehlende Daten =
+ * Zeile weglassen), die laufenden SUB-AGENTEN (eingerückte Zeilen) und
+ * die Status-Pille rechts. Tap öffnet die Conversation dieses Agenten
+ * (Chat-Tab).
  */
 @Composable
 private fun AgentSlotCard(
     agent: RelayClient.AgentEntry,
     working: RelayClient.AgentActivity?,
+    meta: RelayClient.AgentSessionMeta?,
     lastEvent: RelayClient.ChatMessageEvent?,
     e2eActive: Boolean,
     nowMs: Long,
@@ -301,6 +281,45 @@ private fun AgentSlotCard(
                         )
                     }
                 }
+                // W16 (Fixliste 14): SESSION-QUELLE + aktives Modell — je Teil
+                // zeigen, was da ist („Discord · Modell glm-…“), fehlt beides,
+                // entfällt die Zeile (kein Platzhalter-Geraffel).
+                val metaForAgent = meta
+                if (metaForAgent?.platform != null || metaForAgent?.model != null) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        listOfNotNull(
+                            metaForAgent.platform?.let { platformLabel(it) },
+                            metaForAgent.model?.let { stringResource(R.string.dash_model_label, it) },
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (status == DashboardRules.AgentStatus.BUSY) FlipsiColors.Ember
+                        else FlipsiColors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                // W16 (Fixliste 14): SUB-AGENTEN — eingerückte Zeile je Agent
+                // („SUB-Agent X am Coden (Modell Y)“); Status/Modell je nach
+                // Vorhandensein.
+                metaForAgent?.subAgents?.takeIf { it.isNotEmpty() }?.forEach { sub ->
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        buildString {
+                            append(stringResource(R.string.dash_sub_agent, sub.name))
+                            if (!sub.status.isNullOrBlank()) append(" ${sub.status}")
+                            if (!sub.model.isNullOrBlank())
+                                append(" " + stringResource(R.string.dash_sub_model, sub.model))
+                        },
+                        // Eingerückt — Kind-Ebene klar unter dem Slot-Header
+                        // (keine zweite Karten-Ebene, Sir-Layout-Fallwurf).
+                        modifier = Modifier.padding(start = 12.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = FlipsiColors.TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 // Letzte Aktivität: der letzte chat.event-Text des Agenten.
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -331,29 +350,27 @@ private fun AgentSlotCard(
                 // W15c: Status-Wort als LabelRes — Auflösung hier (DE/EN live).
                 label = labelRes(DashboardRules.statusLabel(status)),
                 tint = tint,
-                busy = status == DashboardRules.AgentStatus.BUSY,
             )
         }
     }
 }
 
-/** Status-Pille rechts am Slot: Text + Farbe, nie nur Farbe (A11y). */
+/**
+ * Status-Pille rechts am Slot: Punkt + Text mit konstantem Abstand —
+ * W16 (Fixliste 13, Sir): der 6dp-Punkt saß im ONLINE-Zweig direkt am
+ * Text (nur der busy-Zweig hatte den Spacer). Jetzt EINFACH: Punkt +
+ * Spacer(4dp) IMMER, keine Doppel-Box-Zweige mehr (A11y-Text unverändert).
+ */
 @Composable
-private fun StatusPill(label: String, tint: Color, busy: Boolean) {
+private fun StatusPill(label: String, tint: Color) {
     Row(
         modifier = Modifier
             .background(tint.copy(alpha = 0.14f), RoundedCornerShape(50))
             .padding(horizontal = 10.dp, vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (busy) {
-            Box(
-                Modifier.size(6.dp).background(tint, CircleShape),
-            )
-            Spacer(Modifier.width(4.dp))
-        } else {
-            Box(Modifier.size(6.dp).background(tint, CircleShape))
-        }
+        Box(Modifier.size(6.dp).background(tint, CircleShape))
+        Spacer(Modifier.width(4.dp))
         Text(
             label,
             style = MaterialTheme.typography.labelSmall,
@@ -382,145 +399,15 @@ private fun AgentsEmptyCard() {
     }
 }
 
-// ── Verbindung (alte Start-Elemente, gleiche SSOT wie das Settings-Feld) ─────
+// ── W16 (Fixliste 14): Plattform-Label der Session-Quelle ────────────────────
 
 /**
- * W15b (Fix E, Sir-Befund): die „Verbindung“-Karte ist SCHLANK — nur Status-
- * punkt + Zustandswort, letzte Relay-Meldung (getrennter Zustand) und die
- * Trennen-Aktion. Das Server-Adresse-Feld + der Verbinden-Button sind RAUS:
- * beides lebt weiter in der Server-Gruppe der Einstellungen (gleicher
- * serverUrlText-SSOT) — auf dem Dashboard machten sie die Karte überladen,
- * und Verbinden gehört in den Setup-/Einstellungs-Kontext.
+ * Plattform-Token (bridge/discord/telegram/cron/…) als Anzeigewort —
+ * erster Buchstabe groß, Namen bleiben unverändert (Protokoll-Konstante,
+ * wie „Discord“ selbst). Null/falsch = Zeile entfällt in der UI.
  */
-@Composable
-private fun VerbindungCard(
-    onDisconnect: () -> Unit,
-) {
-    val status by BridgeStatus.state.collectAsState()
-    val message by BridgeStatus.message.collectAsState()
-    // Zustands-Matching auf ConnectionState (exhaustive, ohne else-Grep).
-    val (dotColor, stateLabel) = when (status) {
-        is BridgeStatus.ConnectionState.CONNECTED ->
-            FlipsiColors.SignalGreen to stringResource(R.string.home_state_connected)
-        is BridgeStatus.ConnectionState.PAIRING_BROKEN ->
-            FlipsiColors.SignalRed to stringResource(R.string.home_state_pairing_needed)
-        is BridgeStatus.ConnectionState.CONNECTING ->
-            FlipsiColors.SignalAmber to stringResource(R.string.home_state_connecting)
-        is BridgeStatus.ConnectionState.RECONNECTING ->
-            FlipsiColors.SignalAmber to stringResource(R.string.home_state_connecting)
-        is BridgeStatus.ConnectionState.FAILED ->
-            FlipsiColors.SignalAmber to stringResource(R.string.home_state_disconnected)
-        is BridgeStatus.ConnectionState.IDLE ->
-            FlipsiColors.SignalAmber to stringResource(R.string.home_state_disconnected)
-    }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(10.dp).background(dotColor, CircleShape))
-                Text(
-                    stateLabel,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(start = 10.dp),
-                )
-            }
-            // Detail-Zeile (letzte Relay-Meldung) — nur im getrennten Zustand.
-            if (status !is BridgeStatus.ConnectionState.CONNECTED) {
-                Text(
-                    message.ifBlank { stringResource(R.string.home_state_fallback) },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = FlipsiColors.TextSecondary,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            // W15b (Fix E): NUR noch die Trenn-Aktion — Verbinden + URL-Feld
-            // leben exklusiv in der Server-Gruppe der Einstellungen.
-            if (status is BridgeStatus.ConnectionState.CONNECTED) {
-                HorizontalDivider(Modifier.padding(vertical = 12.dp), color = FlipsiColors.LineStrong)
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.End,
-                ) {
-                    OutlinedButton(
-                        onClick = onDisconnect,
-                        modifier = Modifier.height(48.dp),
-                        // Destruktive Aktion = kenntlich dezent rot
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.SignalRedText),
-                    ) { Text(stringResource(R.string.conn_disconnect), fontWeight = FontWeight.Medium) }
-                }
-            }
-        }
-    }
-}
-
-/** Master-Status kompakt: reine Ansicht — Schalter leben im Agenten-Tab. */
-@Composable
-private fun MasterCompactCard(enabledCount: Int, totalCount: Int) {
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ResourceIcon(GroupIcons.master, tint = FlipsiColors.TextSecondary, size = 20.dp)
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    stringResource(R.string.caps_section_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                CountBadge(enabled = enabledCount, total = totalCount, invasive = false)
-            }
-            Text(
-                stringResource(R.string.caps_compact_desc, enabledCount, totalCount),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
-/** Fußzeile: lokale LAN-Steuerung (USB/LAN) — Regelbetrieb läuft übers Relay. */
-@Composable
-private fun FooterCard() {
-    val context = androidx.compose.ui.platform.LocalContext.current
-    val ip = remember { localIpOf(context) }
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.large,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(stringResource(R.string.footer_title), fontWeight = FontWeight.SemiBold)
-            Text(
-                stringResource(R.string.footer_url, ip),
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                ),
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Text(
-                stringResource(R.string.footer_desc),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-        }
-    }
-}
-
-private fun localIpOf(context: android.content.Context): String {
-    return runCatching {
-        java.net.NetworkInterface.getNetworkInterfaces()?.toList()
-            ?.flatMap { it.inetAddresses.toList() }
-            ?.firstOrNull { !it.isLoopbackAddress && it.hostAddress?.contains(':') == false }
-            ?.hostAddress ?: "—"
-    }.getOrNull() ?: "—"
-}
+private fun platformLabel(platform: String): String =
+    platform.trim().replaceFirstChar { c -> c.uppercaseChar() }
 
 // ── Statusbanner (unverändert aus dem alten Home übernommen) ──────────────────
 

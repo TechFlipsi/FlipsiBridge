@@ -32,10 +32,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -440,10 +440,10 @@ fun DeliveryChecks(
 
 /**
  * Eine Nachricht im Verlauf: eigene Nachrichten rechts (Ember-Ton), Agenten-
- * Antworten links (Panel-Ton). Jede Agent-Antwort trägt links das kleine
- * „KI“-Badge — Kennzeichnungspflicht nach Art. 50 AI-Act (EU AI Regulation);
- * der Status ist damit nie nur über die Platzierung erkennbar (TalkBack liest
- * den Badge-Text mit). Zeitstempel klein unter der Bubble.
+ * Antworten links (Panel-Ton). Jede Agent-Antwort trägt in der Meta-Fußzeile
+ * das kompakte „KI“-Badge — Kennzeichnungspflicht nach Art. 50 AI-Act (EU AI
+ * Regulation); der Status ist damit nie nur über die Platzierung erkennbar
+ * (TalkBack liest den Badge-Text mit). Zeitstempel klein in der Bubble.
  *
  * PH2-T10 (F2-S1/S2): [status] = Broker-Status der EIGENEN Nachricht
  * (queued/delivered/read/failed, null = nur gesendet) → Chip neben dem
@@ -452,10 +452,11 @@ fun DeliveryChecks(
  * → GAR KEIN Chip — '✓ Gesendet' ohne echten Versand wäre gelogen.
  * PH2-T11: [replyAfterMs] = Empfang→Antwort der AGENTEN-Antwort →
  * 'Antwort nach X s' unter dem Zeitstempel.
- * PH-FIX-CHAT-A (F3): [senderName] = Anzeigename des Agenten — Hauptlabel
- * neben dem „KI“-Badge (vorher stand hartkodiert „KI“ über jeder Antwort,
- * der Name des Agenten war der Bubble nicht bekannt). null = alter Zustand
- * (Demo-Eintrag ohne Backend).
+ * W16 (Fixliste 16a): der frühere [senderName]-Parameter ist ENTFERNT — der
+ * Agenten-Name als Label-Spalte neben jeder Bubble entfällt; wer den Namen
+ * liest, liest ihn im Chat-Kopf (der Zitat-Verband trägt seinen Namen über
+ * den stored [ChatQuote]-Snapshot weiter — keiner Abhängigkeit zur UI-Param-
+ * Kette).
  *
  * W4-B (Zitieren):
  * - [message.quoted] != null → Zitat-Block ÜBER dem Inhalt der Bubble
@@ -492,7 +493,6 @@ fun DeliveryChecks(
 @Composable
 fun MessageBubble(
     message: ChatMessage,
-    senderName: String? = null,
     status: String? = null,
     showStatusChip: Boolean = true,
     replyAfterMs: Long? = null,
@@ -519,14 +519,32 @@ fun MessageBubble(
     speaking: Boolean = false,
     onStopSpeaking: () -> Unit = {},
     // WELLE-13 P8 (UI-Verband): Holen-Callback für eingehende Medien OHNE
-    // lokal gecachte Datei (mediaId vorhanden, localPath leer) — null = kein
-    // Download-Dienst angebunden → ehrlicher Hinweis statt totem Button.
+    // lokale Datei (mediaId vorhanden, localPath leer) — null = kein Download-
+    // Dienst angebunden → ehrlicher Hinweis statt totem Button.
     onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
+    // W16 P30/P32: Agenten-Avatar (AgentAvatarStore) für die TTS-Sprachnachricht-
+    // Bubble — null = kein Kreis (B2-Vertrag: graceful, kein Deko-Fake).
+    agentAvatar: (@Composable () -> Unit)? = null,
 ) {
     // W4-B (Chat-Suche): TalkBack-Beschreibung der Suchtreffer-Bubble.
     val searchHitDescription = stringResource(R.string.chat_search_hit_a11y)
     // WELLE-13 P9/W15: Stopp-A11y der vorgelesenen Bubble als Ressource (DE/EN).
     val stopReadAloudA11y = stringResource(R.string.chat_tts_stop_a11y)
+    // W16 P30/P32 (Fixliste 31, Agenten-Richtung): TTS-/Audio-Flag — die
+    // WA-Sprachnachricht-Bubble von B2 steht in der Agenten-Textnachricht,
+    // solange sie vorgelesen (speakingIds) ODER ihre Datei-Wiedergabe läuft.
+    // Mount-Garantie: der Play-Verdränger stoppt das Vorlesen (Engine → Datei);
+    // die Bubble wäre sonst mitten im Sound aus dem Screen gefallen — solange
+    // der tts-Key aktiv bleibt, bleibt der Mount, erst das Ende räumt ab.
+    // (Chip s. unten: entfällt, solange die Bubble steht — B2-Vertrag
+    // „anstelle des Speaking-Chips".)
+    val ttsActiveKey by ChatVoicePlayback.activeKey.collectAsState()
+    val showTtsBubble = message.fromAgent && message.media == null &&
+        (speaking || ttsActiveKey == ChatVoicePlayback.ttsKey(message.id))
+    // W16 (Fixliste 16a): KI-Metabadge — Text + TalkBack-Beschreibung einmal
+    // hoisten (stringResource lebt NICHT im non-composable semantics-Lambda).
+    val kiBadgeText = stringResource(R.string.chat_ki_badge)
+    val kiBadgeA11y = stringResource(R.string.chat_ki_badge_a11y)
     // PH-FIX-CHAT-A (F2): relative statt fixe 300-dp-Maximalbreite — auf
     // Sirs Handy (~360–400 dp) nahm eine lange Nachricht fast die volle
     // Breite ein (16 dp Außen + 12 dp Text-Padding = „randnah + gequetscht“).
@@ -597,41 +615,13 @@ fun MessageBubble(
             horizontalArrangement = if (message.fromAgent) Arrangement.Start else Arrangement.End,
             verticalAlignment = Alignment.Bottom,
         ) {
-            if (message.fromAgent) {
-                // Art. 50 AI-Act: KI-generierte Antwort sichtbar kennzeichnen.
-                // PH-FIX-CHAT-A (F3): Agent-NAME als Hauptlabel, „KI“ als
-                // kleines Badge darunter — das Badge selbst bleibt („KI“ war
-                // vorher das EINZIGE Label; contentDescription unverändert,
-                // TalkBack liest die Kennzeichnung weiter mit).
-                Column(horizontalAlignment = Alignment.Start) {
-                    senderName?.let { name ->
-                        Text(
-                            name,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.SemiBold,
-                            color = FlipsiColors.TextSecondary,
-                        )
-                    }
-                    // Text-Badge „KI“ statt smart_toy-Icon: das Icon liegt
-                    // nicht im icons-core-Set und eine neue Dependency ist
-                    // tabu — ein Haus-Drawable kann mit PH-2-Main ergänzt
-                    // werden.
-                    Text(
-                        "KI",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = FlipsiColors.SignalAmber,
-                        modifier = Modifier
-                            .background(
-                                color = FlipsiColors.Panel,
-                                shape = RoundedCornerShape(6.dp),
-                            )
-                            .padding(horizontal = 5.dp, vertical = 2.dp)
-                            .semantics { contentDescription = "Von einer KI erzeugt" },
-                    )
-                }
-                Spacer(Modifier.width(6.dp))
-            }
+            // W16 (Sir-Fixliste 16a): die einstige Label-SPALTE links neben der
+            // Agent-Bubble (Agenten-Name + „KI“-Badge) ist ENTFERNT — sinnloser
+            // Platzverlust, der Chat-Kopf zeigt den Agenten schon. Die
+            // AI-Act-Kennzeichnung (Art. 50) bleibt PFLICHT und lebt jetzt als
+            // kompakter „KI“-Mini-BADGE in der Meta-Fußzeile der Bubble
+            // (sichtbar + TalkBack-Beschreibung, siehe unten). Die Bubble
+            // sitzt damit bündig am Rand.
             Column(
                 horizontalAlignment = if (message.fromAgent) Alignment.Start else Alignment.End,
             ) {
@@ -746,21 +736,64 @@ fun MessageBubble(
                                 modifier = Modifier.padding(start = 14.dp, end = 14.dp, top = 10.dp),
                             )
                         }
+                        // ── W16 P30/P32: Agenten-TTS-Sprachnachricht-Bubble ──
+                        // Agenten-Textnachricht mit TTS-/Audio-Flag: B2s
+                        // VoiceBubbleAgentTts (Play = synthesizeToFile-Datei,
+                        // Verdränger stoppt das Vorlesen). Steht ANSTELLE des
+                        // Speaking-Chips (Chip unten entfällt solange).
+                        if (showTtsBubble) {
+                            Box(
+                                Modifier.padding(start = 14.dp, end = 14.dp, top = 6.dp, bottom = 2.dp),
+                            ) {
+                                VoiceBubbleAgentTts(
+                                    messageId = message.id,
+                                    text = message.text,
+                                    avatar = agentAvatar,
+                                )
+                            }
+                        }
                         // ── WELLE-13 P11: Meta-Zeile INSIDE der Bubble (unten-rechts) ──
                         // Sirs Bauvorlage: Zeitstempel labelSmall/TextSecondary steht
                         // IN der Bubble, der Status-Chip direkt daneben — gleiches
                         // Silhouette-Bild für Text- UND Medien-Bubbles (die Zeile
                         // liegt in der Surface, nicht mehr unter der Bubble).
+                        // W16 (Sir-Fixliste 16b): das innere fillMaxWidth() ist
+                        // ENTFERNT — die Zeile ließ die Bubble auf die volle Max-
+                        // Breite (75 %) aufstrecken, „Test“ renderte RIESIG. Die
+                        // Zeile misst jetzt NUR ihren Inhalt; .align(End) hält sie
+                        // unten-rechts, die Bubble wächst mit dem TEXT bis max 75 %.
                         Row(
                             modifier = Modifier
-                                .fillMaxWidth()
+                                .align(Alignment.End)
                                 .padding(start = 14.dp, end = 10.dp, top = 2.dp, bottom = 6.dp),
-                            horizontalArrangement = Arrangement.End,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
+                            // W16 (AI-Act, Fixliste 16a): kompakte „KI“-Kennzeichnung
+                            // je Agenten-Antwort IN der Meta-Fußzeile — sichtbar und
+                            // TalkBack-beschriftet, ohne breite Label-Spalte.
+                            if (message.fromAgent) {
+                                Text(
+                                    kiBadgeText,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = FlipsiColors.SignalAmber,
+                                    modifier = Modifier
+                                        .background(
+                                            color = FlipsiColors.PanelElev,
+                                            shape = RoundedCornerShape(6.dp),
+                                        )
+                                        .padding(horizontal = 5.dp, vertical = 1.dp)
+                                        .semantics {
+                                            contentDescription = kiBadgeA11y
+                                        },
+                                )
+                                Spacer(Modifier.width(6.dp))
+                            }
                             // WELLE-13 P9: Speaking-Chip — diese Agenten-Antwort wird
                             // gerade vorgelesen; Tap auf den Chip = Stopp (Queue leer).
-                            if (message.fromAgent && speaking) {
+                            // W16 P30/P32: entfällt, solange die TTS-Bubble steht
+                            // (dort übernimmt der Play-Verdränger die Kontrolle).
+                            if (message.fromAgent && speaking && !showTtsBubble) {
                                 Row(
                                     Modifier
                                         .clip(RoundedCornerShape(10.dp))
@@ -1067,19 +1100,16 @@ fun AgentRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // W16 (Fixliste 32a): Avatar aus dem dynamischen AgentAvatarStore —
+        // eigenes Profilbild = Foto, sonst deterministische Farbe + Initial
+        // (derselbe Store wie Chat-Header/Bubble, B6 liest ihn ebenfalls).
         Box(Modifier.size(48.dp)) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(FlipsiColors.PanelElev, CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    agent.name.trim().take(1).uppercase().ifBlank { "?" },
-                    style = MaterialTheme.typography.titleMedium,
-                    color = FlipsiColors.Ember,
-                )
-            }
+            AgentAvatar(
+                agentId = agent.agentId,
+                name = agent.name,
+                diameter = 48.dp,
+                modifier = Modifier.fillMaxSize(),
+            )
             OnlineDot(
                 online = agent.online,
                 modifier = Modifier
@@ -1166,12 +1196,21 @@ fun OnlineDot(online: Boolean, modifier: Modifier = Modifier) {
 // ── Eingabe-Leiste ──────────────────────────────────────────────────────────
 
 /**
- * Eingabe-Leiste unten in der Conversation: Anhang-Button (MEDIA-T1) +
- * Text-Feld + Senden-Button. Der Senden-Button ist nur bei nicht-leerem
- * Text aktiv (Zustand ist über enabled sichtbar, nicht nur über Farbe).
- * MEDIA-T1: [onAttach] öffnet den Medien-Picker (Foto/Video, Datei,
- * Sprachnachricht); ein laufender Voice-Record ([voiceRecording]) tauscht
- * Senden → Stopp/Senden-Aus.
+ * Eingabe-Leiste unten in der Conversation (W16, Sir-Fixliste 30a — Composer
+ * im WhatsApp-Aufbau): EINE Pill-Zeile — links der Anhang-Knopf (der
+ * „Smiley“-Slot der WA-Vorlage; hier funktional als Anhang gebaut, die App
+ * hat kein Emoji-Panel), der das Textfeld trägt — und rechts AUSSERHALB der
+ * Pill der RUNDE Send-/Mikro-Button INLINE (kein breites Feld, KEINE zweite
+ * Buttons-Zeile unter dem Textfeld). Feld leer = Mikro, Text = Send — der
+ * Icon-Morph folgt allein dem Feldstand; während einer Aufnahme zeigt der
+ * Button den roten Mikro-Stop.
+ * W16 P30b: standardmäßig rutscht die Hold-to-Record-Geste an den Knopf
+ * ([onVoiceHoldStart]/[onVoiceHoldEnd]/[onVoiceHoldCancelState] — Halten =
+ * Aufnahme, Loslassen = Senden, Wisch-links = Abbruch, < 0,5 s = Too-Short);
+ * B1s Tap-Logik ([onVoiceToggle]/[toggleVoice]) bleibt als FALLBACK-Pfad
+ * erhalten (TalkBack-Click, STOP-Tap bei laufender Fallback-Aufnahme,
+ * Berechtigungs-Fortsetzung, Assist-Start). SIRS-05 bleibt gepinnt: leerer
+ * Text sendet NIE den Text-Kanal.
  */
 @Composable
 fun ChatInputBar(
@@ -1182,57 +1221,52 @@ fun ChatInputBar(
     onAttach: (() -> Unit)? = null,
     voiceRecording: Boolean = false,
     onVoiceToggle: (() -> Unit)? = null,
-    // Komposer Welle 12 (Referenz-Übernahme): Meta-Reihe mit Modell-/Denk-
-    // Chip (öffnet die Auswahl-Sheet) im Flipsi-Pill-Look.
-    modelLabel: String = "Auto",
-    effortLabel: String? = null,
-    onOpenPicker: () -> Unit = {},
+    // W16 P30b (Fixliste 30b): Hold-to-Record-Verband (B2-API voiceHoldToRecord)
+    // am runden Mikro-Knopf — Halten = Aufnahme, Loslassen = Senden, Wischen
+    // nach Links = Abbruch, < 0,5 s = Too-Short. null = Verband nicht angebunden,
+    // der Knopf fällt vollständig auf B1s Tap-Logik (onVoiceToggle) zurück.
+    onVoiceHoldStart: (() -> Boolean)? = null,
+    onVoiceHoldEnd: ((VoiceHoldOutcome, holdMs: Long) -> Unit)? = null,
+    onVoiceHoldCancelState: ((cancelling: Boolean) -> Unit)? = null,
+    // W16 (Fixliste 35): Modell-Chip im Composer — LIVE-Anzeige des aktiven
+    // Modells („Auto · <session_meta-Modell>“ o. der expliziten Auswahl) und
+    // direkter Ins-Sheet-Sprung (dasselbe Modell & Denken-Sheet wie der ⋮-
+    // Punkt). null = Chip nicht verdrahtet (kein Dead-Verband).
+    modelChipLabel: String? = null,
+    onModelChip: (() -> Unit)? = null,
 ) {
-    val canSend = canSendChat(value)
+    val canSend = canSendChat(value) && !voiceRecording
+    // W16: A11y-Texte einmal hoisten (stringResource ist nicht im onClick-
+    // Lambda aufrufbar).
+    val sendA11y = stringResource(R.string.chat_send_a11y)
+    val micStartA11y = stringResource(R.string.chat_mic_a11y_start)
+    val micStopA11y = stringResource(R.string.chat_mic_a11y_stop)
+    // W16 P30b: Press-Fanger der Hold-Geste — true = DIESE Press-Sequenz gehörte
+    // der Geste (Aufnahme gestartet ODER der Berechtigungs-Dialog wurde vom
+    // START_DENIED-Pfad geöffnet): der Klick des kurzen Taps (< 0,5 s Release)
+    // stillstellen, das Release regelt onVoiceHoldEnd. Der Fanger räumt bei JEDEM
+    // Down (kein Alt-Zustand über Press-Sequenzen hinweg); TalkBack-Clicks
+    // (keine echten Pointer-Events) laufen unangetastet in B1s Fallback-Pfad.
+    var holdTookPress by remember { mutableStateOf(false) }
+    val holdStartCallback = onVoiceHoldStart
+    val holdEndCallback = onVoiceHoldEnd
     Column(
         modifier = modifier
             // PH-FIX-CHAT-A (F2): 16 dp Außenabstand — bündig mit den Bubbles
             // (12 dp contentPadding + 8 dp Zeilen-Padding ergeben 20 dp).
             .padding(horizontal = 16.dp, vertical = 8.dp),
     ) {
-        // Referenz-Form: EIN abgerundetes Pill-Panel, oben das Textfeld
-        // (ohne eigenen Kasten), darunter die Meta-Reihe (Anhang, Modell/
-        // Denken-Chips, Mikrofon, Send-Kreis). Flipsi-Farben: Panel,
-        // TextPrimary/Secondary, Ember-Aktion, SignalRed-Record.
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(28.dp))
-                .background(FlipsiColors.Panel)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onValueChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 40.dp),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(
-                    color = FlipsiColors.TextPrimary,
-                ),
-                cursorBrush = SolidColor(FlipsiColors.Ember),
-                maxLines = 4,
-                decorationBox = { innerTextField ->
-                    Box {
-                        if (value.isEmpty()) {
-                            Text(
-                                if (voiceRecording) stringResource(R.string.chat_input_hint_recording)
-                                else stringResource(R.string.chat_input_hint),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = FlipsiColors.TextSecondary,
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-            )
-            Spacer(Modifier.height(6.dp))
+            // EIN gerundetes Rund-Feld (Pill): Anhang links, Textfeld (Flex).
             Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(FlipsiColors.Panel)
+                    .heightIn(min = 48.dp)
+                    .padding(start = 2.dp, end = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (onAttach != null) {
@@ -1244,93 +1278,133 @@ fun ChatInputBar(
                         )
                     }
                 }
-                // Modell-Chip (Referenz: 'Auto'/Kurzname am Komposer — Tippen
-                // öffnet die Auswahl-Sheet).
-                // WELLE-13 P6 (Auto-Chip-Bug, Fix): Hitbox auf ≥ 48 dp gehoben
-                // (vorher heightIn(min = 32 dp) — unter der Touchhöhen-Pflicht
-                // der Checkliste F; der Chip war schwer treffbar). Der Tap-Pfad
-                // ChatInputBar → onOpenPicker → composerPickerOpen war korrekt
-                // verdrahtet; das Sheet blieb trotzdem weg, weil ChatModelSheet
-                // bei blank agentId still returnete — das zweite Bein des Fixes
-                // liegt in ComposerUi.kt.
-                // W15: A11y-Text des Picker-Chips als Ressource (DE/EN, mit Modell-Name).
-                val modelPickerA11y = stringResource(R.string.chat_model_picker_a11y, modelLabel)
+                BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp),
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        color = FlipsiColors.TextPrimary,
+                    ),
+                    cursorBrush = SolidColor(FlipsiColors.Ember),
+                    maxLines = 4,
+                    decorationBox = { innerTextField ->
+                        Box {
+                            if (value.isEmpty()) {
+                                Text(
+                                    if (voiceRecording) stringResource(R.string.chat_input_hint_recording)
+                                    else stringResource(R.string.chat_input_hint),
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = FlipsiColors.TextSecondary,
+                                )
+                            }
+                            innerTextField()
+                        }
+                    },
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            // W16 (Fixliste 35): kompakter Modell-Chip ZWISCHEN Pill und dem
+            // runden Knopf — zeigt live das aktuell verwendete Modell („Auto ·
+            // <Modell>“ bzw. die explizite Auswahl) und öffnet DIREKT das
+            // Modell & Denken-Sheet (dasselbe wie der ⋮-Punkt — kein Umweg).
+            val chipA11y = stringResource(R.string.composer_chip_a11y)
+            if (modelChipLabel != null && onModelChip != null) {
                 Row(
-                    Modifier
-                        .heightIn(min = 48.dp)
-                        .clip(RoundedCornerShape(24.dp))
+                    modifier = Modifier
+                        .heightIn(min = 36.dp)
+                        .clip(RoundedCornerShape(18.dp))
                         .background(FlipsiColors.PanelElev)
-                        .clickable(onClick = onOpenPicker)
-                        .padding(horizontal = 12.dp)
-                        .semantics { contentDescription = modelPickerA11y },
+                        .clickable(onClick = onModelChip, onClickLabel = chipA11y)
+                        .padding(horizontal = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text(
-                        modelLabel.take(14),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (modelLabel == "Auto") FlipsiColors.TextSecondary
-                                else FlipsiColors.TextPrimary,
-                        fontWeight = FontWeight.SemiBold,
+                        modelChipLabel,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FlipsiColors.TextPrimary,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.widthIn(max = 120.dp),
                     )
                 }
-                if (effortLabel != null) {
-                    Spacer(Modifier.width(6.dp))
-                    // WELLE-13 P6: gleiche 48-dp-Hitbox-Regel für den Denk-Chip.
-                    Row(
-                        Modifier
-                            .heightIn(min = 48.dp)
-                            .clip(RoundedCornerShape(24.dp))
-                            .background(FlipsiColors.EmberDim)
-                            .clickable(onClick = onOpenPicker)
-                            .padding(horizontal = 12.dp)
-                            .semantics { contentDescription = "Denkstufe: $effortLabel" },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Denk: $effortLabel",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = FlipsiColors.TextPrimary,
-                            fontWeight = FontWeight.SemiBold,
-                        )
+                Spacer(Modifier.width(8.dp))
+            }
+            // RUNDEN Send-/Mikro-Button INLINE RECHTS im selben Row — der
+            // Icon-Morph: leer+keine Aufnahme = Mikro (Aufnahme starten),
+            // Text = Send (Ember), Aufnahme läuft = Mikro rot (Tap = Stop+Send).
+            // Die frühere Buttons-Zeile UNTER dem Textfeld (Anhang, Modell-/
+            // Denk-Chips, Mikro, Send) ist ENTFERNT (Fixliste 30-Nachtrag) —
+            // der Modell-/Denken-Picker lebt nun im ⋮-Chat-Menü (ChatScreen).
+            IconButton(
+                onClick = {
+                    if (holdTookPress) {
+                        // W16 P30b: die Geste übernahm diese Press-Sequenz — der
+                        // Klick des kurzen Taps regt B1s Toggle NICHT an (kein
+                        // Doppel-Lauf gegen den Release-Verband onVoiceHoldEnd).
+                        holdTookPress = false
+                        return@IconButton
                     }
-                }
-                Spacer(Modifier.weight(1f))
-                if (onVoiceToggle != null) {
-                    IconButton(onClick = onVoiceToggle, modifier = Modifier.size(40.dp)) {
-                        Icon(
-                            painterResource(R.drawable.ic_mic),
-                            contentDescription = if (voiceRecording)
-                                "Sprachnachricht beenden und senden"
-                            else "Sprachnachricht aufnehmen",
-                            tint = if (voiceRecording) FlipsiColors.SignalRed
-                                   else FlipsiColors.TextSecondary,
-                        )
+                    when {
+                        voiceRecording -> onVoiceToggle?.invoke() // Stop + Senden
+                        canSend -> onSend()
+                        else -> onVoiceToggle?.invoke() // Aufnahme starten
                     }
-                }
-                // KOMPOSER WELLE 12: Send-Kreis (Referenz: runder Button mit
-                // ↑/Send); Ember-Fläche wenn send-fähig, gedimmt sonst —
-                // A11y via IconButton + Beschreibung, SIRS-05 bleibt gepinnt.
-                IconButton(
-                    onClick = onSend,
-                    enabled = canSend,
-                    modifier = Modifier.size(44.dp),
+                },
+                enabled = voiceRecording || canSend || onVoiceToggle != null,
+                modifier = Modifier
+                    .size(44.dp)
+                    // W16 P30b: Hold-to-Record-Geste am runden Knopf (B2-API).
+                    // Die Geste konsumiert KEINE Events — der kurze Tap feuert
+                    // zusätzlich den Click, deshalb stellt der Press-Fanger
+                    // oben still; ein echter Haltezug bleibt click-frei
+                    // (Clickable bricht den Tap beim Long-Press-Spiel ab).
+                    .then(
+                        if (holdStartCallback != null && holdEndCallback != null) {
+                            Modifier.voiceHoldToRecord(
+                                // JE Down: Alt-Fanger räumen, dann der Host-
+                                // Start (true = Press übernommen).
+                                onStart = {
+                                    holdTookPress = false
+                                    holdStartCallback().also { holdTookPress = it }
+                                },
+                                onEnd = { outcome, holdMs -> holdEndCallback(outcome, holdMs) },
+                                onSwipeCancelState = onVoiceHoldCancelState,
+                            )
+                        } else {
+                            Modifier
+                        }
+                    ),
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(
+                            when {
+                                voiceRecording -> FlipsiColors.PanelElev
+                                canSend -> FlipsiColors.Ember
+                                else -> FlipsiColors.PanelElev
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Box(
-                        Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(if (canSend) FlipsiColors.Ember
-                                        else FlipsiColors.PanelElev),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            painterResource(R.drawable.ic_send),
-                            // W15: Senden-A11y als Ressource (DE/EN).
-                            contentDescription = stringResource(R.string.chat_send_a11y),
-                            tint = if (canSend) FlipsiColors.OnEmber
-                                   else FlipsiColors.TextSecondary,
-                        )
-                    }
+                    val micMode = !canSend || voiceRecording
+                    Icon(
+                        painterResource(if (micMode) R.drawable.ic_mic else R.drawable.ic_send),
+                        contentDescription = when {
+                            voiceRecording -> micStopA11y
+                            canSend -> sendA11y
+                            else -> micStartA11y
+                        },
+                        tint = when {
+                            voiceRecording -> FlipsiColors.SignalRed
+                            canSend -> FlipsiColors.OnEmber
+                            else -> FlipsiColors.TextSecondary
+                        },
+                    )
                 }
             }
         }

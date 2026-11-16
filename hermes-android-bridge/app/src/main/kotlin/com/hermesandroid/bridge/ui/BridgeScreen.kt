@@ -56,7 +56,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemColors
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -92,7 +91,6 @@ import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.client.HealthDataBridge
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.crypto.CryptoEngine
-import com.hermesandroid.bridge.files.UpdateInstaller
 import com.hermesandroid.bridge.media.ScreenRecorder
 import com.hermesandroid.bridge.overlay.StatusOverlay
 import com.hermesandroid.bridge.permissions.DeviceFeature
@@ -103,6 +101,8 @@ import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.chat.ChatScreen
 import com.hermesandroid.bridge.ui.dashboard.DashboardScreen
+import com.hermesandroid.bridge.ui.settings.AboutSheetHost
+import com.hermesandroid.bridge.ui.settings.AboutState
 import com.hermesandroid.bridge.ui.settings.SettingsHome
 import com.hermesandroid.bridge.ui.settings.SettingsNav
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
@@ -199,18 +199,17 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // killen). Der Gate liefert die ORIGINAL Activity (AppLanguage.LocalAppActivity).
     val activity = com.hermesandroid.bridge.i18n.AppLanguage.LocalAppActivity.current
     // W15: status/statusMessage/der Verbindungszustand leben jetzt im
-    // Dashboard (ui/dashboard/DashboardScreen.kt sammelt selbst); serverUrl
-    // bleibt hier — das URL-Feld der Einstellungen teilt sich dieselbe SSOT.
-    val serverUrl by BridgeStatus.serverUrl.collectAsState()
+    // Dashboard (ui/dashboard/DashboardScreen.kt sammelt selbst).
+    // W16 P21-Nachtrag (Sir): serverUrlText/serverUrl-Sammel-Faden ENTFERNT —
+    // das extra „Server-Adresse“-Feld unter der Server-Liste (der einzige
+    // Konsument) fliegt mit weg; Server verwalten sich NUR über die
+    // Profil-Liste (RelayServerListCard/connectViaProfile).
     val configVersion by BridgeStatus.configVersion.collectAsState()
     // PH-3 F6: aktive E2E-Sessions für die Header-Kleppe (sichtbarer
     // Verschlüsselungs-Zustand statt unsichtbarem Legacy-Klartext).
     val e2eSessions by RelayClient.e2eSessions.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
-    var serverUrlText by remember(serverUrl) {
-        mutableStateOf(serverUrl.orEmpty())
-    }
     var showRegenDialog by remember { mutableStateOf(false) }
     var showMasterDialog by remember { mutableStateOf(false) }
     var masterUndoSnapshot by remember { mutableStateOf<Map<String, Boolean>>(emptyMap()) }
@@ -256,6 +255,22 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // Callback aus dem ChatScreen räumt den Merker direkt ab, ein erneuter
     // Chat-Tab-Besuch landet wieder auf der Agenten-Liste).
     var pendingChatAgentId by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // W16 (Sir-Fixliste 15): „Conversation offen“ der Chat-Route — die
+    // NavigationBar unten verschwindet, SOLANGE eine Conversation mit einem
+    // Agenten offen ist (mehr Platz für Bubbles + Composer) und kommt ZURÜCK,
+    // sobald man die Conversation verlässt (Liste/Tab). ChatScreen meldet
+    // den vorzeichenfesten Stand (AttachSheetRules-Verband) je Composition
+    // per SideEffect; hier lebt nur der gespiegelte Schalter.
+    var chatConversationOpen by rememberSaveable { mutableStateOf(false) }
+    // Verband: der Open-Flag gehört ZUR Route 2 — ein Sprung auf eine andere
+    // Route räumt ihn ab, damit auf fremden Routen nie eine versteckte Leiste
+    // hängt (ChatScreen meldet beim nächsten Verband-Besuch ohnehin frisch).
+    LaunchedEffect(route) {
+        if (route != 2 && chatConversationOpen) {
+            chatConversationOpen = false
+        }
+    }
 
     fun snack(text: String) {
         scope.launch { snackbarHostState.showSnackbar(text) }
@@ -320,6 +335,22 @@ fun BridgeScreen(initialRoute: Int = 0) {
     }
     val invasivePending = allCaps.filter { it.invasive && it.id !in enabledIds }
 
+    /**
+     * W16 P11 (Sir: Interaction-Einzeltoggle ließ sich nicht wiedereinschalten
+     * — nur der Master-AN wirkte): EIN gekoppelter Write-Pfad für die
+     * Capability-Kette. Gate-Write und der sofortige refreshConfig-Bump sind
+     * UNTERTEILBAR — nach einem Einzel-AN ist enabledIds (remember
+     * (configVersion)) im selben Bump frisch gelesen: kein Stale-Disabled-
+     * Zustand in der Zeile, der Master-Schalter rechnet den Einzeltoggle mit
+     * (enabledCount) und der /open_app-Pfad sieht die Capability sofort.
+     * Kein Aufrufer darf die Hälfte vergessen — deshalb existiert die
+     * Kette nur HIER (Master-, Toggles-, Health- und Undo-Pfade rufen an).
+     */
+    fun writeCapabilityAndRefresh(capId: String, on: Boolean) {
+        CapabilityGate.setEnabled(capId, on)
+        BridgeStatus.refreshConfig()
+    }
+
     val onMasterCheckedChange: (Boolean) -> Unit = { target ->
         when {
             // AN und invasive stehen aus → ERST Dialog, KEIN CapabilityGate-Write davor
@@ -382,14 +413,16 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         // v0.12.0 QA-SK-01: die Einzeltoggles MÜSSEN ins Gate
                         // schreiben. PH-7/PS-G-2 (play): sensible Toggles
                         // bekommen VOR dem Einschalten ihre EIGENE Disclosure.
+                        // W16 P11: alle Pfade gehen durch
+                        // writeCapabilityAndRefresh (Gate-Write + Bump
+                        // unterteilbar) — nach Einzel-AN wirkt der UI-Status
+                        // sofort, kein totes TAN mehr über den Einzeltoggle.
                         if (BuildConfig.EDITION_PLAY && on && cap.id in com.hermesandroid.bridge.policy.SENSITIVE_TOGGLES) {
                             DisclosureState.request(context, cap.id) {
-                                CapabilityGate.setEnabled(cap.id, true)
-                                BridgeStatus.refreshConfig()
+                                writeCapabilityAndRefresh(cap.id, true)
                             }
                         } else {
-                            CapabilityGate.setEnabled(cap.id, on)
-                            BridgeStatus.refreshConfig()
+                            writeCapabilityAndRefresh(cap.id, on)
                         }
                     },
                     iconRes = when (index) {
@@ -446,8 +479,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
      * App (Berechtigungen inkl. Autostart/Akku, Termux, Selbst-Update je
      * Edition) und Agenten (Master-Schalter + 4 klapptbare Fähigkeiten-
      * Gruppen, PH1-T5). Die langen Listen aus dem alten Home — gleiche
-     * Composables, gleiche SSOT (serverUrlText, CapabilityGate, Prefs),
-     * KEINE neue Logik.
+     * Composables, gleiche SSOT (CapabilityGate, Prefs), KEINE neue Logik;
+     * W16 P21: das serverUrlText-Sammelfeld ist entfallen (Profil-Liste ist
+     * die einzige Server-Verwaltung).
      */
     @Composable
         fun LegacySettingsGroups() {  // WELLE 13 P2: alter Gruppen-Inhalt im neuen SettingsHome-Rahmen
@@ -469,17 +503,34 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // Umschalten bewusst mit Trenn-/Wechsel-Bestätigung
                     // (disconnect/connect im Profil-Store, Singletons-Faser).
                     RelayServerListCard()
-                    // Relay-URL: GLEICHE SSOT wie das Home-Feld (serverUrlText)
-                    // — beide Felder zeigen und schreiben denselben Wert.
-                    OutlinedTextField(
-                        value = serverUrlText,
-                        onValueChange = { serverUrlText = it },
+                    // W16 P21-Nachtrag (Sir): das extra „Server-Adresse“-Feld
+                    // (serverUrlText) ENTFERNT — es zeigte/schrieb denselben
+                    // Wert wie die aktive Kachel oben (Redundanz). Server
+                    // hinzufügen = „+ Server hinzufügen“, Ändern = Stift an
+                    // der Kachel; Connect/Wechsel = Profil-Liste
+                    // (connectViaProfile). Kein toter Code-Faden: der
+                    // serverUrlText-Status ist mit dem Feld gone.
+                    // W16 (Fixliste 17): das bewusste Trennen lebt jetzt HIER
+                    // (Einstellungen › Server) — die alte Verbindungskarte am
+                    // Dashboard ist entfallen; gleiche Aktion/Faser wie deren
+                    // Trennen-Button (RelayClient.disconnect + Snack).
+                    OutlinedButton(
+                        onClick = {
+                            RelayClient.disconnect()
+                            snack(context.getString(R.string.snack_disconnected))
+                        },
                         modifier = Modifier.fillMaxWidth(),
-                        singleLine = true,
-                        label = { Text(stringResource(R.string.conn_url_label)) },
-                        // Bewusst generisch — keine private Domain im Quellcode.
-                        placeholder = { Text(stringResource(R.string.conn_url_placeholder)) },
-                    )
+                        // Destruktive Aktion = kenntlich dezent rot (Muster
+                        // der alten Dashboard-Verbindungskarte).
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = FlipsiColors.SignalRedText,
+                        ),
+                    ) {
+                        Text(
+                            stringResource(R.string.conn_disconnect),
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                     // Kopplungscode: die bestehende PairingCard (Anzeige,
                     // Kopieren mit SENSITIVE-Markierung, Neu-Erzeugen-Dialog).
                     PairingCard(
@@ -537,8 +588,8 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         onHealthGrant = {
                             // v0.12.0: pre-flight — SDK-Zustand prüfen BEVOR der
                             // Consent-Lauf startet.
-                            CapabilityGate.setEnabled("health", true)
-                            BridgeStatus.refreshConfig()
+                            // W16 P11: Write+Bump über die EINE Kette.
+                            writeCapabilityAndRefresh("health", true)
                             when (androidx.health.connect.client.HealthConnectClient.getSdkStatus(context)) {
                                 androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE -> {
                                     runCatching {
@@ -561,12 +612,15 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // keine Revival-UI im play-Build (Watchdog ist ebenfalls
                     // play-no-op via BuildConfig in RelayClient).
                     if (BuildConfig.EDITION_GITHUB) AdvancedCard(configVersion)
-                    // Selbst-Update: github-Edition aktiv, play-Edition
-                    // bewusst disabled mit Hinweis (FLAG_FULL_EDITION).
-                    SelfUpdateCard()
-                    // Supporter-IAP (PH-9-Route): play = echte Billing-Karte,
-                    // github = Stub aus src/github/ (gleiche Signatur).
-                    SupporterCard(activity)
+                    // W16 (Punkt 26): SelfUpdateCard entfällt — kein In-App-
+                    // Install mehr; der Update-Check läuft als Info-Push über
+                    // UpdateCheck (App-Start + Tagesrhythmus), ohne UI-Karte.
+                    // W16 (Fixliste 34): Supporter-IAP (PH-9-Route) PLAY-ONLY —
+                    // die GitHub-Edition hat KEINE Play-Billing-Route und damit
+                    // bewusst KEINE Karte in Einstellungen (auch kein leerer
+                    // Stub-Aufruf); play zeigt die Karte hier UND direkt im
+                    // Unterstützen-Sheet des Chat-Herzens.
+                    if (BuildConfig.EDITION_PLAY) SupporterCard(activity)
                 }
 
 
@@ -648,10 +702,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         Spacer(Modifier.width(4.dp))
                     }
                     // WELLE 13 P2 (Sir): Version NICHT dauerhaft sichtbar —
-                    // sie lebt ausschliesslich im Settings-About-Info-Sheet.
+                    // sie lebt ausschliesslich im About-Sheet.
                     // W15: Chat/Agenten/E2E/Navigation leben in der TAB-Leiste
-                    // unten (NavigationBar) — hier bleiben nur Einstellungen
-                    // (Zahnrad) und Impressum/Datenschutz (Info) als Sprünge.
+                    // unten (NavigationBar) — hier bleiben Einstellungen
+                    // (Zahnrad) + das dauerhafte ℹ️.
                     IconButton(onClick = { route = 1 }) {
                         Icon(
                             Icons.Outlined.Settings,
@@ -659,10 +713,16 @@ fun BridgeScreen(initialRoute: Int = 0) {
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
-                    IconButton(onClick = { route = 3 }) {
+                    // W16 P27 (Sir, Doppel-ℹ️ audit): DAUERHAFTEN TopBar-ℹ️
+                    // BEHALTEN, aber er öffnet JETZT das About-Sheet (Version +
+                    // Rechtliches am EINEN Ort) STATT direkt auf Route 3. Die
+                    // SettingsHead-Kachel in Einstellungen ist entgangen
+                    // (P27); Route 3 bleibt Tiefe vom Sheet
+                    // (AboutState.requestLegalDepth → Konsum unten).
+                    IconButton(onClick = { AboutState.open() }) {
                         Icon(
                             Icons.Outlined.Info,
-                            contentDescription = stringResource(R.string.common_legal_title),
+                            contentDescription = stringResource(R.string.settings_info_a11y),
                             tint = FlipsiColors.TextPrimary,
                         )
                     }
@@ -675,11 +735,19 @@ fun BridgeScreen(initialRoute: Int = 0) {
         // (Route 1) und Impressum (Route 3) bleiben Sprünge oben rechts; auf
         // ihnen ist kein Tab selektiert. Material3-NavigationBar ohne neue
         // Dependency (Compose-BOM), Haus-Farbrollen (Ember = aktiver Tab).
+        // W16 (Sir-Fixliste 15): die Leiste verschwindet auf Route 2, SOLANGE
+        // eine Conversation offen ist (mehr Platz für Bubbles + Composer) und
+        // kommt zurueck, sobald die Conversation verlassen wird (Liste/Tab-
+        // Wechsel). Leerer Scaffold-Slot = bottomBar-Höhe 0 — der Chat-
+        // Composer trägt seine eigenen Insets (imePadding/navigationBars),
+        // kein Composer-Flackern, kein Doppel-NavBar-Padding (edge-to-edge-
+        // Grundstand: Insets liefern 0 dp, siehe ChatScreen-Verband).
         bottomBar = {
-            NavigationBar(
-                containerColor = FlipsiColors.Void,
-                contentColor = FlipsiColors.TextPrimary,
-            ) {
+            if (!(route == 2 && chatConversationOpen)) {
+                NavigationBar(
+                    containerColor = FlipsiColors.Void,
+                    contentColor = FlipsiColors.TextPrimary,
+                ) {
                 NavigationBarItem(
                     selected = route == 0,
                     onClick = { route = 0 },
@@ -708,6 +776,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     label = { Text(stringResource(R.string.nav_tab_e2e)) },
                     colors = navTabColors(),
                 )
+                }
             }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -718,35 +787,37 @@ fun BridgeScreen(initialRoute: Int = 0) {
         when (route) {
             1 -> SettingsHome(
                 padding = padding,
-                // WELLE 13 P2: das Redesign-Home (Themen/Accordions/ℹ️) — die
-                // bewährten Server/App/Agenten-Gruppen wandern als legacyGroups
+                // WELLE 13 P2: das Redesign-Home (Darstellung/Accordions) — die
+                // bewährten Server/App-Gruppen wandern als legacyGroups
                 // (gleiche Composables, gleiche SSOT, KEINE neue Logik) hinein;
                 // der alte eigene Accordion-Kopf entfällt (SettingsHome ist der
-                // neue Rahmen mit ℹ️-About + Rechtliches + Berechtigungen +
-                // Standard-Assistent).
+                // neue Rahmen mit Darstellung + Berechtigungen +
+                // Standard-Assistent). W16 P20+27: ℹ️-About + Rechtliches =
+                // About-Sheet am dauerhaften TopBar-Button (nicht mehr hier).
                 legacyGroups = { LegacySettingsGroups() },
             )
             2 -> ChatScreen(
                 padding,
-                onOpenSettings = { route = 1 }, // Welle 13: Herz = Einstellungen (Supporter-Karte)
+                // W16 (Fixliste 34): onOpenSettings-Thread ENTFERNT — das Herz
+                // öffnet DIREKT das Unterstützen-Sheet im Chat (play); die
+                // Supporter-Karte bleibt zusätzlich im Einstellungen-App-
+                // Accordion (play). GitHub: weder Herz noch Karte.
                 // W15: Dashboard-Slot-Tap → Conversation des Agenten (einmalig).
                 openAgentId = pendingChatAgentId,
                 onOpenedAgent = { pendingChatAgentId = null },
+                // W16 (Fixliste 15): Open-Meldung der Conversation → versteckt/
+                // holt die untere NavigationBar (siehe bottomBar-Verband oben).
+                onConversationOpen = { open -> chatConversationOpen = open },
             )
             3 -> LegalScreenPlaceholder(padding)
             4 -> AgentsContent(padding)
             5 -> E2eContent(padding)
             else -> DashboardScreen(
                 padding = padding,
-                // W15b (Fix E): URL-Feld + Verbinden-Button nur noch in der
-                // Server-Gruppe der Einstellungen — die Dashboard-Verbindungs-
-                // karte zeigt Status + Trennen (schlank, Sirs Befund).
-                onDisconnect = {
-                    RelayClient.disconnect()
-                    snack(context.getString(R.string.snack_disconnected))
-                },
-                enabledCapabilityCount = enabledIds.size,
-                totalCapabilityCount = allCaps.size,
+                // W16 (Fixliste 17): Verbindungskarte/Fähigkeiten-Kompakt/LAN-
+                // Fußzeile RAUS — Startseite = NUR Agenten-live (Fixliste 14).
+                // Trennen lebt exklusiv in Einstellungen › Server (siehe
+                // RelayServerListCard-Gruppe unten), Status-Banner = SSOT.
                 // W15: Tap auf den Agenten-Slot → Chat-Tab mit der
                 // Conversation DIESES Agenten (Pending-Merker oben).
                 onOpenAgentChat = { agentId ->
@@ -754,6 +825,24 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     route = 2
                 },
             )
+        }
+    }
+
+    // ── W16 P20+P27: About-Sheet (EIN Ort für Version + Rechtliches) ──────
+    // Das ℹ️-TopBar-Action öffnet das Sheet (AboutState.open) — der Host
+    // rendert es hier einmalig, auf JEDEM Route-Level (nicht nur Einstellungen).
+    AboutSheetHost()
+    // W16 P11 (play-Schiene): EIN Host für alle Disclosure-Dialoge — bewusst
+    // am SCREEN-Level (vorher: nur in PermissionsSections/Einstellungen), denn
+    // im Agenten-Tab (Route 4) lief ein request() sonst in den LEERAUM:
+    // pending gesetzt, kein Dialog, Toggle tot ohne jede Meldung.
+    DisclosureDialogHost()
+    // Tiefe aus dem Sheet: „Rechtliches“-Eintrag → Route 3 (Vollansicht).
+    // Einmal-Merker wird direkt nach dem Routen-Wechsel abgeräumt.
+    LaunchedEffect(AboutState.legalDepthRequest) {
+        if (AboutState.legalDepthRequest) {
+            route = 3
+            AboutState.consumeLegalDepth()
         }
     }
 
@@ -1194,9 +1283,6 @@ private fun PermissionsSections(
             }
         }
     }
-
-    // PH-7/PS-G-2 (play): EIN Host für alle prominenten Offenlegungs-Dialoge.
-    DisclosureDialogHost()
 }
 
 @Composable
@@ -1386,53 +1472,6 @@ private fun MtlsCard(configVersion: Int, activity: Activity?) {
 }
 
 /**
- * Selbst-Update-Punkt (PH1-T2): github-Edition sichtbar und aktiv
- * (BuildConfig.FLAG_FULL_EDITION, Welle-0-Anlage); play-Edition bewusst
- * DISABLED mit Hinweis — dort aktualisiert der Play Store die App.
- * Die Aktion ist der BESTEHENDE UpdateInstaller (Relay /apk/latest,
- * SHA-256-geprüft, Installationsdialog) — Download auf IO-Thread.
- */
-@Composable
-private fun SelfUpdateCard() {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(stringResource(R.string.update_title), fontWeight = FontWeight.SemiBold)
-            Text(
-                if (BuildConfig.FLAG_FULL_EDITION)
-                    stringResource(R.string.update_github_desc)
-                else
-                    stringResource(R.string.update_play_desc),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            Button(
-                onClick = {
-                    scope.launch {
-                        // Download gehört auf IO — der UI-Thread bleibt frei.
-                        val result = withContext(Dispatchers.IO) { UpdateInstaller.start(context) }
-                        BridgeStatus.showText(result.message)
-                    }
-                },
-                enabled = BuildConfig.FLAG_FULL_EDITION,
-                modifier = Modifier.padding(top = 10.dp).height(48.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = FlipsiColors.Ember,
-                    contentColor = FlipsiColors.OnEmber,
-                    disabledContainerColor = FlipsiColors.PanelElev,
-                    disabledContentColor = FlipsiColors.TextSecondary,
-                ),
-            ) { Text(stringResource(R.string.update_search)) }
-        }
-    }
-}
-
-/**
  * PH-3 Welle 2 — Verschlüsselungs-Karte (Gruppe 5, append-only):
  * Session-Fingerprint 8×4 Hex-Gruppen read-only (Klartext-Abgleich ist
  * Hex-Gleichheit, Anzeige gruppiert/Groß), Agent-Identity-Fingerprint
@@ -1560,10 +1599,21 @@ private fun ChatScreenPlaceholder(padding: PaddingValues) {
  * Headern + je Abschnitt ein sauber strukturierter INHALTS-RAHMEN (Karte
  * mit Trennern und definierten Textbereichen) — Phase 8 setzt nur die
  * Inhalte ein. Bewusst keine privaten Daten im Gerüst.
+ *
+ * W16 P20 (Sir): die Route ist die TIEFE aus dem About-Sheet (TopBar-ℹ️
+ * → Sheet → „Rechtliches“) und zeigt die VERSION (P20: Version im ℹ️-Pfad
+ * immer sichtbar — hier mit [BridgeStatus.appVersion], gleiche Regel wie
+ * AboutInfo.versionLabel: NUR „vX.Y.Z“ ohne Editions-Suffix).
  */
 @Composable
 private fun LegalScreenPlaceholder(padding: PaddingValues) {
     ScreenPlaceholderBody(padding) {
+        Text(
+            BridgeStatus.appVersion(),
+            style = MaterialTheme.typography.labelMedium,
+            color = FlipsiColors.TextSecondary,
+            fontWeight = FontWeight.SemiBold,
+        )
         SectionTitle(stringResource(R.string.legal_imprint_title))
         LegalSectionCard()
         SectionTitle(stringResource(R.string.legal_privacy_title))

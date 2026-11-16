@@ -51,7 +51,6 @@ steps (#6), English user-facing strings (#7).
   - android_files_search     recursive file-name search
   - android_files_count      count files by extension per root
   - android_file_get         stream any file to a local MEDIA path
-  - android_apk_install      FlipsiBridge self-update (fixed relay source, user confirms)
   - android_read_widgets     read home-screen widgets
   - android_find_nodes       search UI nodes by text/class/clickable
   - android_diff_screen      diff screen against a previous hash
@@ -86,7 +85,6 @@ _APPROVAL_GATED_TOOLS = frozenset(
         "android_send_sms",
         "android_call",
         "android_file_delete",
-        "android_apk_install",
         "android_send_intent",
         "android_broadcast",
         "android_setup",
@@ -1081,21 +1079,6 @@ def android_file_get(remote_path: str, save_to: str = "") -> str:
         return json.dumps({"error": str(e)})
 
 
-def android_apk_install() -> str:
-    """
-    Have the phone check for an update from its configured relay and start
-    the Android installer. The update source is FIXED (the phone's configured
-    relay, /apk/latest) — no caller-supplied URL, the pairing token never
-    leaves the device towards caller-controlled hosts. The user MUST confirm
-    the installation on the device — nothing is installed silently.
-    """
-    try:
-        data = _post("/apk_install", {})
-        return json.dumps(data)
-    except Exception as e:
-        return json.dumps({"error": str(e)})
-
-
 def android_health(days: int = 1) -> str:
     """
     Gesundheitsdaten aus Health Connect (read-only, Capability 'health').
@@ -1344,7 +1327,6 @@ def android_pre_tool_call(
         "android_send_sms": "sends a real SMS from the paired phone",
         "android_call": "starts a real phone call",
         "android_file_delete": "deletes files on the paired phone",
-        "android_apk_install": "triggers an APK install on the paired phone",
         "android_send_intent": "launches an Android intent on the paired phone",
         "android_broadcast": "sends an Android broadcast on the paired phone",
         "android_setup": "starts or rotates the phone relay",
@@ -2022,11 +2004,6 @@ _SCHEMAS = {
             "required": ["remote_path"],
         },
     },
-    "android_apk_install": {
-        "name": "android_apk_install",
-        "description": "FlipsiBridge self-update: the phone checks its configured relay for the latest APK, verifies the server-provided SHA-256 and starts the Android installer. The user confirms installation on the device. No URL parameter: the update source is fixed to the phone's relay — the pairing token never reaches caller-controlled hosts.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
 
     "android_read_widgets": {
         "name": "android_read_widgets",
@@ -2224,7 +2201,6 @@ _HANDLERS = {
     "android_files_permission": lambda args, **kw: android_files_permission(**args),
     "android_files_count": lambda args, **kw: android_files_count(**args),
     "android_file_get": lambda args, **kw: android_file_get(**args),
-    "android_apk_install": lambda args, **kw: android_apk_install(**args),
     "android_health": lambda args, **kw: android_health(**args),
     "android_read_widgets": lambda args, **kw: android_read_widgets(),
     "android_find_nodes": lambda args, **kw: android_find_nodes(**args),

@@ -9,8 +9,9 @@ import com.hermesandroid.bridge.R
  * Die Capabilities selbst bleiben im CapabilityGate gespeichert (SSOT der Flags);
  * dieses Modell ist NUR die Anzeige-Schicht (Label/Beschreibung/Gruppierung/Invasiv-Markierung).
  * PH-7 (11.11.2026, Jäger J3-F1/J4-F1/F2): die Anzeige-Schicht ist edition-aware —
- * play blendet selfupdate aus (Play-Updates-Regel) und benennt SMS ehrlich um
- * (Intent-Entwurf statt Direktversand, auch im Text).
+ * play benennt SMS ehrlich um (Intent-Entwurf statt Direktversand, auch im Text).
+ * W16 (Punkt 26): „selfupdate“ entfällt ganz (Kein In-App-Install mehr —
+ * Updates laufen je Edition über Play Store/GitHub, App zeigt nur die Info-Push).
  *
  * W15 (I18n-Fix): Label/Beschreibung als @StringRes statt hartkodierter
  * deutscher Strings — stringResource unter dem AppLanguageGate löst live in der
@@ -34,7 +35,7 @@ val INVASIVE_CAPS: Set<String> by lazy {
     }
 }
 
-/** Alle nutzersteuerbaren Fähigkeiten (GitHub 16, play 15 — Zählerbasis des Master-Schalters). */
+/** Alle nutzersteuerbaren Fähigkeiten (GitHub 15, play 14 — Zählerbasis des Master-Schalters). */
 val ALL_CAPABILITY_UIS: List<CapabilityUi> by lazy {
     val base = listOf(
         CapabilityUi("screen", R.string.cap_label_screen, R.string.cap_desc_screen),
@@ -47,7 +48,6 @@ val ALL_CAPABILITY_UIS: List<CapabilityUi> by lazy {
         CapabilityUi("device", R.string.cap_label_device, R.string.cap_desc_device),
         CapabilityUi("notify_reply", R.string.cap_label_notify_reply, R.string.cap_desc_notify_reply),
         CapabilityUi("files_write", R.string.cap_label_files_write, R.string.cap_desc_files_write, invasive = false),
-        CapabilityUi("selfupdate", R.string.cap_label_selfupdate, R.string.cap_desc_selfupdate),
         CapabilityUi("location", R.string.cap_label_location, R.string.cap_desc_location, invasive = true),
         CapabilityUi("sms", R.string.cap_label_sms, R.string.cap_desc_sms, invasive = true),
         CapabilityUi("calls", R.string.cap_label_calls, R.string.cap_desc_calls, invasive = true),
@@ -55,20 +55,13 @@ val ALL_CAPABILITY_UIS: List<CapabilityUi> by lazy {
         CapabilityUi("microphone", R.string.cap_label_microphone, R.string.cap_desc_microphone, invasive = true),
     )
     if (BuildConfig.EDITION_PLAY) {
-        base.mapNotNull { ui ->
-            when (ui.id) {
-                // PS-A-11: Play-Edition aktualisiert über den Play Store — der
-                // Toggle ist nicht schaltbar existent; SelfUpdateCard oben
-                // zeigt den sichtbar-disabled Vertrag (DE-T3).
-                "selfupdate" -> null
-                // PS-A-14: ehrlicher Text — play öffnet nur den Entwurf.
-                "sms" -> ui.copy(
-                    labelRes = R.string.cap_label_sms_draft,
-                    descriptionRes = R.string.cap_desc_sms_draft,
-                    invasive = false,
-                )
-                else -> ui
-            }
+        base.map { ui ->
+            // PS-A-14: ehrlicher Text — play öffnet nur den Entwurf.
+            if (ui.id == "sms") ui.copy(
+                labelRes = R.string.cap_label_sms_draft,
+                descriptionRes = R.string.cap_desc_sms_draft,
+                invasive = false,
+            ) else ui
         }
     } else base
 }
@@ -88,6 +81,6 @@ fun capabilityGroups(): List<Pair<Int, List<CapabilityUi>>> = listOf(
             }
             )
     },
-    R.string.caps_group_write to ALL_CAPABILITY_UIS.filter { it.id in setOf("files_write", "selfupdate") },
+    R.string.caps_group_write to ALL_CAPABILITY_UIS.filter { it.id in setOf("files_write") },
     R.string.caps_group_invasive to ALL_CAPABILITY_UIS.filter { it.invasive },
 )

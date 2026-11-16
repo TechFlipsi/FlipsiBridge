@@ -42,9 +42,10 @@
     <string name="pairing_hint">Tap to copy the code. The agent asks for it during phone setup.</string>
     <string name="pairing_regen">Generate new code</string>
 
-    <!-- W4 App-Lane C: Mediathek tab on the per-agent chat screen -->
-    <string name="chat_tab_chat">Chat</string>
-    <string name="chat_tab_mediathek">Media</string>
+    <!-- W16 Fixliste 32: Media gallery opens via the chat ⋮-menu overlay (tab row removed);
+         chat_tab_chat/chat_tab_mediathek dropped -->
+    <string name="mediathek_title">Media</string>
+    <string name="mediathek_back_a11y">Back to chat</string>
     <string name="mediathek_empty_title">No media yet</string>
     <string name="mediathek_empty_hint">Pictures, voice messages and files from this chat appear here.</string>
     <string name="mediathek_section_media">Pictures &amp; videos</string>
@@ -87,6 +88,8 @@
     <string name="settings_info_a11y">Open about FlipsiBridge</string>
     <string name="about_sheet_title">About FlipsiBridge</string>
     <string name="about_version_label">Version</string>
+    <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
+    <string name="about_open_legal_full">App info: legal (full view)</string>
 
     <!-- Wave 13 / P12: appearance (color customizer) -->
     <string name="settings_appearance_title">Appearance</string>
@@ -133,7 +136,11 @@
     <string name="assistant_status_held">FlipsiBridge is set as the default assistant.</string>
     <string name="assistant_status_other">Another assistant is currently set — Android shows you the choice.</string>
     <string name="assistant_unavailable">On this Android (below 10) no default assistant can be set.</string>
-
+    <!-- W16 P12/P20: roleAvailable gate + result handler + fallback -->
+    <string name="assistant_role_unavailable_hint">The assistant role is currently not offered on this device. You can set it via system settings instead.</string>
+    <string name="assistant_dialog_failed">Assistant dialog not understood</string>
+    <string name="assistant_dialog_failed_text">Android returned no result. You can also set the role manually: System settings → Apps → Default apps → Digital assistant app.</string>
+    <string name="assistant_open_default_apps">Open digital assistant app</string>
     <!-- Wave 13 / P7b: legal (short texts, collapsible) -->
     <string name="settings_legal_title">Legal</string>
     <string name="settings_legal_desc">Imprint, privacy and terms of use.</string>
@@ -145,6 +152,8 @@
     <string name="legal_terms_body">Use: FlipsiBridge is provided free of charge for private use.\n\nWarranty: the app is provided as is; statutory warranty is excluded to the extent legally permissible.\n\nLiability: TechFlipsi is liable only for intent and gross negligence and for personal injury. No liability for damage caused by improper use, third-party systems or data loss.\n\nYour duties: use the app only on devices you own or are authorized to use, and within applicable law.\n\nChanges: these terms may change; the current version lives in the app under Settings → About.</string>
     <string name="legal_accept">I accept</string>
     <string name="support_a11y">Support button: support the app with a one-time donation</string>
+    <string name="support_sheet_title">Support</string>
+    <string name="support_sheet_info">A voluntary thank-you for the ongoing development — nothing is locked, a purchase is never required.</string>
 
     <!-- W15 (I18n-Fix): App-weite UI-Strings — English je Key -->
     <string name="common_cancel">Cancel</string>
@@ -238,8 +247,6 @@
     <string name="cap_desc_notify_reply">Reply directly in notifications (e.g. WhatsApp)</string>
     <string name="cap_label_files_write">Write/delete files</string>
     <string name="cap_desc_files_write">Place or delete files (destructive!)</string>
-    <string name="cap_label_selfupdate">App update</string>
-    <string name="cap_desc_selfupdate">Download new versions and show the install dialog</string>
     <string name="cap_label_location">Location</string>
     <string name="cap_desc_location">Query GPS position</string>
     <string name="cap_label_sms">Send SMS</string>
@@ -333,10 +340,11 @@
     <string name="mtls_choose">Choose certificate</string>
     <string name="mtls_choose_other">Choose a different certificate</string>
     <string name="mtls_unavailable">Certificate selection unavailable here</string>
-    <string name="update_title">Self-update</string>
-    <string name="update_github_desc">Checks the relay for a newer APK and shows the install dialog (SHA-verified).</string>
-    <string name="update_play_desc">GitHub edition only — the Play edition updates via the Play Store.</string>
-    <string name="update_search">Check for update</string>
+    <!-- W16 (Punkt 26): update check/info push — NO in-app install anymore -->
+    <string name="update_channel_name">Updates</string>
+    <string name="update_channel_desc">Notice when a newer FlipsiBridge version is available</string>
+    <string name="update_notify_title">Update available</string>
+    <string name="update_notify_text">FlipsiBridge %1$s is available</string>
     <string name="crypto_title">End-to-end encryption</string>
     <string name="crypto_no_session">No active E2E session yet — the handshake runs automatically when the agent connects.</string>
     <string name="crypto_active_session">Active session per agent: compare fingerprints (Chat → fingerprint-check button).</string>
@@ -355,6 +363,9 @@
     <string name="dash_last_active">Last active %1$s</string>
     <string name="dash_no_activity">No activity yet</string>
     <string name="dash_working">working … (%1$s)</string>
+    <string name="dash_model_label">Model %1$s</string>
+    <string name="dash_sub_agent">SUB-Agent %1$s</string>
+    <string name="dash_sub_model">(Model %1$s)</string>
     <!-- W15c (hunter B5/A): dashboard labels as resources — DashboardRules
          returns LabelRes (R constant + args), the UI resolves them live.
          Days/agent counts are plural resources (“1 day ago”/“1 agent”
@@ -419,6 +430,15 @@
     <string name="media_voice_pending">Not stored on the device yet</string>
     <string name="media_voice_missing_file">Voice message — file missing</string>
     <string name="media_voice_no_service">Voice message — fetch service unavailable</string>
+    <!-- W16 B2 (Fixliste 31/30b): WhatsApp-style voice bubble + hold-to-record. -->
+    <string name="media_voice_pause_a11y">Pause voice message</string>
+    <string name="chat_tts_voice_prepare">Generating audio …</string>
+    <string name="chat_tts_voice_prepare_a11y">Voice message audio is being generated — one moment</string>
+    <string name="chat_voice_too_short">Recording too short — discarded</string>
+    <string name="chat_voice_recording_swipe_hint">‹ Swipe to cancel</string>
+    <string name="chat_voice_recording_cancel_active">Release = cancel</string>
+    <string name="chat_voice_recording_cancel_a11y">Cancel recording</string>
+    <string name="chat_voice_recording_holding_a11y">Recording, %1$s — release to send the voice message</string>
     <string name="media_image_load_failed">Image could not be loaded.</string>
     <string name="composer_title">Model</string>
     <string name="composer_demo_hint">Demo entry (not paired) — the selection only applies locally until the agent is paired.</string>
@@ -426,6 +446,9 @@
     <string name="composer_auto_sub">Agent default</string>
     <string name="composer_add_placeholder">Add your own model…</string>
     <string name="composer_add">Add</string>
+    <string name="composer_chip_a11y">Open model &amp; thinking — shows the active model</string>
+    <string name="composer_custom_add">Custom model…</string>
+    <string name="composer_no_list">No model list has arrived from the server — Auto stays active. Add a custom model below as an advanced option.</string>
     <string name="composer_read_aloud">Read agent replies aloud on the device</string>
     <string name="lock_title">FlipsiBridge is locked</string>
     <string name="lock_subtitle">Enter the PIN to open chat and settings</string>
@@ -496,4 +519,34 @@
     <string name="chat_demo_input">Example input — the history stays stored locally.</string>
     <string name="chat_demo_greeting">Example greeting from Agent 3.</string>
     <string name="e2e_xdh_unavailable">Encryption unavailable on this device</string>
+
+    <!-- W16 Fixliste 30a: composer = WA pill + inline round send/mic button -->
+    <string name="chat_mic_a11y_start">Record a voice message</string>
+    <string name="chat_mic_a11y_stop">Finish voice message and send</string>
+
+    <!-- W16 Fixliste 16: compact AI-Act marking inside the bubble meta row -->
+    <string name="chat_ki_badge">AI</string>
+    <string name="chat_ki_badge_a11y">Generated by AI</string>
+
+    <!-- W16 Fixliste 32: ⋮-menu in the chat header + agent profile/chat design/delete -->
+    <string name="chat_menu_a11y">More options</string>
+    <string name="chat_menu_view_agent">View agent</string>
+    <string name="chat_menu_design">Chat design</string>
+    <string name="chat_menu_model">Model &amp; thinking</string>
+    <string name="chat_menu_mediathek">Open media gallery</string>
+    <string name="chat_menu_delete">Delete chat</string>
+    <string name="agent_avatar_a11y">Agent profile picture</string>
+    <string name="agent_avatar_change">Change profile picture</string>
+    <string name="agent_avatar_remove">Remove profile picture</string>
+    <string name="agent_avatar_failed">Couldn\'t add this photo.</string>
+    <string name="agent_sheet_name_label">Name</string>
+    <string name="agent_sheet_hint">The name comes from the bridge (stored session) — read-only here.</string>
+    <string name="design_sheet_title">Chat design</string>
+    <string name="design_sheet_state_default">Background: built-in pattern</string>
+    <string name="design_sheet_state_photo">Background: gallery photo</string>
+    <string name="design_wallpaper_standard">Built-in pattern (default)</string>
+    <string name="design_wallpaper_photo">Choose gallery photo</string>
+    <string name="chat_delete_title">Delete chat?</string>
+    <string name="chat_delete_text">All messages of this chat will be deleted — this cannot be undone. The encrypted session (E2E keys) is kept.</string>
+    <string name="chat_delete_confirm">Delete</string>
 </resources>

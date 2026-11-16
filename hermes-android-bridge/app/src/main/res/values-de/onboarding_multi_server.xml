@@ -81,6 +81,9 @@
     <string name="ms_last_minutes">vor %1$d Min.</string>
     <string name="ms_last_hours">vor %1$d Std.</string>
     <string name="ms_switch">Wechseln</string>
+    <!-- W16 P21: Icon-Buttons der Kompakt-Zeile (TalkBack) -->
+    <string name="ms_row_edit_a11y">Server bearbeiten</string>
+    <string name="ms_row_remove_a11y">Server entfernen</string>
     <string name="ms_edit">Bearbeiten</string>
     <string name="ms_remove">Löschen</string>
     <string name="ms_switch_title">Verbindung wechseln?</string>

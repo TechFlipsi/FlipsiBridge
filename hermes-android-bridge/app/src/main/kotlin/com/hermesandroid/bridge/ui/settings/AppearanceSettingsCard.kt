@@ -69,12 +69,17 @@ fun AppearanceSettingsCard(
 
     SettingsCard(
         titleRes = R.string.settings_appearance_title,
-        subtitle = stringResource(R.string.settings_appearance_desc),
         iconRes = SettingsIcons.appearance, // Palette-Drawable (haus-eigen, Apache-2.0-Pfad)
         expanded = expanded,
         onExpandedChange = onExpandedChange,
         modifier = modifier,
     ) {
+        // W16 P19: Beschreibung lebt IN der geöffneten Karte (Kachel-Untertitel entfernt).
+        Text(
+            stringResource(R.string.settings_appearance_desc),
+            style = MaterialTheme.typography.bodySmall,
+            color = FlipsiColors.TextSecondary,
+        )
         SwatchSlot(
             label = stringResource(R.string.appearance_slot_accent),
             presets = ACCENT_PRESETS,

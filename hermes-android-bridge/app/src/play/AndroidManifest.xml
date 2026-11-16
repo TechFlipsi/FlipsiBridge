@@ -6,11 +6,12 @@
      laufen über BuildConfig (Dispatcher/Executor/Gate/Resolver/RelayClient).
 
      Entfernt im play-Build (ROADMAP PS-A):
-       - REQUEST_INSTALL_PACKAGES            (#11  Selbst-Update verboten)
        - QUERY_ALL_PACKAGES                  (#10  Restricted; Launcher-Query reicht)
        - SEND_SMS                            (#14  Restricted; Ersatz = SMS-Intent-Entwurf)
        - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (#18 Restricted; Ersatz = Settings-Liste)
        - com.termux.permission.RUN_COMMAND   (PS-G-7-Default: raus)
+     W16 (Fixliste-Punkt 26): REQUEST_INSTALL_PACKAGES ist aus dem BASE-Manifest
+     selbst entfernt (In-App-Install komplett raus) — kein remove-Node mehr nötig.
      Behalten laut PS-A (Deklarations-/Disclosure-Arbeit = PH-8/9):
        MANAGE_EXTERNAL_STORAGE (#9, File-Use-Case-Deklaration), CALL_PHONE (#15),
        Accessibility/Notification-Listener/Health (#19-21) etc. -->
@@ -61,9 +62,6 @@
         </service>
     </application>
 
-    <uses-permission
-        android:name="android.permission.REQUEST_INSTALL_PACKAGES"
-        tools:node="remove" />
     <uses-permission
         android:name="android.permission.QUERY_ALL_PACKAGES"
         tools:node="remove" />
