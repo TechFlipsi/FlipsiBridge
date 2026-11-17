@@ -153,7 +153,12 @@ object RelayClient {
     // W4-FIX-JAG2 (Drill-Hatch): lazy statt eager — der Trust-Schalter liest
     // Settings.Global beim ERSTEN Connect (BridgeApplication.instance + die
     // Drill-Einstellung sind dann gesetzt; beim Object-Init war beides null).
-    private val client: OkHttpClient by lazy { MtlsSupport.decorate(
+    // W17-WURZELFIX-4 (17.11. 13:5x, Emulator-Repro): lazy IST zu träge —
+    // der Wert frisst sich beim ersten Connect fest. War da kein Device-Zert
+    // (Migration/Erst-Start!), bleibt der Baublock OHNE mTLS-Socket für die
+    // ganze Prozess-Lebensdauer: Zert kam zu spät (Renewal) → /ws verify=NONE
+    // → Map-421. Neu: fresh-build je Zugriff (billig, Connect-Rhythmus ~50 s).
+    private val client: OkHttpClient get() = MtlsSupport.decorate(
         OkHttpClient.Builder()
             // PH-FIX-CHAT-A (F6, 30-s-Keepalive): WS-Ping-Frames (opcode 0x9)
             // im 30-s-Raster — Spiegel zum 30-s-Keepalive-Raster der Agenten.
@@ -204,7 +209,7 @@ object RelayClient {
                 Log.w(TAG, "DRILL-TRUST-ALL aktiv (Debug + Settings-Knopf) — NUR Drill-Socket")
             })
             .build()
-    ) }
+        )
 
     /** Status-Zuhörer — MainActivity/Service/UI hören je selbst zu (keine Slot-Race). */
     private val statusListeners = CopyOnWriteArrayList<(connected: Boolean, message: String) -> Unit>()

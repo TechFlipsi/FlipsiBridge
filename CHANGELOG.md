@@ -385,3 +385,10 @@ All notable changes to this project are documented here. Format based on [Keep a
 [0.4.1]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.4.1
 [0.4.0]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.4.0
 [0.3.0]: https://github.com/TechFlipsi/FlipsiBridge/releases/tag/v0.3.0
+
+## [0.16.6] - 2026-11-17
+### Behoben
+- **WS-Client TLS: handshake-Killer behoben (Device-Key vs Conscrypt-Digest)** — das Android-Keystore-Device-Verband (KeyPair setDigests(SHA256)) brach im TLS 1.3-ClientAuth-Verband mit „Incompatible digest" (-13) zusammen; der Handshake starb, bevor das Client-Zertifikat versendet wurde (serverseitig therefore `verify=NONE`) → Endlosschleife Enroll/Verbinden. Der mTLS-WebSocket-Client spricht jetzt bewusst TLS 1.2 (SHA256-ClientAuth kompatibel zum bestehenden Key — kein Re-Enroll nötig). Zukünftige Device-Keys erzeugen mit SHA256+SHA384+SHA512.
+- mTLS-Kette = Server-Device-Zert aus dem Enrollment (W17-Fix db996cb, mitgeliefert).
+### Serverseite
+- `/agent_ws` über Reverse-Proxy (Stufe-2-Map): Freipfad für Agent-Adapter-Lane (Token-Auth am Relay, kein Client-Zert) — der Adatper-WS-Pfad wurde mit der Stufe-2-Wiederherstellung versehentlich 421-gesperrt.

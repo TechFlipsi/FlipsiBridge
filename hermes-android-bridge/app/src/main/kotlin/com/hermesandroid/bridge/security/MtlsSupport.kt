@@ -8,6 +8,8 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ConnectionSpec
+import okhttp3.TlsVersion
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -57,7 +59,30 @@ object MtlsSupport {
     fun init(context: android.content.Context) {
         selectedAlias = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
             .getString(KEY_ALIAS, null)
+        // W17-WURZELFIX-3 (17.11.26): die Digest-Migration HIER, nicht im
+        // Enroll-Pfad — der App-Start ohne Enrollment muss das SHA256-Only-Leg
+        // auch aufräumen (der TLS-ClientAuth-Fehler „Digest 0" traf sonst JEDE
+        // Session, bevor der Enroll-Path je ran kam).
+        runCatching { migrateKeyDigests(context) }
     }
+
+    /** One-Shot-Migration: SHA256-Only-Leg gegen None/Sha256/384/512-Leg. */
+    private fun migrateKeyDigests(context: android.content.Context) {
+        val p = context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+        if (p.getInt("keygen_digests", 0) >= 3) return
+        val ks = KeyStore.getInstance(KEYSTORE_ENROLL).apply { load(null) }
+        if (ks.getEntry(DEVICE_ALIAS_ENROLL, null) !is KeyStore.PrivateKeyEntry) {
+            p.edit()?.putInt("keygen_digests", 3)?.apply() // kein Leg → Markierung setzen
+            return
+        }
+        ks.deleteEntry(DEVICE_ALIAS_ENROLL)
+        p.edit()?.remove("device_cert_pem")?.remove("device_cn")
+            ?.putInt("keygen_digests", 3)?.apply()
+        Log.w(TAG, "mTLS-Key-Migration: SHA256-Only-Leg entfernt (Digest-0-ClientAuth), Renewal holt Zert")
+    }
+
+    private const val KEYSTORE_ENROLL = "AndroidKeyStore"
+    private const val DEVICE_ALIAS_ENROLL = "flipsibridge-device"
 
     /** Systemdialog (Fallback): User wählt ein installiertes Client-Zertifikat. */
     fun chooseCertificate(activity: Activity) {
@@ -94,6 +119,12 @@ object MtlsSupport {
         val tm = systemTrustManager()
         val sslContext = javax.net.ssl.SSLContext.getInstance("TLS")
         sslContext.init(arrayOf(km), arrayOf(tm), null)
+        // W17-WURZELFIX (17.11.26, Emulator-Repro): das Device-Key-Leg trägt die TLS
+        // ClientAuth-Signatur via Conscrypt-Raw-Upcall („Digest 0" = NONE). Solange
+        // die Key-Gen-Digests nicht NONE enthalten, stirbt der Handshake VOR dem
+        // Client-Zert (KeystoreException -13 → nginx verify=NONE → Map-421).
+        // Der Fix lebt in ensureKeyPair (DIGEST_NONE + Migration); der WS-Client
+        // bleibt auf vollem TLS (1.3-preferred) unverändert.
         return builder.newBuilder()
             .sslSocketFactory(sslContext.socketFactory, tm)
             .build()
@@ -195,22 +226,48 @@ object MtlsSupport {
             com.hermesandroid.bridge.BridgeApplication.instance.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
                 .getString(PREF_DEV_CERT, null).isNullOrBlank().not()
 
+        private const val PREF_KEYGEN_DIGESTS = "keygen_digests" // 0=alt(SHA256-only), 3=alle
+
         private fun ensureKeyPair(): java.security.KeyPair {
+            val appCtx = com.hermesandroid.bridge.BridgeApplication.instance
+                ?: throw IllegalStateException("BridgeApplication.instance null (App-Context fehlt)")
+            val p = prefs(appCtx)
             val ks = KeyStore.getInstance(KEYSTORE).apply { load(null) }
             val existing = ks.getEntry(DEVICE_ALIAS, null)
-            if (existing is KeyStore.PrivateKeyEntry) {
+            if (existing is KeyStore.PrivateKeyEntry && p.getInt(PREF_KEYGEN_DIGESTS, 0) >= 3) {
                 return java.security.KeyPair(existing.certificate.publicKey, existing.privateKey)
+            }
+            if (existing is KeyStore.PrivateKeyEntry) {
+                // W17-WURZELFIX-2 (17.11. 14:45, Emulator-Repro): das SHA256-Only-Leg
+                // bricht im ClientAuth mit KeyStoreException -13 „Incompatible digest"
+                // (Conscrypt wählt ECDSA-SHA384, TLS 1.3 und 1.2 beide) → der Handshake
+                // stirbt, BEVOR das Client-Zert versendet wird (nginx verify=NONE → Map-421).
+                // Keystore-Legs sind unveränderbar → Migration: Leg wegwerfen, Key mit
+                // allen Digests neu erzeugen, Zert-Prefs leeren. Renewal mit der GLEICHEN
+                // device_id holt das Zert automatisch (Server: renewals laufend 200).
+                ks.deleteEntry(DEVICE_ALIAS)
+                p.edit()?.remove(PREF_DEV_CERT)?.remove(PREF_DEV_CN)
+                    ?.putInt(PREF_KEYGEN_DIGESTS, 3)?.apply()
+                Log.w(TAG, "Device-Key SHA256-only → Migration auf 3 Digests (Keystore -13), Zert-Pref geleert (Renewal folgt)")
             }
             val kpg = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, KEYSTORE)
             val spec = KeyGenParameterSpec.Builder(
                 DEVICE_ALIAS,
                 KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
-            ).setDigests(KeyProperties.DIGEST_SHA256)
+            ).setDigests(
+                KeyProperties.DIGEST_NONE,
+                KeyProperties.DIGEST_SHA256,
+                KeyProperties.DIGEST_SHA384,
+                KeyProperties.DIGEST_SHA512,
+            ) // W17-WURZELFIX-3: DIGEST_NONE ist PFLICHT — Conscrypts TLS-ClientAuth
+              // signiert per Raw-EC-Upcall mit „Digest 0"; ohne NONE-Authorisierung
+              // stirbt der Handshake vor dem Client-Zert (KeyStoreException -13).
                 .setCertificateSubject(X500Principal("CN=flipsibridge-device"))
                 .build()
             kpg.initialize(spec)
             val kp = kpg.generateKeyPair()
-            Log.i(TAG, "Device-KeyPair erzeugt (EC, AndroidKeystore)")
+            p.edit()?.putInt(PREF_KEYGEN_DIGESTS, 3)?.apply()
+            Log.i(TAG, "Device-KeyPair erzeugt (EC, AndroidKeystore, SHA256+384+512)")
             return kp
         }
 
