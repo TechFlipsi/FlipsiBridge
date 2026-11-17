@@ -141,3 +141,139 @@ def test_ec_signature_and_canonicality_guard(tls_env):
     _open_challenge("ecA")
     ok2, reason2 = _csr_pubkey_verify_pop(csr, nonce, sig[:-3] + "xxx")
     assert not ok2, reason2
+
+
+# ── Security-Fix-Welle 17.11. (Jäger-Befunde, je im Code verifiziert) ────────
+
+
+class _FakeRequest:
+    """Minimaler aiohttp-Request-Stub für Handler-Tests (json/headers/remote)."""
+
+    def __init__(self, json_body, headers=None, remote="203.0.113.9"):
+        self._body = json_body
+        self.headers = headers or {}
+        self.remote = remote
+
+    async def json(self):
+        return self._body
+
+
+_AUTH_HDR = {"Authorization": "Bearer TESTPAIR123"}
+
+
+def _patch_relay_auth(monkeypatch):
+    """Handler-Tests ohne echtes Relay: fixer Pairing-Code, Stub-Auth."""
+    import types
+
+    import tools.mtls_enroll as m
+
+    class _FakeAR:
+        @staticmethod
+        def _constant_time_eq(a, b):
+            return isinstance(a, str) and isinstance(b, str) and a == b
+
+        @staticmethod
+        def _auth_record_failure(ip):
+            pass
+
+    state = types.SimpleNamespace(pairing_code="TESTPAIR123")
+    monkeypatch.setattr(m, "_relay_state", lambda: state)
+    monkeypatch.setattr(m, "_ar_module", lambda: _FakeAR)
+    return m
+
+
+def test_secfix17_device_id_gate_rejects_traversal_ids(tls_env, monkeypatch):
+    """Security-Fix 17.11. (1): device_id-Gate [A-Za-z0-9._-]{1,64} VOR
+    Registry/Zertifikat — Traversal-/Injection-/Format-IDs bekommen eine
+    frühzeitige 400 (challenge UND enroll) und erzeugen KEINE Zert-Datei
+    und KEINEN Registry-Eintrag."""
+    import asyncio
+
+    m = _patch_relay_auth(monkeypatch)
+    d = _tls_dir()
+    bad_ids = ["../../etc/pwn", "dev/O=Evil", "dev id", "dev\nid",
+               "x" * 65, "", "dév"]
+    for bad in bad_ids:
+        assert m._open_challenge(bad) is None, f"Challenge für {bad!r} verboten"
+
+    # Challenge-Handler: 400 bad device_id (statt Nonce-Ausgabe)
+    resp = asyncio.run(m.challenge_handler(
+        _FakeRequest({"device_id": "../../etc/pwn"}, headers=_AUTH_HDR)))
+    assert resp.status == 400 and "bad device_id" in resp.text
+
+    # Enroll-Handler: frühzeitige 400 VOR Registry-Berührung/Zert-Schreiben
+    body = {"device_id": "../../etc/pwn",
+            "csr": base64.b64encode(b"-----BEGIN CERTIFICATE REQUEST-----").decode(),
+            "sig": "AA==", "nonce": "abc"}
+    resp = asyncio.run(m.enroll_handler(_FakeRequest(body, headers=_AUTH_HDR)))
+    assert resp.status == 400 and "bad device_id" in resp.text
+    assert m._registry_load()["enrolled"] == {}, "Registry unberührt"
+    assert not any((d / "devices").glob("*.pem")), "kein Zert geschrieben"
+
+
+def test_secfix17_code_once_holds_under_parallel_enrolls(tls_env, monkeypatch):
+    """Security-Fix 17.11. (2, TOCTOU): zwei PARALLELE Enrolls (je eigene
+    Challenge, gleiche Epoch, gleicher Code) — ohne Lock sähen beide Threads
+    eine leere Registry und ließen zwei Neugeräte mit EINEM Code durch; mit
+    _ENROLL_LOCK bleibt hart: genau EIN 200, der zweite 403 code-used,
+    Registry hat am Ende GENAU EIN Neugerät."""
+    import asyncio
+    import threading
+
+    m = _patch_relay_auth(monkeypatch)
+    d = str(_tls_dir())
+    m._registry_save({"epoch": 1, "enrolled": {}})
+    reqs = {}
+    for did in ("devpar1", "devpar2"):
+        k, csr = _device_key_and_csr(d, did)
+        nonce = m._open_challenge(did)
+        assert nonce, f"Challenge für {did} muss aufgehen"
+        reqs[did] = _FakeRequest(
+            {"device_id": did, "csr": base64.b64encode(csr).decode(),
+             "sig": _sign(k, nonce.encode()), "nonce": nonce},
+            headers=_AUTH_HDR)
+
+    statuses: dict = {}
+    errors: list = []
+
+    def _enroll(did):
+        try:
+            resp = asyncio.run(m.enroll_handler(reqs[did]))
+            statuses[did] = resp.status
+        except Exception as exc:  # pragma: no cover — Testfehler, nicht Pfad
+            errors.append(exc)
+
+    t1 = threading.Thread(target=_enroll, args=("devpar1",))
+    t2 = threading.Thread(target=_enroll, args=("devpar2",))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert not errors
+    assert sorted(statuses.values()) == [200, 403], (
+        "Code-Einmaligkeit muss unter Parallelen halten: ein 200, ein 403")
+    enrolled = m._registry_load()["enrolled"]
+    assert len(enrolled) == 1, "genau EIN Neugerät durfte enrollen"
+    assert set(enrolled) <= {"devpar1", "devpar2"}
+
+
+def test_secfix17_challenge_store_cap_fifo(tls_env, monkeypatch):
+    """Security-Fix 17.11. (3): _CHALLENGES-Cap 10k (Prod-Default) mit FIFO —
+    der ZEITLICH älteste Eintrag verfällt zuerst (ein RE-Open zählt mit
+    seiner neuen Ablaufzeit, nicht der Einfügeposition)."""
+    import tools.mtls_enroll as m
+
+    assert m._CHALLENGE_CAP == 10_000, "Prod-Cap ist 10_000"
+    monkeypatch.setattr(m, "_CHALLENGE_CAP", 3)
+    assert m._open_challenge("capA")
+    assert m._open_challenge("capB")
+    assert m._open_challenge("capC")
+    assert len(m._CHALLENGES) == 3
+    # capA künstlich altern → beim Overflow verfällt ER (nicht capB):
+    exp_a, nonce_a = m._CHALLENGES["capA"]
+    m._CHALLENGES["capA"] = (exp_a - 60.0, nonce_a)
+    assert m._open_challenge("capD")
+    assert len(m._CHALLENGES) == 3 and "capA" not in m._CHALLENGES
+    assert set(m._CHALLENGES) == {"capB", "capC", "capD"}
+    # TTL-Prune bleibt unabhängig vom Cap intakt:
+    exp_b, nonce_b = m._CHALLENGES["capB"]
+    m._CHALLENGES["capB"] = (exp_b - m._CHALLENGE_TTL_S - 10.0, nonce_b)
+    assert m._open_challenge("capE")
+    assert "capB" not in m._CHALLENGES and len(m._CHALLENGES) == 3

@@ -23,6 +23,7 @@ from tools.android_relay import (
     _cleanup_phone,
     _RelayState,
     _broadcast_agent_presence,
+    _mtls_gate,
 )
 
 
@@ -4461,3 +4462,58 @@ class TestW19AgentStatus:
             encoding="utf-8",
         )
         return str(cfg)
+
+
+class TestSecfix17MtlsGatePeerCheckAndBodyRedaction:
+    """Security-Fix-Welle 17.11. (Jäger-Befund 2): X-SSL-Verify/X-SSL-Device-DN
+    gelten NUR beim Socket-Peer == Trusted Proxy (analog XFF-Peer-Check) — ein
+    fremder Peer mit gefälschten Headern fällt auf die verify=NONE-Regel (403).
+    Und: _SENSITIVE_BODY_KEYS redactet jetzt auch password/token/authorization/code."""
+
+    DEVICE = "a1b2c3d4-e5f6-4a7b-8c9d-0a1b2c3d4e5f"
+
+    def _gate_setup(self, monkeypatch, tmp_path):
+        import tools.mtls_enroll as menroll
+        monkeypatch.setenv("ANDROID_MTLS_ENFORCE", "1")
+        monkeypatch.setenv("ANDROID_RELAY_TRUSTED_PROXY_IP", "192.168.178.76")
+        monkeypatch.setenv("ANDROID_RELAY_TLS_DIR", str(tmp_path))
+        menroll._registry_save(
+            {"epoch": 1,
+             "enrolled": {self.DEVICE: {"cn": f"flipsibridge-{self.DEVICE}"}}})
+
+    def test_forged_x_ssl_headers_from_foreign_peer_rejected(self, monkeypatch, tmp_path):
+        from types import SimpleNamespace
+
+        self._gate_setup(monkeypatch, tmp_path)
+        hdrs = {
+            "X-SSL-Verify": "SUCCESS",
+            "X-SSL-Device-DN": f"CN=flipsibridge-{self.DEVICE}/O=FlipsiBridge Devices",
+        }
+        # Gefälschte Header + FREMDER Peer → Gate verweigert (403)
+        req_evil = SimpleNamespace(path="/ws", headers=hdrs, remote="10.66.66.66")
+        resp = _mtls_gate(req_evil)
+        assert resp is not None and resp.status == 403, (
+            "X-SSL-Verband von fremdem Peer muss wie verify=NONE behandelt werden")
+        # Kontrolle: gleiche Header vom Trusted-Proxy-Peer → Gate lässt durch
+        req_ok = SimpleNamespace(path="/ws", headers=hdrs, remote="192.168.178.76")
+        assert _mtls_gate(req_ok) is None
+        # Fail-closed: ohne Proxy-Env gilt kein X-SSL-Verband
+        monkeypatch.setenv("ANDROID_RELAY_TRUSTED_PROXY_IP", "")
+        assert _mtls_gate(req_ok) is not None
+
+    def test_safe_body_redacts_password_token_authorization_code(self):
+        import json as _json
+
+        repr_ = _safe_body_repr({
+            "password": "hunter2", "token": "tok-secret",
+            "authorization": "Bearer geheim", "code": "123456",
+            "note": "sichtbar",
+        })
+        for secret in ("hunter2", "tok-secret", "Bearer geheim", "123456"):
+            assert secret not in repr_
+        data = _json.loads(repr_)
+        assert data["password"] == "<redacted>"
+        assert data["token"] == "<redacted>"
+        assert data["authorization"] == "<redacted>"
+        assert data["code"] == "<redacted>"
+        assert data["note"] == "sichtbar"

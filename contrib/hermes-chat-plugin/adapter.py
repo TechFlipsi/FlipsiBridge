@@ -2712,8 +2712,11 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             frames.append({"working": True, "sub": {"id": slot["id"],
                                                     "name": slot["name"]},
                            "end": False, "started_at": now})
+        # Security-Fix-Welle 17.11.: Slot-Logs über _log_id — child_goal kann
+        # Zeilenumbrüche tragen (Log-Forging im Journal); der FRAME bleibt
+        # unverändert (Klartext-Name ist Protokoll-Daten fürs Phone).
         logger.info("FlipsiBridge: agent.status Sub-Slot OPEN id=%s name=%s",
-                    slot["id"], slot["name"])
+                    _log_id(slot["id"]), _log_id(slot["name"]))
         self._schedule_status_frames(frames)
         return None
 
@@ -2771,7 +2774,8 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             frames.append({"working": False, "sub": sub_desc, "end": True,
                            "started_at": started_at})
         logger.info("FlipsiBridge: agent.status Sub-Slot CLOSE id=%s status=%s "
-                    "duration_ms=%d", sub_desc["id"], child_status, duration_ms)
+                    "duration_ms=%d", _log_id(sub_desc["id"]), _log_id(child_status),
+                    duration_ms)
         self._schedule_status_frames(frames)
         return None
 

@@ -1379,9 +1379,23 @@ def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
         return None
     if request.path not in _MTLS_GATE_PATHS:
         return None
+    # Security-Fix-Welle 17.11.: X-SSL-Verify/X-SSL-Device-DN sind PROXY-Header
+    # (nginx setzt beide server-seitig nach der Client-Zert-Prüfung) — ohne
+    # Peer-Check wäre das Gate von JEDEM Direkt-Client per Header-Fälschung
+    # überwindbar (verify=SUCCESS + bekannter CN aus der Registry). Peer-Check
+    # analog XFF in _effective_remote_ip: nur der Socket-Peer == Trusted Proxy
+    # (env ANDROID_RELAY_TRUSTED_PROXY_IP, Prod: NPM) darf die Header setzen;
+    # jeder andere Peer wird wie verify=NONE behandelt → 403-Regel-Lauf.
+    # Bewusst request.remote (Socket-Peer) statt _effective_remote_ip: für
+    # Proxy-Verkehr löst _effective_remote_ip zur XFF-CLIENT-IP auf — ein
+    # Vergleich gegen die Proxy-IP fiele legitimen Proxy-Verkehr.
+    trusted = _trusted_proxy_ip()
+    peer = request.remote or "unknown"
+    headers_trusted = bool(trusted) and peer == trusted
     dn = request.headers.get("X-SSL-Device-DN") or ""
     m = re.search(r"CN=flipsibridge-([0-9a-fA-F-]+)", dn)
-    if request.headers.get("X-SSL-Verify", "") == "SUCCESS" and m:
+    verify = request.headers.get("X-SSL-Verify", "") if headers_trusted else ""
+    if verify == "SUCCESS" and m:
         try:
             try:
                 from tools.mtls_enroll import _registry_load as _rg
@@ -1735,8 +1749,11 @@ def _mask_token(token: str) -> str:
 # Request-body fields that may carry PII or secrets (phone numbers, SMS text,
 # typed text incl. passwords/OTPs, clipboard content, intent extras).
 # AGENTS.md: strip phone numbers, recipients, location from tool logs.
+# Security-Fix-Welle 17.11.: password/token/authorization/code ergänzt —
+# Login-/Pairing-/Auth-Felder landeten bisher KLAR im Body-Debug-Log.
 _SENSITIVE_BODY_KEYS = frozenset(
-    {"to", "number", "body", "text", "message", "extras", "data", "uri", "content"}
+    {"to", "number", "body", "text", "message", "extras", "data", "uri", "content",
+     "password", "token", "authorization", "code"}
 )
 
 

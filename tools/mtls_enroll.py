@@ -29,6 +29,7 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
 import subprocess
 import threading
@@ -52,12 +53,22 @@ def _tls_paths():
 _CHALLENGE_TTL_S = 300.0
 _CERT_DAYS = 400
 _CA_DAYS = 3650
-_NONCE_MAX = 64
+# Security-Fix-Welle 17.11.: Challenge-Store-Bound — _CHALLENGES war unbounded
+# (jede unique device_id füllte den Store bis zum TTL-Ablauf); FIFO: der
+# ZEITLICH älteste Eintrag verfällt zuerst.
+_CHALLENGE_CAP = 10_000
+# Security-Fix-Welle 17.11.: device_id-Gate (Parität android_relay.py
+# _DEVICE_ID_RE, den enroll bisher NICHT nutzte) — der Wert fließt in
+# cert_path (Path-Traversal) und openssl -subj (CN-Injection).
+_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 
 _INIT_LOCK = threading.Lock()
 _INIT_STATE: dict = {"ready": False, "error": ""}
 _CHALLENGES: dict[str, Tuple[float, str]] = {}  # device_id → (expires, nonce)
 _STATE_LOCK = threading.Lock()
+# Security-Fix-Welle 17.11. (TOCTOU): Registry-load→code-used-check→save atomar
+# im Enroll-Pfad (reset_epoch bleibt beim State-Lock).
+_ENROLL_LOCK = threading.Lock()
 
 
 # ── OpenSSL-Helfer (subprocess, timeout, fail-soft) ──────────────────────────
@@ -166,7 +177,10 @@ def reset_epoch(new_epoch: Optional[int] = None) -> dict:
 # ── Proof-of-Possession (Nonce) ─────────────────────────────────────────────
 
 def _open_challenge(device_id: str) -> Optional[str]:
-    if not isinstance(device_id, str) or len(device_id) > 64 or not device_id.strip():
+    # Security-Fix-Welle 17.11.: Format-Gate VOR Nonce-Ausgabe — nur ein
+    # ASCII-Wort [A-Za-z0-9._-]{1,64} (Parität _DEVICE_ID_RE/android_relay)
+    # bekommt eine Challenge; Traversal-/Injektion-IDs fallen am Handler auf 400.
+    if not isinstance(device_id, str) or not _DEVICE_ID_RE.fullmatch(device_id):
         return None
     nonce = secrets.token_hex(16)
     with _STATE_LOCK:
@@ -174,6 +188,11 @@ def _open_challenge(device_id: str) -> Optional[str]:
         for did in [k for k, (exp, _n) in _CHALLENGES.items() if exp < now]:
             _CHALLENGES.pop(did, None)
         _CHALLENGES[device_id] = (now + _CHALLENGE_TTL_S, nonce)
+        # Cap (FIFO): der zeitlich älteste Eintrag verfällt zuerst — ein
+        # RE-Open zählt mit seiner NEUEN Ablaufzeit, nicht der Einfügeposition.
+        while len(_CHALLENGES) > _CHALLENGE_CAP:
+            oldest = min(_CHALLENGES, key=lambda k: _CHALLENGES[k][0])
+            _CHALLENGES.pop(oldest, None)
     return nonce
 
 
@@ -316,7 +335,7 @@ async def challenge_handler(request):
         return JSON_RESPONSE({"error": "auth"}, status=401)
     try:
         body = await request.json()
-        device_id = str(body.get("device_id", ""))[: _NONCE_MAX]
+        device_id = str(body.get("device_id", ""))
     except Exception:
         device_id = ""
     if not _ca_ready():
@@ -342,80 +361,93 @@ async def enroll_handler(request):
         return JSON_RESPONSE({"error": "mtls-off"}, status=503)
     try:
         body = await request.json()
-        device_id = str(body.get("device_id", ""))[: _NONCE_MAX].strip()
+        device_id = str(body.get("device_id", "")).strip()
         csr_pem = base64.b64decode(str(body.get("csr", "")), validate=True)
         sig_b64 = str(body.get("sig", ""))
         nonce = str(body.get("nonce", ""))
     except Exception:
         return JSON_RESPONSE({"error": "bad body"}, status=400)
-    if not device_id or len(csr_pem) > 8192:
+    # Security-Fix-Welle 17.11.: device_id-Gate VOR Registry/Zertifikat —
+    # der Wert fließt in cert_path (Path-Traversal) und openssl -subj
+    # (CN-Injection); erlaubt ist nur ein ASCII-Wort [A-Za-z0-9._-]{1,64}
+    # (Parität _open_challenge und android_relay._DEVICE_ID_RE).
+    if not device_id or not _DEVICE_ID_RE.fullmatch(device_id):
+        return JSON_RESPONSE({"error": "bad device_id"}, status=400)
+    if len(csr_pem) > 8192:
         return JSON_RESPONSE({"error": "bad fields"}, status=400)
 
-    reg = _registry_load()
-    enrolled = reg.setdefault("enrolled", {})
-    is_new_device = device_id not in enrolled
-    if is_new_device and enrolled:
-        # CODE-EINMALIGKEIT: in dieser Epoch hat bereits ein Gerät enrollt
-        # und das Gerät ist NEU → abgelehnt (reset_epoch via Code-Neuerzeugung).
-        return JSON_RESPONSE(
-            {"error": "code-used",
-             "hint": "Neues Gerät: Kopplungscode neu erzeugen (Code ist einmalig je Epoch)."},
-            status=403)
+    # Security-Fix-Welle 17.11. (TOCTOU): Registry-load→code-used-check→save
+    # atomar unter _ENROLL_LOCK — zwei parallele Enrolls sahen sonst BEIDE
+    # eine leere Registry und ließen zwei Neugeräte mit EINEM Code durch.
+    # Langläufer (POP-Verify, Signierung) bleiben bewusst IN der Sektion:
+    # Enroll ist ein Einmal-pro-Epoch-Ereignis, die Serialisierung IST der
+    # Schutz.
+    with _ENROLL_LOCK:
+        reg = _registry_load()
+        enrolled = reg.setdefault("enrolled", {})
+        is_new_device = device_id not in enrolled
+        if is_new_device and enrolled:
+            # CODE-EINMALIGKEIT: in dieser Epoch hat bereits ein Gerät enrollt
+            # und das Gerät ist NEU → abgelehnt (reset_epoch via Code-Neuerzeugung).
+            return JSON_RESPONSE(
+                {"error": "code-used",
+                 "hint": "Neues Gerät: Kopplungscode neu erzeugen (Code ist einmalig je Epoch)."},
+                status=403)
 
-    if not _consume_challenge(device_id, nonce):
-        return JSON_RESPONSE({"error": "nonce-invalid"}, status=400)
+        if not _consume_challenge(device_id, nonce):
+            return JSON_RESPONSE({"error": "nonce-invalid"}, status=400)
 
-    ok, reason = _csr_pubkey_verify_pop(csr_pem, nonce, sig_b64)
-    if not ok:
-        return JSON_RESPONSE({"error": "pop-fail", "detail": reason}, status=400)
+        ok, reason = _csr_pubkey_verify_pop(csr_pem, nonce, sig_b64)
+        if not ok:
+            return JSON_RESPONSE({"error": "pop-fail", "detail": reason}, status=400)
 
-    cert_pem = _sign_csr(csr_pem, device_id)
-    if not cert_pem:
-        return JSON_RESPONSE({"error": "sign-fail"}, status=500)
+        cert_pem = _sign_csr(csr_pem, device_id)
+        if not cert_pem:
+            return JSON_RESPONSE({"error": "sign-fail"}, status=500)
 
-    tls_dir, _ck, ca_crt, _rg, devices_sub = _tls_paths()
-    cert_path = devices_sub / (device_id + ".pem")
-    if len(cert_pem) < 400 or b"BEGIN CERTIFICATE" not in cert_pem:
-        return JSON_RESPONSE({"error": "cert-shape"}, status=500)
-    # FIX-6 (W16.3): Read-only-Filesystem (z. B. systemd ProtectSystem=full) →
-    # klare 500 statt rohem Traceback. Abhilfe am Host: ReadWritePaths=/etc/flipsibridge/tls
-    try:
-        devices_sub.mkdir(parents=True, exist_ok=True)
-        cert_path.write_bytes(cert_pem)
-        cert_path.chmod(0o644)
-    except OSError as exc:
-        logger.error(
-            "mtls_enroll: TLS-Verzeichnis nicht schreibbar (%s). systemd-Hardening? "
-            "ReadWritePaths auf das CA-Verzeichnis setzen (%s).", exc, tls_dir)
-        return JSON_RESPONSE(
-            {"error": "tls-dir-readonly",
-             "hint": "Server: TLS-Verzeichnis nicht schreibbar (systemd ProtectSystem) "
-                     "— ReadWritePaths setzen."}, status=500)
+        tls_dir, _ck, ca_crt, _rg, devices_sub = _tls_paths()
+        cert_path = devices_sub / (device_id + ".pem")
+        if len(cert_pem) < 400 or b"BEGIN CERTIFICATE" not in cert_pem:
+            return JSON_RESPONSE({"error": "cert-shape"}, status=500)
+        # FIX-6 (W16.3): Read-only-Filesystem (z. B. systemd ProtectSystem=full) →
+        # klare 500 statt rohem Traceback. Abhilfe am Host: ReadWritePaths=/etc/flipsibridge/tls
+        try:
+            devices_sub.mkdir(parents=True, exist_ok=True)
+            cert_path.write_bytes(cert_pem)
+            cert_path.chmod(0o644)
+        except OSError as exc:
+            logger.error(
+                "mtls_enroll: TLS-Verzeichnis nicht schreibbar (%s). systemd-Hardening? "
+                "ReadWritePaths auf das CA-Verzeichnis setzen (%s).", exc, tls_dir)
+            return JSON_RESPONSE(
+                {"error": "tls-dir-readonly",
+                 "hint": "Server: TLS-Verzeichnis nicht schreibbar (systemd ProtectSystem) "
+                         "— ReadWritePaths setzen."}, status=500)
 
-    reg.setdefault("epoch", 1)
-    enrolled[device_id] = {
-        "cn": f"flipsibridge-{device_id}",
-        "cert_path": str(cert_path.relative_to(tls_dir)),
-        "ts": int(time.time()),
-        "epoch_of_enroll": reg["epoch"],
-        "is_new_device_epoch": bool(is_new_device),
-    }
-    try:
-        _registry_save(reg)
-    except Exception as exc:
-        logger.warning("mtls_enroll: Registry-Persist fehlgeschlagen: %s", exc)
-    logger.info(
-        "mtls_enroll: Gerät %s enrollt (new_device=%s, epoch=%s)",
-        device_id, is_new_device, reg.get("epoch"))
+        reg.setdefault("epoch", 1)
+        enrolled[device_id] = {
+            "cn": f"flipsibridge-{device_id}",
+            "cert_path": str(cert_path.relative_to(tls_dir)),
+            "ts": int(time.time()),
+            "epoch_of_enroll": reg["epoch"],
+            "is_new_device_epoch": bool(is_new_device),
+        }
+        try:
+            _registry_save(reg)
+        except Exception as exc:
+            logger.warning("mtls_enroll: Registry-Persist fehlgeschlagen: %s", exc)
+        logger.info(
+            "mtls_enroll: Gerät %s enrollt (new_device=%s, epoch=%s)",
+            device_id, is_new_device, reg.get("epoch"))
 
-    ca_pem = ca_crt.read_bytes()
-    return JSON_RESPONSE({
-        "status": "enrolled",
-        "device_id": device_id,
-        "cert_pem": cert_pem.decode("ascii"),
-        "ca_pem": ca_pem.decode("ascii"),
-        "epoch_of_enroll": reg.get("epoch"),
-    })
+        ca_pem = ca_crt.read_bytes()
+        return JSON_RESPONSE({
+            "status": "enrolled",
+            "device_id": device_id,
+            "cert_pem": cert_pem.decode("ascii"),
+            "ca_pem": ca_pem.decode("ascii"),
+            "epoch_of_enroll": reg.get("epoch"),
+        })
 
 
 def add_routes(app: Any) -> bool:

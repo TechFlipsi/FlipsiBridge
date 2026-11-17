@@ -2099,3 +2099,42 @@ async def test_w19_module_hooks_fan_out_and_none_contract() -> None:
     STATUS_ADAPTERS.discard(a)
     STATUS_ADAPTERS.discard(a2)
     print("OK W19: Modul-Fächer (Fan-out, None-Kontrakt, fail-soft-Suppress)")
+
+
+@pytest.mark.asyncio
+async def test_secfix17_slot_open_close_log_escapes_newlines(caplog) -> None:
+    """Security-Fix-Welle 17.11.: Slot-OPEN/CLOSE-Log läuft über _log_id —
+    child_goal/child_status mit \\n/\\r wird im Journal escaped (keine
+    Log-Forging-Zeile); der agent.status-FRAME trägt weiterhin den
+    (geclippten) Klartext-Namen."""
+    a, ws = make_adapter({})
+    await a.connect()
+    await a.hook_on_session_end(session_id="p1", platform="flipsibridge")
+    await a._drain_status_pending()
+    goal = "Echte Aufgabe\nWARN: FAKE-Zeile\rNoch eine"
+    with caplog.at_level(logging.INFO, logger="flipsibridge.chat"):
+        assert await a.hook_subagent_start(
+            parent_session_id="p1", child_session_id="c1",
+            child_subagent_id="sa-1-abcd1234", child_role="leaf",
+            child_goal=goal) is None
+        await a._drain_status_pending()
+        f = _w19_status_frames(ws)[-1]
+        # Frame UNVERÄNDERT: der (geclippte) Klartext-Name bleibt Protokoll-Daten
+        assert f["sub"]["name"] == goal.strip()[:64]
+        open_msgs = [r.getMessage() for r in caplog.records
+                     if "Sub-Slot OPEN" in r.getMessage()]
+        assert open_msgs, "OPEN-Log-Zeile fehlt"
+        assert all("\n" not in msg and "\r" not in msg for msg in open_msgs), \
+            "child_goal muss über _log_id im Log escaped sein"
+        assert any("\\nWARN" in msg for msg in open_msgs)
+        assert await a.hook_subagent_stop(
+            parent_session_id="p1", child_session_id="c1", child_role="leaf",
+            child_status="completed\nFAKE", duration_ms=7) is None
+        await a._drain_status_pending()
+        close_msgs = [r.getMessage() for r in caplog.records
+                      if "Sub-Slot CLOSE" in r.getMessage()]
+        assert close_msgs, "CLOSE-Log-Zeile fehlt"
+        assert all("\n" not in msg and "\r" not in msg for msg in close_msgs), \
+            "child_status muss über _log_id im Log escaped sein"
+    await a.disconnect()
+    print("OK SecFix17: Slot-OPEN/CLOSE-Log escaped (Log-Forging zu)")
