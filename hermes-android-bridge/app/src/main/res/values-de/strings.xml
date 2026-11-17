@@ -328,9 +328,6 @@
     <string name="footer_title">Lokale Steuerung (USB/LAN)</string>
     <string name="footer_url">http://%1$s:8765 — nur im Heim-WLAN</string>
     <string name="footer_desc">Regelbetrieb läuft über den Relay-Server (oben) — damit der Agent auch unterwegs Zugriff hat.</string>
-    <string name="mtls_title">mTLS-Zertifikat</string>
-    <string name="mtls_choose">Zertifikat wählen</string>
-    <string name="mtls_unavailable">Zertifikat-Auswahl hier nicht verfügbar</string>
     <!-- W16 (Punkt 26): Update-Check/Info-Push — KEIN In-App-Install mehr -->
     <string name="update_channel_name">Updates</string>
     <string name="update_channel_desc">Hinweis, wenn eine neuere FlipsiBridge-Version verfügbar ist</string>
@@ -544,13 +541,24 @@
     <string name="chat_delete_title">Chat löschen?</string>
     <string name="chat_delete_text">Alle Nachrichten dieses Chats werden gelöscht — das lässt sich nicht wiederherstellen. Die verschlüsselte Sitzung (E2E-Schlüssel) bleibt erhalten.</string>
     <string name="chat_delete_confirm">Löschen</string>
-    <string name="mtls_device_ok">Geräte-Zertifikat aktiv: %1$s</string>
-    <string name="mtls_device_none">Noch kein Geräte-Zertifikat — der Server stellt eines aus (Button).</string>
-    <string name="mtls_request">Zertifikat anfordern</string>
-    <string name="mtls_enrolling">Wird angefordert …</string>
-    <string name="mtls_enroll_ok">Zertifikat installiert (%1$s) — wird dem Relay beim mTLS-Handshake vorgelegt.</string>
-    <string name="mtls_no_profile">Kein Serverprofil — bitte zuerst Server verbinden.</string>
-    <string name="mtls_no_code">Kein Kopplungscode im Profil vorhanden.</string>
-    <string name="mtls_code_used">Code bereits verwendet — bitte am Server einen neuen Kopplungscode erzeugen.</string>
-    <string name="mtls_enroll_error">Zertifikat-Anforderung fehlgeschlagen (%1$s).</string>
+    <string name="snack_code_in_use">Dieser Code ist bereits mit einem Gerät verbunden — am verbundenen Gerät trennen, um hier zu koppeln.</string>
+    <string name="pw_card_title">Kopplungspasswort</string>
+    <string name="pw_card_hint">Extra-Passwort für neue Kopplungen an diesem Server. Wird nur als Hash (PBKDF2 mit Salz) gespeichert — niemals im Klartext.</string>
+    <string name="pw_status_on">Passwortschutz aktiv</string>
+    <string name="pw_status_off">Passwortschutz inaktiv</string>
+    <string name="pw_input_label">Neues Passwort (mind. 8 Zeichen)</string>
+    <string name="pw_button_set">Passwort setzen</string>
+    <string name="pw_button_clear">Schutz entfernen</string>
+    <string name="pw_min_error">Passwort zu kurz — mindestens 8 Zeichen.</string>
+    <string name="pw_saved">Kopplungspasswort gesetzt — nur der Hash wurde gespeichert.</string>
+    <string name="pw_cleared">Kopplungspasswort entfernt.</string>
+    <string name="pw_error">Server hat abgelehnt oder ist nicht erreichbar — Verbindung und Code prüfen.</string>
+    <string name="pw_prompt_title">Kopplungspasswort nötig</string>
+    <string name="pw_prompt_text">Dieser Server verlangt Code UND Passwort. Bitte Kopplungspasswort eingeben (mind. 8 Zeichen).</string>
+    <string name="pw_prompt_confirm">Speichern und verbinden</string>
+    <string name="pw_prompt_dismiss">Abbrechen</string>
+    <string name="onb_pw_label">Kopplungspasswort</string>
+    <string name="onb_pw_needed_note">Der Server verlangt Code UND Passwort — Passwort eingeben und erneut verbinden.</string>
+    <string name="onb_pw_needed_title">Kopplungspasswort nötig</string>
+    <string name="onb_pw_needed_text">Der Server verlangt Code UND Passwort — der Code war korrekt. Passwort eingeben und erneut verbinden.</string>
 </resources>

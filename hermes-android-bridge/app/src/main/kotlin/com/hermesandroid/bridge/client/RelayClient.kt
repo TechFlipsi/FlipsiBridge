@@ -38,9 +38,9 @@ import com.hermesandroid.bridge.media.MediaChunker
 import com.hermesandroid.bridge.media.MediaException
 import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.security.CapabilityGate
-import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.CommandDispatcher
 import com.hermesandroid.bridge.server.ServerProfileRules
+import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import kotlinx.coroutines.*
@@ -117,6 +117,15 @@ object RelayClient {
     /** Auth-Fehlversuche, bevor die Versuche stoppen (Relay blockt bei 5). */
     private const val MAX_AUTH_FAILURES = 3
 
+    // ── W17 (F1 + F2): Status-Texte der Kopplungs-Abweisung ──────────────────
+    // RelayClient-Statusmeldungen sind bewusst Deutsch-Literale (bestehendes
+    // Muster); die SNACK-/Dialog-Texte der UI laufen zusätzlich über
+    // stringResource (3-fach symmetrisch in strings.xml).
+    private const val CODE_IN_USE_MESSAGE =
+        "Kopplung belegt: Dieser Code ist bereits mit einem Gerät verbunden — am verbundenen Gerät trennen, um hier zu koppeln."
+    private const val PASSWORD_GATE_MESSAGE =
+        "Kopplungspasswort nötig — Passwort in der Brücke eingeben (Einstellungen › Server)."
+
     // ── PH-FIX-CHAT-A (F4): Chat-Benachrichtigungen ──────────────────────
     // Eigener HIGH-Importance-Kanal — die FGS-Dauernotification
     // (BridgeConnectionService) ist IMPORTANCE_LOW + setOngoing und darf
@@ -143,7 +152,7 @@ object RelayClient {
     // W4-FIX-JAG2 (Drill-Hatch): lazy statt eager — der Trust-Schalter liest
     // Settings.Global beim ERSTEN Connect (BridgeApplication.instance + die
     // Drill-Einstellung sind dann gesetzt; beim Object-Init war beides null).
-    private val client: OkHttpClient by lazy { MtlsSupport.decorate(
+    private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
             // PH-FIX-CHAT-A (F6, 30-s-Keepalive): WS-Ping-Frames (opcode 0x9)
             // im 30-s-Raster — Spiegel zum 30-s-Keepalive-Raster der Agenten.
@@ -157,10 +166,8 @@ object RelayClient {
             // (v0.12.0 Akku P1-1 hatte 20→45 s erhöht, weil der Relay eh alle
             // 15 s heartbeatet — die App-EIGENE Toterkennung war der Engpass.)
             .pingInterval(java.time.Duration.ofSeconds(30))
-            // W4-01b (W3-03, App-Lane A): SPKI-PINNING VOR decorate() — der
-            // Pin-Verband hängt am Client, BEVOR MtlsSupport.decorate() über
-            // newBuilder() das mTLS-Socket einbaut (OkHttp newBuilder() erbt
-            // certificatePinner — decorate() kann das Pinning nicht umgehen).
+            // W4-01b (W3-03, App-Lane A): SPKI-PINNING — der Pin-Verband
+            // hängt direkt am Client (certificatePinner).
             // Nur der eigene Relay-Host ist gepinnt (PinSource/SF5); Nutzer-
             // Relays laufen hostname-only. Debug-Kill-Switch für Drills: siehe
             // PinSource.setPinningDisabledForDrill (nimmt NUR die PIN-Schicht).
@@ -194,7 +201,7 @@ object RelayClient {
                 Log.w(TAG, "DRILL-TRUST-ALL aktiv (Debug + Settings-Knopf) — NUR Drill-Socket")
             })
             .build()
-    ) }
+    }
 
     /** Status-Zuhörer — MainActivity/Service/UI hören je selbst zu (keine Slot-Race). */
     private val statusListeners = CopyOnWriteArrayList<(connected: Boolean, message: String) -> Unit>()
@@ -542,6 +549,32 @@ object RelayClient {
     private val _prekeyError = MutableStateFlow<String?>(null)
     val prekeyError: StateFlow<String?> = _prekeyError.asStateFlow()
 
+    // ── W17 (F1 + F2): Kopplungs-Handshake-Signale für die UI ────────────────
+
+    /**
+     * W17-F2: Passwort-Tor des Servers — true, sobald der Kopplungs-Handshake
+     * mit 403 password-required/password-invalid abgewiesen wurde. Die App
+     * zeigt daraufhin ihr Passwort-Prompt; die Auto-Verbindungsversuche sind
+     * bis zur Passwort-Eingabe gestoppt (sonst brennen Versuche im IP-Rate-
+     * Chain-Schild des Relays). onOpen/connect räumen ihn.
+     */
+    private val _pairingPasswordNeeded = MutableStateFlow(false)
+    val pairingPasswordNeeded: StateFlow<Boolean> = _pairingPasswordNeeded.asStateFlow()
+
+    /** UI räumt den Prompt-Merker ab (Dialog verworfen/bedient). */
+    fun acknowledgePasswordPrompt() {
+        _pairingPasswordNeeded.value = false
+    }
+
+    /**
+     * W17-F1: code-in-use-Beobachtungs-Zähler (Snack-Auslöser in der UI; Start
+     * 0). Jede 403-code-in-use-Antwort (+ WS-Close 4403, Race-Slot) erhöht ihn:
+     * die UI reagiert je Anstieg mit EINEM Snack — KEIN Auth-Fehlversuch (der
+     * Code war korrekt), die Reconnect-Kette läuft zurückgesetzt weiter.
+     */
+    private val _codeInUseObserved = MutableStateFlow(0)
+    val codeInUseObserved: StateFlow<Int> = _codeInUseObserved.asStateFlow()
+
     /** agentId → aktive (hello_ack-verifizierte) E2E-Session. Keys nur Heap. */
     private val cryptoSessions = ConcurrentHashMap<String, PhoneCryptoPeer>()
 
@@ -689,7 +722,7 @@ object RelayClient {
         // W4-D (Multi-Server-Profil-Wechsel + Onboarding-Wizard): ein abweichend
         // mitgelieferter Code wird BEWUSST in die EINE SSOT adoptiert
         // (PairingManager.adoptActiveCode) — der Singleton-Pärchen-Verband
-        // (PairingManager/RelayClient/MtlsSupport) folgt dem AKTIVEN Profil,
+        // (PairingManager/RelayClient) folgt dem AKTIVEN Profil,
         // doConnect liest weiter frisch aus der SSOT. Bestehende Aufrufer
         // übergeben PairingManager.getCode() → Adoption ist ein No-op-Write.
         if (pairingCode.isNotBlank() && pairingCode.trim() != PairingManager.getCode()) {
@@ -733,6 +766,10 @@ object RelayClient {
         // (ein Reconnect ist die User-Heilung, siehe Bug-1-Härtung).
         prekeyFailures.clear()
         _prekeyError.value = null
+        // W17-F2: frischer Connect-Zyklus räumt den Passwort-Tor-Merker MIT —
+        // ein bewusstes Verbinden (mit gespeichertem/neu eingegebenem Pass-
+        // wort) ist die User-Heilung, der Prompt soll nicht kleben.
+        _pairingPasswordNeeded.value = false
         publishE2eSessions()
 
         scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -918,11 +955,31 @@ object RelayClient {
         // OkHttp HttpUrl wirft bei defekter host/port-Form synchron
         // (IllegalArgumentException): Tippfehler im Feld = Statusmeldung +
         // ordentlicher Abbruch, kein Crash-Dialog.
+        // W17-F1/F2: Der Kopplungs-Handshake trägt Code (Bearer) + stabile
+        // Gerätekennung (X-Device-Id — Server registriert sie bei der ersten
+        // Annahme, desselben Geräts Reconnect geht damit IMMER durch) und —
+        // nur wenn eins gesetzt ist — das Kopplungspasswort (X-Pairing-
+        // Password; verlangt der Server es und fehlt es, antwortet er 403
+        // password-required und die App zeigt ihr Passwort-Prompt).
+        val storedPassword = ServerProfiles.activePassword()
         val request = runCatching {
-            Request.Builder()
+            var builder = Request.Builder()
                 .url(buildWsUrl(serverUrl))
                 .header("Authorization", "Bearer $pairingCode")
-                .build()
+                // W17-F1: per-Install stabile Gerätekennung (Vault-Verband).
+                .header(
+                    PairingHandshakePolicy.HEADER_DEVICE_ID,
+                    PairingManager.deviceId(),
+                )
+            if (PairingHandshakePolicy.passwordAllowed(storedPassword)) {
+                // W17-F2: exakt, ohne Normalisieren (kein trim — der Hash
+                // am Server rechnet über die ROTE Zeichenkette).
+                builder = builder.header(
+                    PairingHandshakePolicy.HEADER_PASSWORD,
+                    storedPassword,
+                )
+            }
+            builder.build()
         }.getOrElse { e ->
             Log.w(TAG, "Ungültige Server-Adresse: ${e.javaClass.simpleName}")
             notifyStatus(false, "Server-Adresse ungültig — Format: https://dein-relay.example", Phase.FAILED)
@@ -980,6 +1037,10 @@ object RelayClient {
                     // übernimmt ScreenRecorder bei /screen_record selbst.
                 }.onFailure { logW("A11y-Foreground-Promotion übersprungen: ${it.message}") }
                 notifyStatus(true, "Verbunden mit Relay", Phase.CONNECTED)
+                // W17-F2: Kopplung durch — Passwort-Tor räumen (frische
+                // Session-Wahrheit; ein gespeichertes/richtiges Passwort
+                // hat den Handshake durchgelassen).
+                _pairingPasswordNeeded.value = false
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -999,6 +1060,16 @@ object RelayClient {
                 if (myGeneration != generation) return
                 Log.i(TAG, "WebSocket closed: $code $reason")
                 isConnected = false
+                if (PairingHandshakePolicy.closeCodeMeansCodeInUse(code)) {
+                    // W17-F1 (Race-Slot): das Relay musste NACH dem Upgrade
+                    // abweisen (Post-Precheck-Rennen) — gleiche Semantik wie
+                    // der 403-Kanal: KEIN Auth-Fehlversuch, Snack-Auslöser,
+                    // Reconnect-Backoff läuft normal weiter.
+                    _codeInUseObserved.value = _codeInUseObserved.value + 1
+                    notifyStatus(false, CODE_IN_USE_MESSAGE, Phase.FAILED)
+                    scheduleReconnect()
+                    return
+                }
                 // PH-FIX-CHAT-A (F5): working-States sind bei toter Verbindung
                 // verwaist (activity-Reset-Frames laufen ins TCP-Nirvana) —
                 // räumen, sonst countet der Kopf-Spinner ewig weiter.
@@ -1065,6 +1136,40 @@ object RelayClient {
                 // v0.12.0 QA-Fix (SK-02/CHEF-02): Service-QUELLE drosseln.
                 BridgeAccessibilityService.instance?.applyEventThrottle(false)
                 notifyStatus(false, errorDetail, Phase.FAILED)
+
+                // ── W17 (F1 + F2): Maschinen-Code des Kopplungs-Handshakes ──
+                // Das Relay trägt je abgewiesenem Handshake X-Bridge-Error
+                // (Header-Kanal, auch für aiohttp-Clients lesbar). Diese zwei
+                // Fälle sind KEINE Auth-Ausrutscher im hergebrachten Sinn:
+                // code-in-use = der Code war KORREKT (kein Streak-Bump, keine
+                // Sperre — ordentliches Warten auf die Wiederaufnahme);
+                // password-* = Passwort-Tor (Versuche STOPPEN, App-Prompt).
+                val handshakeError = response?.headers
+                    ?.get(PairingHandshakePolicy.HEADER_ERROR)
+                    ?.let { PairingHandshakePolicy.handshakeError(it) }
+                if (PairingHandshakePolicy.isCodeInUse(handshakeError)) {
+                    _codeInUseObserved.value = _codeInUseObserved.value + 1
+                    notifyStatus(false, CODE_IN_USE_MESSAGE, Phase.FAILED)
+                    // Reconnect-Backoff normal — ist der Inhaber tot, läuft
+                    // die Wiederaufnahme ohne Neukopplung durch (kein Lock).
+                    scheduleReconnect()
+                    return
+                }
+                if (PairingHandshakePolicy.isPasswordGate(handshakeError)) {
+                    // Versuche sofort STOPPEN (das Relay zählt Fehl-Eingaben
+                    // in die IP-Rate-Chain — Endlos-Retry lockt die eigene
+                    // IP exakt wie in der Vorfallskette). Die UI öffnet das
+                    // Passwort-Prompt; connect() räumt den Merker neu.
+                    _pairingPasswordNeeded.value = true
+                    Log.w(TAG, "Passwort-Tor am Relay ($handshakeError) — Retry gestoppt, Prompt an UI")
+                    shouldReconnect = false
+                    generation++
+                    sessionStartedNs = 0L
+                    this@RelayClient.webSocket?.cancel()
+                    this@RelayClient.webSocket = null
+                    notifyStatus(false, PASSWORD_GATE_MESSAGE, Phase.FAILED)
+                    return
+                }
 
                 // Auth-Fehler: kurze Serie zulassen, dann STOPP (Relay blockt
                 // 5 Fehlversuche für 300 s — Endlos-Retry lockt die eigene IP,
@@ -1961,6 +2066,84 @@ object RelayClient {
             .build()
         client.newCall(request).execute().use { it.code in 200..299 }
     }.getOrDefault(false)
+
+    // ── W17-F2: Kopplungs-Passwort-Routen (aufrufer wählt Thread — IO) ──────
+
+    /**
+     * Authentifizierter GET auf /password_status (aktiv/inaktiv) — KEINE
+     * Hash-/Klartext-Rückgabe vorhanden; null = Netz-/Auth-/Form-Fehler
+     * (fail-closed in der UI, Schalter bleibt in seinem Stand).
+     */
+    fun pairingPasswordStatus(base: String? = null, code: String? = null): Boolean? =
+        runCatching {
+            val targetBase = (base ?: serverUrl)?.trim().orEmpty()
+            val token = (code ?: PairingManager.getCode()).trim()
+            if (targetBase.isBlank() || token.isBlank()) return@runCatching null
+            val json = pairingAuthGet(targetBase, "/password_status", token)
+                ?: return@runCatching null
+            json.get("active")?.takeIf { it.isJsonPrimitive }?.asBoolean
+        }.onFailure {
+            Log.w(TAG, "W17-F2: /password_status fehlgeschlagen: ${it.message}")
+        }.getOrNull()
+
+    /**
+     * Authentifizierter POST /password_set (Form-Verband wie der Server:
+     * 8..256 Zeichen). true = Server bestätigt aktiv; Klartext läuft nur im
+     * Request-Body, nie in ein UI-Echo/Log.
+     */
+    fun pairingPasswordSet(base: String? = null, code: String? = null, password: String):
+        Boolean = runCatching {
+            if (!PairingHandshakePolicy.passwordAllowed(password)) return@runCatching false
+            val targetBase = (base ?: serverUrl)?.trim().orEmpty()
+            val token = (code ?: PairingManager.getCode()).trim()
+            if (targetBase.isBlank() || token.isBlank()) return@runCatching false
+            pairingAuthPost(targetBase, "/password_set", token, password)
+        }.onFailure {
+            Log.w(TAG, "W17-F2: /password_set fehlgeschlagen: ${it.message}")
+        }.getOrDefault(false)
+
+    /** Authentifizierter POST /password_clear — Schutz am Server entfernen. */
+    fun pairingPasswordClear(base: String? = null, code: String? = null): Boolean =
+        runCatching {
+            val targetBase = (base ?: serverUrl)?.trim().orEmpty()
+            val token = (code ?: PairingManager.getCode()).trim()
+            if (targetBase.isBlank() || token.isBlank()) return@runCatching false
+            pairingAuthPost(targetBase, "/password_clear", token, null)
+        }.onFailure {
+            Log.w(TAG, "W17-F2: /password_clear fehlgeschlagen: ${it.message}")
+        }.getOrDefault(false)
+
+    /** GET mit Caller-Bearer → JsonObject oder null (Status/Netz egal). */
+    private fun pairingAuthGet(targetBase: String, path: String, token: String): JsonObject? {
+        val request = Request.Builder()
+            .url(buildHttpUrl(targetBase, path))
+            .header("Authorization", "Bearer $token")
+            .get()
+            .build()
+        return client.newCall(request).execute().use { response ->
+            if (response.code != 200) null
+            else runCatching {
+                JsonParser.parseString(response.body?.string() ?: "").asJsonObject
+            }.getOrNull()
+        }
+    }
+
+    /** POST mit Caller-Bearer; password null = leerer JSON-Body (/password_clear). */
+    private fun pairingAuthPost(
+        targetBase: String,
+        path: String,
+        token: String,
+        password: String?,
+    ): Boolean {
+        val body = JsonObject()
+        if (password != null) body.addProperty("password", password)
+        val request = Request.Builder()
+            .url(buildHttpUrl(targetBase, path))
+            .header("Authorization", "Bearer $token")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .build()
+        return client.newCall(request).execute().use { it.code in 200..299 }
+    }
 
     /** Frame-String-Feld (primitive) — null bei fehlendem/nicht-primitivem Feld. */
     private fun stringOf(json: JsonObject, field: String): String? = runCatching {

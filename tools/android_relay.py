@@ -36,6 +36,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import tempfile
 import threading
 import time
@@ -140,6 +141,21 @@ class _RelayState:
         # machen die Endpunkte, der Relay kann Inhalte by design nicht prüfen).
         # P1c: hdr.n ist nur JE RATCHET-KETTE (hdr.rk) eindeutig.
         self.crypto_replay: dict[tuple[str, str, str], dict] = {}
+
+        # W17-F1 (Ein-Gerät-pro-Kopplungscode): Device-Kennung DES aktuellen
+        # Phone-Slot-Inhabers — beim ENDE des WS-Handshakes (Registrierung unter
+        # phone_ws_lock) gesetzt, bei Slot-Freigabe (_cleanup_phone / Rotation /
+        # Replacement durch ein ANDERES Gerät) wieder None. NIE geloggt (Log
+        # über _log_id-Maske): die Kennung ist per-Install stabil, aber kein
+        # Geheimnis — trotzdem maskiert (PII-Regel).
+        self.phone_device_id: Optional[str] = None
+
+        # W17-F2 (Optionales Kopplungs-Passwort): NUR der Hash-Record
+        # {"v", "method", "iter", "salt_hex", "hash_hex"} oder None (= Schutz
+        # inaktiv). Kein Klartext jemals im RAM/Log; geladen in _serve() aus
+        # pairing_password.json (0600), gesetzt über die authentifizierte
+        # Route /password_set (Bearer = Kopplungscode).
+        self.pairing_pw: Optional[dict] = None
 
 
 # ── Public API (called from sync code) ────────────────────────────────────────
@@ -250,6 +266,232 @@ def _constant_time_eq(a: str, b: str) -> bool:
         return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
     except Exception:
         return False
+
+
+# ── W17-F1: Ein-Gerät-pro-Kopplungscode ───────────────────────────────────────
+
+# Device-Kennung-Format: ASCII-Wort (Buchstaben/Ziffern/Punkt/Minus/Unterstrich),
+# 1..64 Zeichen — genug für eine UUID/Install-Hash, zu klein für Header-DoS.
+_DEVICE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+# WS-Close-Code für den Race-Slot (Pre-Prepare-403 ist nach dem Upgrade nicht
+# mehr möglich — hier spricht das Relay denselben Sachverhalt als Close-Code;
+# Bereich 4000-4999 = private use, von aiohttp/OkHttp sauber transportiert).
+_WS_CLOSE_CODE_IN_USE = 4403
+
+
+def _parse_device_id(request: web.Request) -> Optional[str]:
+    """W17-F1: stabile Gerätekennung aus dem WS-Auth-Handshake (Header
+    'X-Device-Id'). None = Gerät liefert keine (Legacy-Client / abwesend).
+    Ungültiges Format (Zeichen/Länge außerhalb [A-Za-z0-9._-]{1,64}) = None —
+    fail-closed Richtung Legacy-Semantik, NICHT Richtung 500er."""
+    headers = getattr(request, "headers", request)
+    try:
+        raw = (headers.get("X-Device-Id") or "").strip()
+    except (AttributeError, TypeError):
+        return None
+    if not raw:
+        return None
+    if _DEVICE_ID_RE.fullmatch(raw):
+        return raw
+    return None
+
+
+def _pairing_slot_locked(state: "_RelayState", device_id: Optional[str]) -> bool:
+    """W17-F1: Kern-Regel des Ein-Gerät-pro-Code-Locks.
+
+    True, wenn ein KONKRETER zweiter Gerät-Handshake (anderer/unbekannter
+    device_id) abgewiesen werden soll, weil der Slot IN DIESER Sekunde von
+    einer LEBENDEN Phone-WS gehalten wird. False = Handshake kann normal
+    durchgehen:
+
+      - Slot frei (keine WS oder WS zu)                 → False (Wiederaufnahme
+        nach Todesfall — NOCH kein Dauer-Lock: aiohttp heartbeat=15 schließt
+        tote Sockets binnen Sekunden, das Freigabe-Event läuft über
+        _cleanup_phone und räumt die Registrierung MIT).
+      - Inhaber LEBT und hat KEINE Kennung (Legacy) und Kommer auch ohne
+        Kennung                                        → False (Legacy-Parität:
+        exakt das bisherige Replace-Verhalten, sonst würde die Upgrade-Welle
+        Alt-Clients aussperren).
+      - andernfalls (IDs präsent und ungleich, inkl. Fälle 'Inhaber ohne
+        Kennung vs. Kommer mit Kennung' und umgekehrt)  → True (fail-closed
+        gegen das Aushebeln des aktiven Geräts).
+    """
+    holder = state.phone_ws
+    if holder is None or holder.closed:
+        return False
+    holder_id = state.phone_device_id
+    if holder_id is None and device_id is None:
+        # Legacy-Parität: beide Seiten ohne Kennung = bisheriges Replace-
+        # Verhalten (bestehende Suite hängt daran — und ein Alt-Client kann
+        # ohnehin nicht zwischen eigenem Reconnect und Fremdkappler trennen).
+        return False
+    # Zwei echte Kennungen gleich → desselben Geräts Reconnect: erlaubt.
+    # Alles andere (ungleich, oder eine Seite ohne Kennung) → lock.
+    return not (holder_id is not None and device_id is not None
+                and hmac.compare_digest(holder_id.encode("utf-8"),
+                                        device_id.encode("utf-8")))
+
+
+def _slot_lock_reject_log(state: "_RelayState", device_id: Optional[str],
+                          remote_ip: str, phase: str) -> None:
+    """W17-F1: EINE Warn-Zeile je abgewiesenem Fremd-Handshake (Kennung
+    maskiert — PII-Regel; die Kennung selbst ist ein per-Install-Merker)."""
+    logger.warning(
+        "Phone WS rejected — pairing code in use by another live device "
+        "(holder=%s, newcomer=%s, ip=%s, phase=%s)",
+        _mask_id(state.phone_device_id), _mask_id(device_id), remote_ip, phase)
+
+
+def _mask_id(value: Optional[str]) -> str:
+    # Kennung nur als Länge/Präsenz im Log — keine vollständige PII-Leak-Fläche.
+    if not value:
+        return "none"
+    return f"<masked:{len(value)}>"
+
+
+# ── W17-F2: Optionales Kopplungs-Passwort (nur Hash) ─────────────────────────
+
+_PAIRING_PW_MIN_LEN = 8
+_PAIRING_PW_MAX_LEN = 256
+_PAIRING_PW_DEFAULT_ITER = 200_000
+_PAIRING_PW_MIN_ITER = 1_000      # Schutz gegen fahrlässig gespeicherte Schilder
+_PAIRING_PW_MAX_ITER = 10_000_000
+
+_PAIRING_PW_RECORD_FILE = "pairing_password.json"
+
+
+def _pairing_password_path() -> str:
+    """Ablage des Hash-Records (kein Klartext). Env-überschreibbar für Tests;
+    Default = State-Dir (Plugin-Datenverzeichnis / /opt-Fallback) im 0600-File."""
+    return os.getenv("ANDROID_RELAY_PASSWORD_FILE") or os.path.join(
+        _default_state_dir(), _PAIRING_PW_RECORD_FILE)
+
+
+def _pairing_pw_iterations() -> int:
+    """PBKDF2-Runden — env nur für Tests/Notfall-Tuning; Default OWASP-nah."""
+    try:
+        value = int(os.getenv("ANDROID_RELAY_PW_ITERATIONS",
+                              str(_PAIRING_PW_DEFAULT_ITER)))
+    except (TypeError, ValueError):
+        return _PAIRING_PW_DEFAULT_ITER
+    return max(_PAIRING_PW_MIN_ITER, min(_PAIRING_PW_MAX_ITER, value))
+
+
+def _pairing_password_derive(password: str, salt: bytes, iterations: int) -> bytes:
+    """PBKDF2-HMAC-SHA256 (stdlib, lizenz- und dep-frei) über die roten Bytes."""
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt, iterations)
+
+
+def _pairing_password_record_for(password: str) -> dict:
+    """Neuer Hash-Record für /password_set — Salt frisch, Klartext NIE abgelegt."""
+    salt = secrets.token_bytes(16)
+    iterations = _pairing_pw_iterations()
+    digest = _pairing_password_derive(password, salt, iterations)
+    return {
+        "v": 1,
+        "method": "pbkdf2-sha256",
+        "iter": iterations,
+        "salt_hex": salt.hex(),
+        "hash_hex": digest.hex(),
+    }
+
+
+def _valid_pairing_password_record(record) -> bool:
+    """Form-Prüfung eines Hash-Records (Ladepfad) — fail-closed ohne Record."""
+    if not isinstance(record, dict):
+        return False
+    if record.get("method") != "pbkdf2-sha256":
+        return False
+    try:
+        iterations = int(record.get("iter"))
+    except (TypeError, ValueError):
+        return False
+    if not (_PAIRING_PW_MIN_ITER <= iterations <= _PAIRING_PW_MAX_ITER):
+        return False
+    salt_hex = record.get("salt_hex")
+    hash_hex = record.get("hash_hex")
+    if not (isinstance(salt_hex, str) and isinstance(hash_hex, str)):
+        return False
+    if len(salt_hex) != 32:          # 16 Bytes Salt
+        return False
+    try:
+        return bool(bytes.fromhex(salt_hex)) and bool(bytes.fromhex(hash_hex))
+    except ValueError:
+        return False
+
+
+def _load_pairing_password_record() -> Optional[dict]:
+    """Hash-Record vom 0600-File laden; alles Ungültige = None (Schutz aus,
+    Warn-Log — kein Crash beim Start)."""
+    path = _pairing_password_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            record = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        logger.warning("W17-F2: %s unlesbar — Passwortschutz läuft aus (fail-closed)", path)
+        return None
+    if not _valid_pairing_password_record(record):
+        logger.warning(
+            "W17-F2: %s ungültig (Form) — Passwortschutz läuft aus (fail-closed)", path)
+        return None
+    return record
+
+
+def _store_pairing_password_record(record: dict) -> None:
+    """Hash-Record atomar auf 0600. Kein Klartext im File, nichts im Log."""
+    path = _pairing_password_path()
+    payload = json.dumps(record, sort_keys=True)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+        # File-Modus absichern, auch wenn der Pfad VOR diesem Write 0-open war.
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+def _clear_pairing_password_record(state: "_RelayState") -> None:
+    """Schutz entfernen: File löschen (muss es) + RAM-Record None (immer)."""
+    path = _pairing_password_path()
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("W17-F2: Hash-File %s konnte nicht gelöscht werden", path)
+    state.pairing_pw = None
+
+
+def _pairing_password_verify(state: "_RelayState", supplied: str) -> bool:
+    """Konstante-Zeit-Verifikation eines gelieferten Kopplungs-Passworts gegen
+    den gespeicherten Hash-Record. Jede Ausnahme = False (fail-closed)."""
+    record = state.pairing_pw
+    if not isinstance(record, dict):
+        return False
+    try:
+        salt = bytes.fromhex(str(record["salt_hex"]))
+        iterations = int(record["iter"])
+        expected = bytes.fromhex(str(record["hash_hex"]))
+    except (KeyError, TypeError, ValueError):
+        return False
+    if not salt or not expected or iterations < _PAIRING_PW_MIN_ITER:
+        return False
+    if not supplied:
+        return False
+    try:
+        candidate = _pairing_password_derive(supplied, salt, iterations)
+    except Exception:
+        return False
+    return hmac.compare_digest(candidate, expected)
 
 
 def _trusted_proxy_ip() -> str:
@@ -943,17 +1185,6 @@ def set_pairing_code(code: str) -> None:
         logger.info("Pairing code updated")
     if state is None or not changed:
         return
-    # W16.3 (P41): Code-Wechsel öffnet das Enrollment-Fenster neu
-    # (CODE-EINMALIGKEIT: je Epoch ein Neugerät; Reset hier).
-    try:
-        try:
-            from tools.mtls_enroll import reset_epoch as _mtls_reset_epoch
-        except ImportError:
-            from mtls_enroll import reset_epoch as _mtls_reset_epoch
-        import threading as _threading
-        _threading.Thread(target=_mtls_reset_epoch, daemon=True).start()
-    except Exception as exc:
-        logger.warning("mtls_enroll epoch-reset fehlgeschlagen (fail-soft): %s", exc)
     # Kick der Phone-WS im Relay-Loop (Thread-sicher; Aufrufer ist Sync-Kontext)
     loop = state.loop
     if loop is None or state.thread is None or not state.thread.is_alive():
@@ -1113,54 +1344,13 @@ _RELAY_NATIVE_ROUTES = frozenset(
     {"/chat", "/chat_event", "/key_publish", "/key_get", "/crypto_hello", "/media"})
 
 
-# ── W16.3 Stufe 2, Layer 2 (16.11.26): CN-vs-Registry-Gate ──────────────────
-_MTLS_GATE_PATHS = frozenset(
-    {"/ws", "/chat", "/chat_event", "/media", "/key_publish", "/key_get", "/crypto_hello"})
-
-def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
-    """Layer 2 hinter dem NPM-Zert-Zwang (Layer 1 = nginx 421 bei fehlendem Zert):
-    NPM reicht X-SSL-Verify/X-SSL-Device-DN durch (server_proxy.conf, Regex-Location);
-    hier: Verify=SUCCESS UND CN in der Device-Registry nötig. Fail-closed bei
-    Registry-Fehlern. Exklusiv Prod (ANDROID_MTLS_ENFORCE=1) — Drills/direkte
-    Agenten-Verbindungen (/agent_ws Direct) laufen ohne Gate."""
-    if os.getenv("ANDROID_MTLS_ENFORCE", "0") != "1":
-        return None
-    if request.path not in _MTLS_GATE_PATHS:
-        return None
-    dn = request.headers.get("X-SSL-Device-DN") or ""
-    m = re.search(r"CN=flipsibridge-([0-9a-fA-F-]+)", dn)
-    if request.headers.get("X-SSL-Verify", "") == "SUCCESS" and m:
-        try:
-            try:
-                from tools.mtls_enroll import _registry_load as _rg
-            except Exception:
-                from mtls_enroll import _registry_load as _rg
-            enrolled = (_rg() or {}).get("enrolled") or {}
-            if m.group(1).lower() in {str(k).lower() for k in enrolled}:
-                return None
-        except Exception as exc:
-            logger.warning("mtls-gate: Registry-Fehler — fail-closed: %s", exc)
-    else:
-        logger.info("mtls-gate: Ablehnung %s (verify=%r, dn=%.60s)", request.path,
-                    request.headers.get("X-SSL-Verify", "<kein Header>"), dn)
-    return web.json_response({"error": "mtls-unknown-device"}, status=403)
-
-@web.middleware
-async def _mtls_gate_mw(request: "web.Request", handler):
-    gated = _mtls_gate(request)
-    if gated is not None:
-        return gated
-    return await handler(request)
-
-
 async def _serve(state: _RelayState, ready: threading.Event) -> None:
     """Build the aiohttp app, start the site, and block until shutdown."""
     # v0.10.8-Deploy-Fix: aiohttp-Default client_max_size ist 1MB - grosse
     # POST-Bodies (files_push mit APK als base64) wurden still gekappt, die App
     # sah ein leeres JSON und antwortete 'Pflichtfelder fehlen'. 96MB deckt das
     # app-seitige 48MB-Dateilimit (x1.37 Base64) plus JSON-Overhead ab.
-    app = web.Application(client_max_size=96 * 1024 * 1024,
-                          middlewares=[_mtls_gate_mw])
+    app = web.Application(client_max_size=96 * 1024 * 1024)
     state.app = app
 
     # WebSocket endpoint
@@ -1215,6 +1405,33 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
             # PH-3: Registry-Fingerprint (public Info) — leer ohne Keys.
             "fingerprint": crypto_registry.get(_aid, {}).get("fingerprint", ""),
         }
+
+    # ── W17-F2: Optionales Kopplungs-Passwort laden (0600-File, nur HASH) ────
+    # Set/Clear laufen über die NUN registrierten /password_set//password_clear-
+    # Routen (Bearer-Auth wie üblich); hier NUR der Start-Laden. Kein Klartext
+    # im File, das Log nennt nur den Aktiv-Zustand — nie Hash, Salt oder Path.
+    state.pairing_pw = _load_pairing_password_record()
+    if state.pairing_pw is not None:
+        logger.info("W17-F2: Kopplungs-Passwortschutz AKTIV (Hash-Record geladen)")
+
+    # W17-F2 (Sir-Direktive): Optionales Extra-Passwort für die KOPLUNG —
+    # Set/Entfernen über die bestehende authentifizierte Verbindung (Bearer
+    # = Kopplungscode, IP-Rate-Chain wie alle auth-Routen), Status ohne
+    # Klartext-Rückgabe. Bewusst RELAY-NATIV und NICHT in _ROUTES: die
+    # Gerät-Routen-Forward-Kette (Allowlist + Device-Command-Handler) bleibt
+    # unberührt, genauso die Agenten-Routen (/agent_ws, /chat — SEPARAT).
+    async def password_set_handler(request: web.Request) -> web.StreamResponse:
+        return await _handle_password_set(request, state)
+
+    async def password_clear_handler(request: web.Request) -> web.StreamResponse:
+        return await _handle_password_clear(request, state)
+
+    async def password_status_handler(request: web.Request) -> web.StreamResponse:
+        return await _handle_password_status(request, state)
+
+    app.router.add_post("/password_set", password_set_handler)
+    app.router.add_post("/password_clear", password_clear_handler)
+    app.router.add_get("/password_status", password_status_handler)
 
     # Authenticated APK distribution for /apk/latest (FlipsiBridge self-update
     # downloads; W16/Punkt-26: the /apk_install device route is gone — the app's
@@ -1310,22 +1527,6 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
             app.router.add_get(path, handler)
         if method in ("POST", "BOTH"):
             app.router.add_post(path, handler)
-
-    # W16.3 (P41, Sir): Enrollment-Routen /mtls/enroll[/challenge] — fail-soft:
-    # Init-Fehler (keine OpenSSL-CA-Materialien) = Routen OFF + Log, der Rest
-    # des Relays läuft unverändert (P22-Stufe 1: Ausstellen + Registry +
-    # Code-Einmaligkeit; Enforcement am Socket = Stufe 2 nginx-Verband).
-    try:
-        try:  # Daemon lädt android_relay als tools.android_relay → Package-Weg
-            from tools.mtls_enroll import add_routes as _mtls_add_routes
-        except ImportError:  # Flat-Import (direkter Modul-Lauf)
-            from mtls_enroll import add_routes as _mtls_add_routes
-        if _mtls_add_routes(app):
-            logger.info("mTLS-Enrollment-Routen aktiv (P41)")
-        else:
-            logger.info("mTLS-Enrollment OFF (Init fehlgeschlagen — fail-soft)")
-    except Exception as exc:
-        logger.warning("mTLS-Enrollment-Wiring fehlgeschlagen (fail-soft): %s", exc)
 
     runner = web.AppRunner(app)
     state.runner = runner
@@ -1517,6 +1718,71 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
     # Registrierung weiter unten verifiziert sie unter phone_ws_lock erneut.
     pairing_epoch = state.pairing_epoch
 
+    # ── W17-F2: Optionales Kopplungs-Passwort (Code UND Passwort) ────────────
+    # Die Kopplungs-Route ist der WS-Handshake selbst: ist der Passwortschutz
+    # aktiv, verlangt sie ZUSÄTZLICH zum Bearer-Code den Header
+    # 'X-Pairing-Password'. Fehl-Eingaben (fehlerhaft oder falsch) laufen wie
+    # falsche Codes in die bestehende IP-Rate-Chain (_auth_record_failure) —
+    # das Rate-Limit-Schild verhindert einen Offline-Brute-Force-Gang über das
+    # Handshake-Fenster. Fehl-Text = strukturiertes JSON (wie /key_get-Fehler):
+    # die App zeigt daraufhin ihr Passwort-Prompt statt des Code-Fehlers.
+    if state.pairing_pw is not None:
+        supplied_password = request.headers.get("X-Pairing-Password") or ""
+        if not supplied_password:
+            # Fehl-Eingabe = Handshake-Versuch ohne Pflichtfeld: in dieselbe
+            # IP-Rate-Chain wie falsche Codes/Passwörter (Fail-Schild).
+            _auth_record_failure(remote_ip)
+            logger.warning("Phone WS rejected — password gate active, no password from %s",
+                           remote_ip)
+            raise web.HTTPForbidden(
+                text=json.dumps({
+                    "error": "password-required",
+                    "detail": "Pairing password required (X-Pairing-Password header)",
+                }),
+                content_type="application/json",
+                headers={"X-Bridge-Error": "password-required"},
+            )
+        if not _pairing_password_verify(state, supplied_password):
+            _auth_record_failure(remote_ip)
+            logger.warning("Phone WS rejected — wrong pairing password from %s", remote_ip)
+            raise web.HTTPForbidden(
+                text=json.dumps({
+                    "error": "password-invalid",
+                    "detail": "Pairing password wrong",
+                }),
+                content_type="application/json",
+                headers={"X-Bridge-Error": "password-invalid"},
+            )
+
+    # ── W17-F1: Ein-Gerät-pro-Kopplungscode (Slot-Precheck) ──────────────────
+    # Der Kopplungs-Handshake trägt die stabile Gerätekennung (X-Device-Id);
+    # ist der Phone-Slot durch eine LEBENDE Verbindung eines ANDEREN Geräts
+    # gehalten, wird der Handshake SAUBER (HTTP 403 + JSON, bestehendes
+    # Fehler-Strukturmuster) abgewiesen — solange die erste Verbindung lebt.
+    # Tote Verbindungen sind keine Sperre: aiohttp heartbeat/receive_timeout
+    # schließt sie, _cleanup_phone gibt Slot + Kennung frei → normale Kopplung
+    # kehrt zurück (kein Dauer-Lock, HARTFEHLER-Auftrag für Sirs Reconnects).
+    device_id = _parse_device_id(request)
+    slot_lock = state.phone_ws_lock
+    if slot_lock is None:
+        # Locks entstehen erst in _run_loop — vor dem Server-Start kann es
+        # keinen Handshake geben (Robustheit-Guard wie beim broker_lock).
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "server warming up"}),
+            content_type="application/json",
+        )
+    async with slot_lock:
+        if _pairing_slot_locked(state, device_id):
+            _slot_lock_reject_log(state, device_id, remote_ip, phase="pre-check")
+            raise web.HTTPForbidden(
+                text=json.dumps({
+                    "error": "code-in-use",
+                    "detail": "This pairing code is already connected to another device",
+                }),
+                content_type="application/json",
+                headers={"X-Bridge-Error": "code-in-use"},
+            )
+
     # 02.11.26 Security-Audit-Fix (REL-04/Skeptiker-P2): >4MB-Frames rissen die
     # WS-Verbindung (Journal-Beweis 04:08:41). Jetzt hartes Frame/Message-Limit
     # + receive_timeout, damit ein dekompressionsbomber-Frame stattdessen sauber
@@ -1546,13 +1812,30 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
             await ws.close(code=aiohttp.WSCloseCode.POLICY_VIOLATION,
                            message=b"pairing code rotated")
             return ws
+        # W17-F1 (Race-Slot): der Precheck oben lief OHNE Hold über den
+        # prepare-Await — zwischen Precheck und Registrierung kann die
+        # Konkurrenz-WS eingesprungen und eingetragen sein. Post-Prepare kann
+        # kein sauberer 403-JSON mehr laufen (Upgrade already done); dieselbe
+        # Abweisung läuft jetzt als WS-Close-Code (_WS_CLOSE_CODE_IN_USE —
+        # private-use 4403), die App behandelt ihn genau wie den 403-JSON.
+        if _pairing_slot_locked(state, device_id):
+            _slot_lock_reject_log(state, device_id, remote_ip, phase="race-check")
+            await ws.close(code=_WS_CLOSE_CODE_IN_USE, message=b"code-in-use")
+            return ws
         if state.phone_ws is not None and not state.phone_ws.closed:
+            # Reconnect DESSELBEN Geräts (Kennung gleich) ODER Legacy-Replace
+            # (beidseitig ohne Kennung): das bisherige Replace-Verhalten bleibt
+            # — genau er erlaubt den zuverlässigen Doze/WLAN-Reconnect ohne
+            # Neukopplung. Ein ANDERES Gerät kam nie hierher (Checks oben).
             logger.info("Replacing previous phone connection")
             await _fail_inflight(state, reason="phone connection replaced")
             await state.phone_ws.close(
                 code=aiohttp.WSCloseCode.GOING_AWAY, message=b"replaced"
             )
         state.phone_ws = ws
+        # W17-F1: Kennung beim ENDE der Annahme serverseitig registrieren —
+        # in derselben kritischen Sektion wie der WS (atomare Slot-Einheit).
+        state.phone_device_id = device_id
 
     logger.info("Phone connected from %s", request.remote)
 
@@ -1773,6 +2056,13 @@ async def _cleanup_phone(
             return
         ws = state.phone_ws
         state.phone_ws = None
+        # W17-F1: Slot-Registrierung MIT Räumen — die Kennung gilt NUR für
+        # den laufenden Inhaber; stirbt die Verbindung (Heartbeat/Timeout/
+        # bewusstes Trennen/Code-Rotation/Shutdown), kehrt normale Kopplung
+        # zurück (kein Dauer-Lock, HARTFEHLER-Verband der Welle). Der
+        # expected_ws-Guard oben schützt: eine ALT-WS (replace-Fall) kann die
+        # Registrierung des NEUEN Inhabers nicht anfassen.
+        state.phone_device_id = None
 
     if ws is not None and not ws.closed:
         await ws.close()
@@ -1862,6 +2152,85 @@ def _resolve_agent_by_token(config: dict, supplied: str) -> Optional[str]:
         if _constant_time_eq(supplied, token):
             return agent_id
     return None
+
+
+# ── W17-F2: Kopplungs-Passwort-Routen (authentifiziert, kein Klartext) ────────
+
+
+def _password_route_auth(request: web.Request, state: "_RelayState") -> Optional[web.Response]:
+    """Auth-Verband der /password_*-Routen — exakt das Muster der Key-Registry:
+    IP-Block-Precheck (429) → Bearer = Kopplungscode (konstante Zeit) mit
+    Fehlversuch-Zählung in der bestehenden IP-Rate-Chain → 401-JSON.
+    None = authentifiziert (weiter zum Handler); sonst die Fehler-Response."""
+    remote_ip = _effective_remote_ip(request)
+    if _auth_is_blocked(remote_ip):
+        return web.json_response(
+            {"error": "Too many failed authentication attempts. Try again later."},
+            status=429,
+        )
+    if not _constant_time_eq(_bearer_token(request), state.pairing_code):
+        _auth_record_failure(remote_ip)
+        logger.warning("HTTP /password auth rejected — bad auth from %s", remote_ip)
+        return web.json_response({"error": "Unauthorized"}, status=401)
+    return None
+
+
+async def _handle_password_set(request: web.Request, state: "_RelayState") -> web.Response:
+    """W17-F2: Passwortschutz setzen — der Nutzer ruft dies über die bestehende
+    authentifizierte Verbindung auf (Bearer-Auth wie üblich). Der Server hält
+    NUR den PBKDF2-HMAC-SHA256-Hash + Salt (0600-File); Klartext existiert
+    ausschließlich als Request-Body-Einheit und wird NIE geloggt oder
+    gespeichert (Antworten ohne Klartext-Rückgabe)."""
+    auth_error = _password_route_auth(request, state)
+    if auth_error is not None:
+        return auth_error
+    remote_ip = _effective_remote_ip(request)
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        return web.json_response({"error": "JSON body required"}, status=400)
+    password = body.get("password")
+    if (not isinstance(password, str)
+            or not (_PAIRING_PW_MIN_LEN <= len(password) <= _PAIRING_PW_MAX_LEN)):
+        return web.json_response(
+            {"error": f"password must be {_PAIRING_PW_MIN_LEN}-{_PAIRING_PW_MAX_LEN} chars"},
+            status=400)
+    record = _pairing_password_record_for(password)
+    try:
+        _store_pairing_password_record(record)
+    except OSError:
+        logger.error("W17-F2: /password_set — Hash-File-Schreibfehler (fail-closed)")
+        return web.json_response({"error": "password file unavailable"}, status=500)
+    # Ref-Swap (atomar): laufende WS-Handshakes sehen entweder None (alter
+    # Zustand) oder den vollständigen Record — nie einen halben Zustand.
+    state.pairing_pw = record
+    logger.info("W17-F2: Kopplungs-Passwortschutz AKTIV gesetzt (Hash gespeichert; ip=%s)",
+                remote_ip)
+    return web.json_response({"ok": True, "active": True})
+
+
+async def _handle_password_clear(request: web.Request, state: "_RelayState") -> web.Response:
+    """W17-F2: Passwortschutz entfernen — 0600-File gelöscht, RAM-Record None.
+    Antwort ohne Klartext-Rückgabe; nach dem Clear akzeptiert die Kopplungs-
+    Route wieder Code ohne Passwort (Statuszähler liefert die App-Wahrheit)."""
+    auth_error = _password_route_auth(request, state)
+    if auth_error is not None:
+        return auth_error
+    remote_ip = _effective_remote_ip(request)
+    _clear_pairing_password_record(state)
+    logger.info("W17-F2: Kopplungs-Passwortschutz INAKTIV entfernt (ip=%s)", remote_ip)
+    return web.json_response({"ok": True, "active": False})
+
+
+async def _handle_password_status(request: web.Request, state: "_RelayState") -> web.Response:
+    """W17-F2: Aktiv-Status für die App (Schalteranzeige + ob das Passwortfeld
+    in der Kopplung erscheint). Nur wahr/falsch — NIE Hash, Salt oder Klartext."""
+    auth_error = _password_route_auth(request, state)
+    if auth_error is not None:
+        return auth_error
+    return web.json_response({"active": state.pairing_pw is not None})
 
 
 async def _handle_agent_ws(request: web.Request, state: _RelayState) -> web.WebSocketResponse:

@@ -29,10 +29,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,12 +45,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.PairingHandshakePolicy
+import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.client.PinSource
 import com.hermesandroid.bridge.server.RelayProfile
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.server.ServerProfileRules
 import com.hermesandroid.bridge.ui.onboarding.OnboardingRules
 import com.hermesandroid.bridge.ui.onboarding.PassCodeField
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * Welle 4 / App-Lane D — Multi-Server-Liste in Einstellungen → Server
@@ -249,9 +256,16 @@ fun RelayServerListCard() {
             title = stringResource(R.string.ms_add_title),
             initial = null,
             onDismiss = { addOpen = false },
-            onSave = { label, url, code ->
+            onSave = { label, url, code, password ->
                 addOpen = false
+                // W17-F2: Passwort läuft NUR in den Profil-Vault (wenn der
+                // Server eines verlangt — Feld erscheint NUR dann).
                 ServerProfiles.add(label, url, code)
+                    .let { created ->
+                        if (!password.isNullOrBlank()) {
+                            ServerProfiles.writePassword(created.id, password)
+                        }
+                    }
             },
         )
     }
@@ -260,10 +274,15 @@ fun RelayServerListCard() {
             title = stringResource(R.string.ms_edit_title),
             initial = target,
             onDismiss = { editTarget = null },
-            onSave = { label, url, code ->
+            onSave = { label, url, code, password ->
                 editTarget = null
-                // Code-Feld leer gelassen = UNVERÄNDERT (kein Vault-Löschen).
-                ServerProfiles.update(target.id, label, url, code.takeIf { it.isNotBlank() })
+                // Code-Feld leer gelassen = UNVERÄNDERT (kein Vault-Löschen);
+                // Passwort ebenso (leer = unverändert, W17-F2).
+                ServerProfiles.update(
+                    target.id, label, url,
+                    code.takeIf { it.isNotBlank() },
+                    password.takeIf { it != null && PairingHandshakePolicy.passwordAllowed(it) },
+                )
             },
         )
     }
@@ -354,13 +373,20 @@ private fun RelayProfileRow(
  * Ein Dialog für +Server und Bearbeiten: Name (freiwillig), URL, Code
  * (verborgen mit Einblenden). Code-Regeln wiederverwenden die Wizard-Regeln
  * (OnboardingRules) — keine Zweit-Taxonomie.
+ *
+ * W17-F2 (Sauber-Feld): das Kopplungs-Passwort-Feld erscheint NUR, wenn der
+ * Server ein Passwort VERLANGT — das prüft ein Live-Probe GET /password_status
+ * (Bearer = Code, IO-Thread, kurze Sperre; null = Netz/Unbekannt → Feld bleibt
+ * zu und der Save läuft). Im Add-Modus wird der Probe beim ersten Save-Aufruf
+ * gefeuert (URL+Code sind erst da eingegeben), dann speichert der zweite
+ * Aufruf mit ausgefülltem Passwortfeld.
  */
 @Composable
 private fun RelayProfileEditDialog(
     title: String,
     initial: RelayProfile?,
     onDismiss: () -> Unit,
-    onSave: (label: String, url: String, code: String) -> Unit,
+    onSave: (label: String, url: String, code: String, password: String?) -> Unit,
 ) {
     var label by remember { mutableStateOf(initial?.label.orEmpty()) }
     var urlText by remember(initial?.id) { mutableStateOf(initial?.url.orEmpty()) }
@@ -371,6 +397,27 @@ private fun RelayProfileEditDialog(
     }
     var urlError by remember { mutableStateOf(false) }
     var codeBlankNote by remember { mutableStateOf(false) }
+
+    // W17-F2: Passwort-Verband des DIALOGS — pwRequired NUR nach Probe true.
+    var pwRequired by remember { mutableStateOf(false) }
+    var pwText by remember(initial?.id) { mutableStateOf("") }
+    var pwShortNote by remember { mutableStateOf(false) }
+    var probing by remember { mutableStateOf(false) }
+    var probedOnce by remember { mutableStateOf(false) }
+    val dialogScope = rememberCoroutineScope()
+
+    // Edit-Modus: Probe je Dialog-Open (URL+Code aus dem Profil/Vault).
+    // Add-Modus: Probe erst beim Save (URL+Code sind dort gerade eingegeben).
+    if (initial != null) {
+        LaunchedEffect(initial.id) {
+            val code = ServerProfiles.codeOf(initial.id)
+            if (initial.url.isBlank() || code.isBlank()) return@LaunchedEffect
+            val required = withContext(Dispatchers.IO) {
+                RelayClient.pairingPasswordStatus(initial.url, code)
+            }
+            pwRequired = required == true
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -419,10 +466,36 @@ private fun RelayProfileEditDialog(
                         color = FlipsiColors.TextSecondary,
                     )
                 }
+                // W17-F2: das Passwortfeld nur, wenn der Server verlangt —
+                // sonst bleibt die Kopplung reiner Code+URL (Sauber-Feld).
+                if (pwRequired) {
+                    PassCodeField(
+                        value = pwText,
+                        onValueChange = {
+                            pwText = it
+                            pwShortNote = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = stringResource(R.string.onb_pw_label),
+                    )
+                    Text(
+                        stringResource(R.string.onb_pw_needed_note),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                    if (pwShortNote) {
+                        Text(
+                            stringResource(R.string.pw_min_error),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FlipsiColors.SignalRedText,
+                        )
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(
+                enabled = !probing,
                 onClick = {
                     val urlOk = !OnboardingRules.relayUrlProblem(urlText, BuildConfig.DEBUG)
                     if (!urlOk) {
@@ -435,11 +508,43 @@ private fun RelayProfileEditDialog(
                         codeBlankNote = true
                         return@TextButton
                     }
-                    onSave(
+                    if (pwRequired
+                        && pwText.isNotBlank()
+                        && !PairingHandshakePolicy.passwordAllowed(pwText)) {
+                        pwShortNote = true
+                        return@TextButton
+                    }
+                    fun doSave() = onSave(
                         label.trim(),
                         urlText.trim().trimEnd('/'),
                         codeText.trim(),
+                        pwText.takeIf { pwRequired && it.isNotBlank() },
                     )
+                    if (pwRequired || probedOnce) {
+                        doSave()
+                        return@TextButton
+                    }
+                    // Add-Modus: EIN Probe-Verband je Dialog-Run — verlangt der
+                    // Server ein Passwort, erscheint das Feld (kein Auto-Save);
+                    // sonst/nein → normaler Save. null (Netz/Unbekannt) = Save.
+                    probedOnce = true
+                    probing = true
+                    dialogScope.launch {
+                        val url = urlText.trim().trimEnd('/')
+                        val code = codeText.trim()
+                        val required = if (url.isBlank() || code.isBlank()) {
+                            null
+                        } else {
+                            withContext(Dispatchers.IO) {
+                                RelayClient.pairingPasswordStatus(url, code)
+                            }
+                        }
+                        probing = false
+                        pwRequired = required == true
+                        if (required != true) {
+                            doSave()
+                        }
+                    }
                 },
             ) {
                 Text(stringResource(R.string.ms_save), fontWeight = FontWeight.SemiBold)

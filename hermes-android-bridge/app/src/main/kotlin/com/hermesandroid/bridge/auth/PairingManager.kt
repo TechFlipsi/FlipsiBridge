@@ -16,6 +16,7 @@ import androidx.core.app.NotificationCompat
 import java.io.File
 import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.UUID
 
 /**
  * Single Source of Truth für den Kopplungscode (v0.11.0).
@@ -317,6 +318,69 @@ object PairingManager {
                 .build()
             manager.notify(NOTIFY_ID_CODE_EVENT, notification)
         }.onFailure { Log.w(TAG, "Code-Event-Notification fehlgeschlagen: ${it.message}") }
+    }
+
+    // ── Device-Vault (W17-F1): per-Install stabile Gerätekennung ────────────
+    // Ein-Gerät-pro-Kopplungscode: das Relay registriert die Kennung beim
+    // ENDE des WS-Handshakes; desselben Geräts Reconnect (Doze/WLAN-Wechsel)
+    // kommt IMMER wieder durch (dieselbe Kennung), ein ANDERES Gerät wird
+    // abgewiesen, solange der Slot lebt. Kein Klartext-Geheimnis, aber das
+    // gleiche Vault-Muster wie der Code (prefs + getDir("vault")): ein
+    // HyperOS-Prefs-Wipe darf die Kennung NICHT still wechseln — sonst sieht
+    // das Relay nach dem Wipe ein „anderes“ Gerät.
+    private const val KEY_DEVICE_ID = "pairing_device_id"
+    private const val DEVICE_FILE = "pairing_device.v1"
+
+    @Volatile
+    private var cachedDeviceId: String? = null
+
+    private fun deviceVaultFile(): File? {
+        val ctx = appContext ?: return null
+        return File(ctx.getDir(VAULT_DIR, Context.MODE_PRIVATE), DEVICE_FILE)
+    }
+
+    private fun readDeviceVaultIfPossible(): String? {
+        return runCatching {
+            val f = deviceVaultFile() ?: return@runCatching null
+            if (!f.exists()) return@runCatching null
+            val content = f.readText().trim()
+            if (content.isNotBlank()) content else null
+        }.getOrNull()
+    }
+
+    private fun writeDeviceVault(id: String) {
+        runCatching {
+            val f = deviceVaultFile() ?: return
+            f.delete()
+            f.writeText(id)
+        }.onFailure { Log.w(TAG, "Device-Vault-Write fehlgeschlagen: ${it.message}") }
+    }
+
+    /**
+     * Stabile Gerätekennung für den WS-Auth-Handshake (X-Device-Id, W17-F1).
+     * UUID einmal erzeugt, dann prefs + Vault gespiegelt (Wipe-verband).
+     */
+    fun deviceId(): String {
+        cachedDeviceId?.takeIf { it.isNotBlank() }?.let { return it }
+        val stored = prefs?.getString(KEY_DEVICE_ID, "") ?: ""
+        if (stored.isNotBlank()) {
+            if (readDeviceVaultIfPossible().isNullOrBlank()) writeDeviceVault(stored)
+            cachedDeviceId = stored
+            return stored
+        }
+        val vaultId = readDeviceVaultIfPossible()
+        if (!vaultId.isNullOrBlank()) {
+            prefs?.edit()?.putString(KEY_DEVICE_ID, vaultId)?.apply()
+            cachedDeviceId = vaultId
+            Log.i(TAG, "Geräte-Kennung aus dem Vault wiederhergestellt (prefs were wiped)")
+            return vaultId
+        }
+        val fresh = UUID.randomUUID().toString()
+        prefs?.edit()?.putString(KEY_DEVICE_ID, fresh)?.apply()
+        writeDeviceVault(fresh)
+        cachedDeviceId = fresh
+        Log.i(TAG, "Geräte-Kennung erzeugt (per-Install stabil, W17-F1)")
+        return fresh
     }
 
     /**

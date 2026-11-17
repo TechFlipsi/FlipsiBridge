@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.client.PairingHandshakePolicy
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.i18n.AppLanguage
 import com.hermesandroid.bridge.server.ServerProfiles
@@ -138,7 +139,7 @@ import com.hermesandroid.bridge.ui.FlipsiType
  */
 enum class OnboardingSignal { NONE, WAITING, AUTH_STOPPED, FAILED, CONNECTED }
 
-enum class OnboardingHelpKind { CODE_REJECTED, RELAY_BLOCKED, UNREACHABLE }
+enum class OnboardingHelpKind { CODE_REJECTED, PASSWORD_REQUIRED, RELAY_BLOCKED, UNREACHABLE }
 
 /**
  * Welle 13 (P7) — Rechtliches-Accept-Merker. Persistiert im gemeinsamen
@@ -270,6 +271,11 @@ fun OnboardingScreens(
     var codeText by rememberSaveable { mutableStateOf("") }
     var urlError by remember { mutableStateOf(false) }
     var codeError by remember { mutableStateOf(false) }
+    // W17-F2: Kopplungs-Passwort des Wizards — erscheint NUR, wenn das Relay
+    // den Connect mit 403 password-required/-invalid abgewiesen hat (Merker
+    // = RelayClient.pairingPasswordNeeded). Sauber-Feld: sonst bleibt der
+    // Schritt reiner Code-Eintrag.
+    var pwText by rememberSaveable { mutableStateOf("") }
     // Welle 13 (P7): Accept-Zustand — initial aus den Prefs (wizard nach
     // Absturz/Rotation kommt nicht mit gefälschtem Leerzustand durch).
     var legalAccepted by rememberSaveable {
@@ -503,23 +509,61 @@ fun OnboardingScreens(
                         color = FlipsiColors.SignalRedText,
                     )
                 }
+                // W17-F2: Passwortfeld NUR, wenn das Relay Code UND Passwort
+                // verlangt (403-Abweisung am Kopplungs-Handshake). Speichern
+                // geht in den Profil-Vault; der Connect trägt es als Header.
+                val pwNeeded by RelayClient.pairingPasswordNeeded.collectAsState()
+                if (pwNeeded) {
+                    PassCodeField(
+                        value = pwText,
+                        onValueChange = { pwText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = stringResource(R.string.onb_pw_label),
+                    )
+                    Text(
+                        stringResource(R.string.onb_pw_needed_note),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
                 val waiting = signal == OnboardingSignal.WAITING
                 val connected = signal == OnboardingSignal.CONNECTED
-                val helpKind = OnboardingRules.helpFor(signal, RelayClient.lastFailureHttpCode)
+                val helpKind = if (pwNeeded) {
+                    // Passwort-Tor ≠ Code falsch: statt der 401-Hilfe („Code
+                    // ist falsch“) DIESE Hilfe (der Code war korrekt).
+                    OnboardingHelpKind.PASSWORD_REQUIRED
+                } else {
+                    OnboardingRules.helpFor(signal, RelayClient.lastFailureHttpCode)
+                }
                 WizardButton(
                     label = stringResource(R.string.onb_connect),
                     enabled = !waiting && !connected,
                 ) {
-                    connectCodeEntry()
+                    if (pwNeeded
+                        && pwText.isNotBlank()
+                        && PairingHandshakePolicy.passwordAllowed(pwText)) {
+                        // Profil upsert (URL+Code je Vault), Passwort in den
+                        // JE-Profil-Vault, dann bewusstes connect (Bearer-Code
+                        // + X-Pairing-Password im Handshake).
+                        val p = ServerProfiles.upsertFromOnboarding(urlText, codeText.trim())
+                        ServerProfiles.writePassword(p.id, pwText)
+                        ServerProfiles.connectViaProfile(context, p.id)
+                    } else {
+                        connectCodeEntry()
+                    }
                 }
                 if (waiting || connected) {
                     OnboardingInfoBox(stringResource(R.string.onb_connecting))
                 }
-                // Fehlerhilfe je Schritt (401 / Timeout / Netz / Sperre).
+                // Fehlerhilfe je Schritt (401 / Passwort-Tor / Timeout / Netz / Sperre).
                 when (helpKind) {
                     OnboardingHelpKind.CODE_REJECTED -> OnboardingHelpCard(
                         title = stringResource(R.string.onb_help_code_title),
                         text = stringResource(R.string.onb_help_code_text),
+                    )
+                    OnboardingHelpKind.PASSWORD_REQUIRED -> OnboardingHelpCard(
+                        title = stringResource(R.string.onb_pw_needed_title),
+                        text = stringResource(R.string.onb_pw_needed_text),
                     )
                     OnboardingHelpKind.UNREACHABLE -> OnboardingHelpCard(
                         title = stringResource(R.string.onb_help_unreachable_title),

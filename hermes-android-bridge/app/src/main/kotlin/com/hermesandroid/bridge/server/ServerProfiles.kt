@@ -5,6 +5,7 @@ import android.util.Log
 import com.google.gson.Gson
 import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.PairingHandshakePolicy
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,8 +27,8 @@ import java.util.UUID
  * bestehende Kopplung (RelayClient.serverUrl-Prefs + PairingManager-Code) ab,
  * damit Upgrade-Installationen KEINEN Wizard sehen (QA J2).
  *
- * SINGLETONS-FASER (Sir-Verband): RelayClient object + MtlsSupport +
- * PairingManager folgen dem AKTIVEN Profil — es gibt bewusst GENAU EINE
+ * SINGLETONS-FASER (Sir-Verband): RelayClient object + PairingManager
+ * folgen dem AKTIVEN Profil — es gibt bewusst GENAU EINE
  * WebSocket-Kette, kein Multi-WS:
  *  - Profil-Wechsel = [connectViaProfile]: SSOT-Adoption des Profil-Codes in
  *    den PairingManager (adoptActiveCode) + bewusstes disconnect()/connect()
@@ -35,8 +36,6 @@ import java.util.UUID
  *  - Der OkHttpClient-Konstrukt in RelayClient (der Lane-A-Pin/Pins-Verband)
  *    bleibt UNBERÜHRT — Profile wechseln NUR URL+Code, niemals die
  *    Client-Fabrrik (Lane-A-Zone).
- *  - mTLS-Alias bleibt Geräte-Ebene (MtlsSupport.selectedAlias) — je-Profil-
- *    Zertifikate wären eine Lane-A-Kette und sind hier bewusst nicht angerührt.
  *
  * ER-START-DETECT (A6): onboardingDone ist ein persistenter Merker im
  * JSON-Speicher. false → MainActivity zeigt den Onboarding-Wizard statt der
@@ -137,6 +136,12 @@ object ServerProfileRules {
     fun migrationAllowed(url: String?, code: String?): Boolean =
         !url.isNullOrBlank() && !code.isNullOrBlank()
 
+    // ── W17-F2: Passwort-Verband (Spiegel der /password_set-Form) ──────────
+
+    /** true = Passwort erfüllt die Serverform (mind. 8, max. 256 Zeichen). */
+    fun passwordSatisfiesServer(plain: String): Boolean =
+        PairingHandshakePolicy.passwordAllowed(plain)
+
     /** Bestehende Kopplung → Profil anlegen + Wizard überspringen (QA J2). */
     fun onboardingAfterMigration(url: String?, code: String?): Boolean =
         migrationAllowed(url, code)
@@ -163,6 +168,9 @@ object ServerProfiles {
     private const val CODE_VAULT_DIR = "vault"
     private const val CODE_FILE_PREFIX = "relay_code."
     private const val CODE_FILE_SUFFIX = ".v1"
+    /** W17-F2: Kopplungs-Passwort je Profil — eigenes Vault-File, nie geloggt. */
+    private const val PASSWORD_FILE_PREFIX = "relay_password."
+    private const val PASSWORD_FILE_SUFFIX = ".v1"
 
     /** Versionierter Inhalt der JSON-Datei. */
     private data class ProfileStoreDto(
@@ -256,6 +264,38 @@ object ServerProfiles {
     /** Profil-Code (nur UI-Verband, Feld zeigt ihn bewusst verborgen). */
     fun codeOf(id: String): String = readCodeVault(id) ?: ""
 
+    // ── W17-F2: Kopplungs-Passwort je Profil (Vault, nie geloggt) ─────────────
+
+    /** Gespeichertes Kopplungspasswort eines Profils ("" = keins). */
+    fun passwordOf(id: String): String = readPasswordVault(id) ?: ""
+
+    /** Passwort des AKTIVEN Profils — RelayClient liest es je WS-Handshake. */
+    fun activePassword(): String {
+        val id = dto.activeId ?: return ""
+        return passwordOf(id)
+    }
+
+    /** Passwort für ein Profil speichern (Form-Verband wie der Server). */
+    @Synchronized
+    fun writePassword(id: String, plain: String) {
+        if (!_profiles.value.any { it.id == id }) return
+        if (!PairingHandshakePolicy.passwordAllowed(plain)) return
+        writePasswordVault(id, plain)
+    }
+
+    /** Passwort am AKTIVEN Profil speichern (App-Prompt-Pfad). */
+    @Synchronized
+    fun writeActivePassword(plain: String) {
+        val id = dto.activeId ?: return
+        writePassword(id, plain)
+    }
+
+    /** Passwort eines Profils räumen (Profil-Löschung / bewusstes Aus). */
+    @Synchronized
+    fun clearPassword(id: String) {
+        deletePasswordVault(id)
+    }
+
     /**
      * Regenerate-Verband („Neuen Code erzeugen“ in der Kopplungskarte): der
      * neue SSOT-Code wird in den Vault des AKTIVEN Profils nachgezogen, sonst
@@ -287,9 +327,11 @@ object ServerProfiles {
         return p
     }
 
-    /** Profil bearbeiten; codeOrNull = null/blank → Code unverändert. */
+    /** Profil bearbeiten; codeOrNull = null/blank → Code unverändert.
+     *  passwordOrNull = null/blank → Passwort unverändert (W17-F2). */
     @Synchronized
-    fun update(id: String, label: String, url: String, codeOrNull: String?) {
+    fun update(id: String, label: String, url: String, codeOrNull: String?,
+               passwordOrNull: String? = null) {
         val normalized = url.trim().trimEnd('/')
         dto.profiles = dto.profiles.map {
             if (it.id != id) it else it.copy(
@@ -298,6 +340,11 @@ object ServerProfiles {
             )
         }
         if (!codeOrNull.isNullOrBlank()) writeCodeVault(id, codeOrNull)
+        if (!passwordOrNull.isNullOrBlank()) {
+            if (PairingHandshakePolicy.passwordAllowed(passwordOrNull)) {
+                writePasswordVault(id, passwordOrNull)
+            }
+        }
         persist()
         publish()
     }
@@ -313,6 +360,8 @@ object ServerProfiles {
     fun remove(id: String) {
         dto.profiles = dto.profiles.filterNot { it.id == id }
         deleteCodeVault(id)
+        // W17-F2: das Kopplungspasswort des Profils geht mit.
+        deletePasswordVault(id)
         if (dto.activeId == id) {
             dto.activeId = null
             RelayClient.disconnect()
@@ -519,6 +568,36 @@ object ServerProfiles {
     private fun deleteCodeVault(id: String) {
         runCatching { codeFile(id)?.delete() }
             .onFailure { Log.w(TAG, "Code-Vault-Delete fehlgeschlagen: ${it.message}") }
+    }
+
+    // ── W17-F2: Passwort-Vault je Profil (gleiche Werkzeuge wie der Code) ──
+
+    private fun passwordFile(id: String): File? {
+        val ctx = appContext ?: return null
+        return File(ctx.getDir(CODE_VAULT_DIR, Context.MODE_PRIVATE),
+            PASSWORD_FILE_PREFIX + id + PASSWORD_FILE_SUFFIX)
+    }
+
+    private fun readPasswordVault(id: String): String? {
+        return runCatching {
+            val f = passwordFile(id) ?: return@runCatching null
+            if (!f.exists()) return@runCatching null
+            f.readText().takeIf { it.isNotEmpty() }   // KEIN trim: Passwort bleibt exakt
+        }.getOrNull()
+    }
+
+    private fun writePasswordVault(id: String, password: String) {
+        if (password.isEmpty()) return
+        runCatching {
+            val f = passwordFile(id) ?: return
+            f.delete()
+            f.writeText(password)   // exakt, kein Normalisieren
+        }.onFailure { Log.w(TAG, "Passwort-Vault-Write fehlgeschlagen: ${it.message}") }
+    }
+
+    private fun deletePasswordVault(id: String) {
+        runCatching { passwordFile(id)?.delete() }
+            .onFailure { Log.w(TAG, "Passwort-Vault-Delete fehlgeschlagen: ${it.message}") }
     }
 
     /** Flows auffrischen — JE Mutation endet hier (UI sieht jeden Write). */

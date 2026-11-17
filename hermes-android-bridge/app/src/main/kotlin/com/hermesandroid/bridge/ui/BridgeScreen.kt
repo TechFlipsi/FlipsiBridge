@@ -97,12 +97,13 @@ import com.hermesandroid.bridge.permissions.DeviceFeature
 import com.hermesandroid.bridge.permissions.DeviceIntentResolver
 import com.hermesandroid.bridge.security.AppLockSettingsCard
 import com.hermesandroid.bridge.security.CapabilityGate
-import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.chat.ChatScreen
 import com.hermesandroid.bridge.ui.dashboard.DashboardScreen
 import com.hermesandroid.bridge.ui.settings.AboutSheetHost
 import com.hermesandroid.bridge.ui.settings.AboutState
+import com.hermesandroid.bridge.ui.settings.PairingPasswordCard
+import com.hermesandroid.bridge.ui.settings.PairingPasswordPromptFlow
 import com.hermesandroid.bridge.ui.settings.SettingsHome
 import com.hermesandroid.bridge.ui.settings.SettingsNav
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
@@ -475,7 +476,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
     /**
      * Einstellungen-Screen (Route 1, PH1-T2): drei ausklappbare Gruppen
      * (Accordion, je Gruppe eigener Klappe-Zustand oben in BridgeScreen —
-     * überlebt Route-Wechsel): Server (Relay-URL, Kopplungscode, mTLS),
+     * überlebt Route-Wechsel): Server (Relay-URL, Kopplungscode),
      * App (Berechtigungen inkl. Autostart/Akku, Termux, Selbst-Update je
      * Edition) und Agenten (Master-Schalter + 4 klapptbare Fähigkeiten-
      * Gruppen, PH1-T5). Die langen Listen aus dem alten Home — gleiche
@@ -490,7 +491,7 @@ fun BridgeScreen(initialRoute: Int = 0) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
 
-            // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode, mTLS) ──
+            // ── Gruppe 1: Server (Relay-Liste, Relay-URL, Kopplungscode) ──
             
                 AccordionCard(
                     titleRes = R.string.settings_group_server,
@@ -560,6 +561,12 @@ fun BridgeScreen(initialRoute: Int = 0) {
                             fontWeight = FontWeight.Medium,
                         )
                     }
+                    // W17-F2 (Sir-Idee, Umfang FIX): Optionales Kopplungs-
+                    // Passwort — Schalter + maskiertes Feld (min 8) +
+                    // „Passwortschutz aktiv/inaktiv“ (Wahrheit = /password_status).
+                    PairingPasswordCard(
+                        onSnack = { message -> snack(message) },
+                    )
                     // Kopplungscode: die bestehende PairingCard (Anzeige,
                     // Kopieren mit SENSITIVE-Markierung, Neu-Erzeugen-Dialog).
                     PairingCard(
@@ -578,11 +585,6 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         },
                         onRegenerateRequest = { showRegenDialog = true },
                     )
-                    // mTLS (W16.3, Fixliste 41): Karte zeigt den app-verwalteten
-                    // Device-Leg + Enrollment-Button (Server stellt das
-                    // Zertifikat aus). Der tote KeyChain-Systemdialog ist rauf —
-                    // KeyChain bleibt nur als Fallback in MtlsSupport.decorate().
-                    MtlsCard(configVersion = configVersion)
                 }
 
 
@@ -873,6 +875,13 @@ fun BridgeScreen(initialRoute: Int = 0) {
     // im Agenten-Tab (Route 4) lief ein request() sonst in den LEERAUM:
     // pending gesetzt, kein Dialog, Toggle tot ohne jede Meldung.
     DisclosureDialogHost()
+
+    // ── W17 (F1 + F2): code-in-use-Snack + Kopplungs-Passwort-Prompt ────────
+    // EIN Mount am Screen-Level (wie die anderen Dialoge): der Prompt geht
+    // bei 403 password-required/-invalid auf, der Snack je code-in-use-403.
+    PairingPasswordPromptFlow(
+        onSnack = { message -> snack(message) },
+    )
 
     // ── Dialoge ────────────────────────────────────────────────────────────
     if (showRegenDialog) {
@@ -1454,84 +1463,6 @@ private fun AccordionCard(
                         .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     content = content,
-                )
-            }
-        }
-    }
-}
-
-/**
- * mTLS-Zertifikats-Bereich (W16.3, Fixliste 41): Statuszeile + EIN Button, der
- * wirklich etwas tut — Enrollment am Relay (app-verwalteter AndroidKeystore-
- * Leg, Server stellt das Kette via Device-CA aus). Der KeyChain-Systemdialog
- * ist raus (Sackgasse: ohne installiertes Zertifikat schließt er still).
- */
-@Composable
-private fun MtlsCard(configVersion: Int) {
-    val context = LocalContext.current
-    var cn by remember(configVersion) { mutableStateOf(MtlsSupport.Enrollment.deviceCn(context)) }
-    var running by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
-    Card(
-        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
-        shape = MaterialTheme.shapes.medium,
-    ) {
-        Column(Modifier.fillMaxWidth().padding(16.dp)) {
-            Text(stringResource(R.string.mtls_title), fontWeight = FontWeight.SemiBold)
-            Text(
-                text = if (cn != null)
-                    stringResource(R.string.mtls_device_ok, cn!!)
-                else
-                    stringResource(R.string.mtls_device_none),
-                style = MaterialTheme.typography.bodySmall,
-                color = FlipsiColors.TextSecondary,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-            OutlinedButton(
-                onClick = {
-                    android.util.Log.i("MtlsCard", "click: running=" + running +
-                        ", profile=" + (ServerProfiles.activeProfile()?.id ?: "-null-"))
-                    if (running) return@OutlinedButton
-                    val profile = ServerProfiles.activeProfile()
-                    if (profile == null) {
-                        BridgeStatus.showText(context.getString(R.string.mtls_no_profile))
-                        return@OutlinedButton
-                    }
-                    running = true
-                    scope.launch {
-                        val res = kotlinx.coroutines.withContext(
-                            kotlinx.coroutines.Dispatchers.IO,
-                        ) {
-                            val code = ServerProfiles.codeOf(profile.id)
-                            if (code.isBlank()) {
-                                MtlsSupport.Enrollment.Result(ok = false, error = "no-code")
-                            } else {
-                                MtlsSupport.Enrollment.enrollDevice(context, profile.url, code)
-                            }
-                        }
-                        running = false
-                        when {
-                            res.ok -> {
-                                cn = res.cn
-                                BridgeStatus.showText(
-                                    context.getString(R.string.mtls_enroll_ok, res.cn ?: "?"))
-                            }
-                            res.error == "no-code" ->
-                                BridgeStatus.showText(context.getString(R.string.mtls_no_code))
-                            res.error != null && res.error!!.startsWith("enroll:403") ->
-                                BridgeStatus.showText(context.getString(R.string.mtls_code_used))
-                            else -> BridgeStatus.showText(
-                                context.getString(R.string.mtls_enroll_error, res.error ?: "?"))
-                        }
-                    }
-                },
-                enabled = !running,
-                modifier = Modifier.padding(top = 10.dp).height(48.dp),
-                colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-            ) {
-                Text(
-                    if (running) stringResource(R.string.mtls_enrolling)
-                    else stringResource(R.string.mtls_request)
                 )
             }
         }

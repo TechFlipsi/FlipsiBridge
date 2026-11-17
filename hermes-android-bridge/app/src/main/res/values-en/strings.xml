@@ -336,9 +336,6 @@
     <string name="footer_title">Local control (USB/LAN)</string>
     <string name="footer_url">http://%1$s:8765 — home Wi-Fi only</string>
     <string name="footer_desc">Normal operation runs via the relay server (above) — so the agent has access on the go too.</string>
-    <string name="mtls_title">mTLS certificate</string>
-    <string name="mtls_choose">Choose certificate</string>
-    <string name="mtls_unavailable">Certificate selection unavailable here</string>
     <!-- W16 (Punkt 26): update check/info push — NO in-app install anymore -->
     <string name="update_channel_name">Updates</string>
     <string name="update_channel_desc">Notice when a newer FlipsiBridge version is available</string>
@@ -547,13 +544,24 @@
     <string name="chat_delete_title">Delete chat?</string>
     <string name="chat_delete_text">All messages of this chat will be deleted — this cannot be undone. The encrypted session (E2E keys) is kept.</string>
     <string name="chat_delete_confirm">Delete</string>
-    <string name="mtls_device_ok">Device certificate active: %1$s</string>
-    <string name="mtls_device_none">No device certificate yet — the server issues one (button).</string>
-    <string name="mtls_request">Request certificate</string>
-    <string name="mtls_enrolling">Requesting …</string>
-    <string name="mtls_enroll_ok">Certificate installed (%1$s) — presented to the relay on the mTLS handshake.</string>
-    <string name="mtls_no_profile">No server profile — connect a server first.</string>
-    <string name="mtls_no_code">No pairing code in the profile.</string>
-    <string name="mtls_code_used">Code already used — please generate a new pairing code on the server.</string>
-    <string name="mtls_enroll_error">Certificate request failed (%1$s).</string>
+    <string name="snack_code_in_use">This code is already connected to another device — disconnect it on that device to pair here.</string>
+    <string name="pw_card_title">Pairing password</string>
+    <string name="pw_card_hint">Extra password for new pairings on this server. Stored only as a hash (PBKDF2 with salt) — never in plain text.</string>
+    <string name="pw_status_on">Password protection active</string>
+    <string name="pw_status_off">Password protection inactive</string>
+    <string name="pw_input_label">New password (min. 8 characters)</string>
+    <string name="pw_button_set">Set password</string>
+    <string name="pw_button_clear">Remove protection</string>
+    <string name="pw_min_error">Password too short — at least 8 characters.</string>
+    <string name="pw_saved">Pairing password set — only the hash was stored.</string>
+    <string name="pw_cleared">Pairing password removed.</string>
+    <string name="pw_error">Server refused or is unreachable — check connection and code.</string>
+    <string name="pw_prompt_title">Pairing password required</string>
+    <string name="pw_prompt_text">This server requires code AND password. Please enter the pairing password (min. 8 characters).</string>
+    <string name="pw_prompt_confirm">Save and connect</string>
+    <string name="pw_prompt_dismiss">Cancel</string>
+    <string name="onb_pw_label">Pairing password</string>
+    <string name="onb_pw_needed_note">The server requires code AND password — enter the password and connect again.</string>
+    <string name="onb_pw_needed_title">Pairing password required</string>
+    <string name="onb_pw_needed_text">The server requires code AND password — the code itself was correct. Enter the password and connect again.</string>
 </resources>
