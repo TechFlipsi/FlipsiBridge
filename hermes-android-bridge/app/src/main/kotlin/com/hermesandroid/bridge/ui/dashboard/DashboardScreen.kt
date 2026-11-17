@@ -42,6 +42,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.auth.PairingManager
+import com.hermesandroid.bridge.client.AgentStatusRules
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.ui.BridgeStatus
 import com.hermesandroid.bridge.ui.FlipsiColors
@@ -85,6 +86,9 @@ fun DashboardScreen(
     val agents by RelayClient.agents.collectAsState()
     val agentWorking by RelayClient.agentWorking.collectAsState()
     val agentMeta by RelayClient.agentMeta.collectAsState()
+    // W18-Kette: agent.status-Verband — Labels am Haupt-Slot + Sub-Agenten-Slots
+    val agentStatus by RelayClient.agentStatus.collectAsState()
+    val agentSubs by RelayClient.agentSubs.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
     val e2eSessions by RelayClient.e2eSessions.collectAsState()
     // Verbindungs-Zustand für das Statusbanner (eine Warn-Instanz, oben).
@@ -98,7 +102,12 @@ fun DashboardScreen(
     // schlägt working), darf die 1-s-Uhr also auch nicht am Laufen halten.
     val anyBusy = agents.any { entry ->
         val w = agentWorking[entry.agentId]
-        entry.online && w != null && w.working && !DashboardRules.workingTimedOut(w.startedAt, nowMs)
+        (entry.online && w != null && w.working && !DashboardRules.workingTimedOut(w.startedAt, nowMs)) ||
+            // W18-Kette: laufende Sub-Agenten ticken ebenfalls (Timer in
+            // der „arbeitet“-Pille der Sub-Slots lebt vom selben Ticker).
+            agentSubs[entry.agentId].orEmpty().values.any { s ->
+                s.working && !DashboardRules.workingTimedOut(s.startedAt, nowMs)
+            }
     }
     LaunchedEffect(anyBusy) {
         while (isActive) {
@@ -151,12 +160,23 @@ fun DashboardScreen(
                         agent = entry,
                         working = agentWorking[entry.agentId],
                         meta = agentMeta[entry.agentId],
+                        statusSlot = agentStatus[entry.agentId],
                         lastEvent = chatEvents.lastOrNull { it.agentId == entry.agentId },
                         e2eActive = e2eSessions.containsKey(entry.agentId),
                         nowMs = nowMs,
                         onOpen = { onOpenAgentChat(entry.agentId) },
                     )
                 }
+            }
+            // ── W18-Kette: Sub-Agenten-Slots UNTER den Agenten-Slots ─────────
+            // SIRS-Design: läuft delegate_task, steht der Sub-Agent als Slot
+            // im eigenen Abschnitt — end=true entfernt ihn (agent.status-
+            // Verband). Slot-Labels kommen vom Server (Maschinenwort).
+            item(key = "subAgents") {
+                SubAgentSlotsSection(
+                    slots = agents.flatMap { entry -> agentSubs[entry.agentId].orEmpty().values },
+                    nowMs = nowMs,
+                )
             }
         }
     }
@@ -191,6 +211,9 @@ private fun AgentSlotCard(
     agent: RelayClient.AgentEntry,
     working: RelayClient.AgentActivity?,
     meta: RelayClient.AgentSessionMeta?,
+    // W18-Kette: agent.status-Hauptstatus — Quelle des Arbeits-Labels neben
+    // dem Zeit-Timer (kein Frame = kein Label, ehrliches „arbeitet …“).
+    statusSlot: AgentStatusRules.AgentStatusSlot?,
     lastEvent: RelayClient.ChatMessageEvent?,
     e2eActive: Boolean,
     nowMs: Long,
@@ -262,6 +285,13 @@ private fun AgentSlotCard(
                 // den Regeln) — nie ein Ewigzähler (PIPELINE-BUGS BUG 3).
                 if (status == DashboardRules.AgentStatus.BUSY) {
                     Spacer(Modifier.height(4.dp))
+                    // W18-Kette: Status-Pill-Verband — Server-Maschinenwort
+                    // (z. B. „Sucht im Web“) neben dem Zeit-Timer; ohne Label
+                    // oder wenn der agent.status-Verband ehrlich working=false
+                    // meldet, bleibt das neutrale „arbeitet … (m:ss)“.
+                    val label = statusSlot?.label
+                        ?.takeIf { it.isNotBlank() && statusSlot.working }
+                    val timer = DashboardRules.workingElapsedLabel(working?.startedAt ?: 0L, nowMs)
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         CircularProgressIndicator(
                             color = FlipsiColors.Ember,
@@ -270,10 +300,8 @@ private fun AgentSlotCard(
                         )
                         Spacer(Modifier.width(7.dp))
                         Text(
-                            stringResource(
-                                R.string.dash_working,
-                                DashboardRules.workingElapsedLabel(working?.startedAt ?: 0L, nowMs),
-                            ),
+                            if (label != null) "$label · $timer"
+                            else stringResource(R.string.dash_working, timer),
                             style = MaterialTheme.typography.bodySmall,
                             color = FlipsiColors.Ember,
                             maxLines = 1,
@@ -395,6 +423,87 @@ private fun AgentsEmptyCard() {
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.padding(top = 4.dp),
             )
+        }
+    }
+}
+
+// ── W18-Kette: Sub-Agenten-Slots (agent.status-Verband) ──────────────────────
+
+/**
+ * SIRS-Design: Sub-Agenten der laufenden delegate_task-Ketten als eigene
+ * Slots UNTER den Agenten-Slots — Titel „Sub-Agenten“ + 0-n Slots (Name aus
+ * sub.name, Status-Pille „arbeitet … (m:ss)“ aus dash_working), Farbe Ember
+ * wenn der Sub arbeitet (10-Min-Deckel wie am Haupt-Slot), neutral sonst.
+ * end=true entfernt den Slot — ohne laufende Sub-Agenten bleibt der
+ * ehrliche Leer-Zustand („keine“).
+ */
+@Composable
+private fun SubAgentSlotsSection(
+    slots: List<AgentStatusRules.SubAgentSlot>,
+    nowMs: Long,
+) {
+    SectionTitle(stringResource(R.string.dashboard_sub_agents_title))
+    if (slots.isEmpty()) {
+        Text(
+            stringResource(R.string.dashboard_sub_agents_empty),
+            style = MaterialTheme.typography.bodySmall,
+            color = FlipsiColors.TextSecondary,
+        )
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        slots.forEach { slot -> SubAgentSlotRow(slot, nowMs) }
+    }
+}
+
+/** EIN Sub-Agent-Slot: Mini-Avatar (Initial in Zustandsfarbe), Name, „arbeitet“-Pille. */
+@Composable
+private fun SubAgentSlotRow(
+    slot: AgentStatusRules.SubAgentSlot,
+    nowMs: Long,
+) {
+    val busy = slot.working && !DashboardRules.workingTimedOut(slot.startedAt, nowMs)
+    val tint = if (busy) FlipsiColors.Ember else FlipsiColors.TextSecondary
+    Card(
+        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .size(28.dp)
+                    .background(tint.copy(alpha = 0.16f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    slot.name.trim().firstOrNull()?.uppercase() ?: "?",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = tint,
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                slot.name,
+                style = MaterialTheme.typography.bodyMedium,
+                color = FlipsiColors.TextPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (busy) {
+                StatusPill(
+                    label = stringResource(
+                        R.string.dash_working,
+                        DashboardRules.workingElapsedLabel(slot.startedAt, nowMs),
+                    ),
+                    tint = FlipsiColors.Ember,
+                )
+            }
         }
     }
 }

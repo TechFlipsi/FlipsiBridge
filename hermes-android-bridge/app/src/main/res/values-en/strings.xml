@@ -357,6 +357,10 @@
     <string name="dash_last_active">Last active %1$s</string>
     <string name="dash_no_activity">No activity yet</string>
     <string name="dash_working">working … (%1$s)</string>
+    <!-- W18 chain: Sub-agent slots (agent.status) — title + empty state.
+         Slot labels come from the server (machine word), no client special cases. -->
+    <string name="dashboard_sub_agents_title">Sub-agents</string>
+    <string name="dashboard_sub_agents_empty">none</string>
     <string name="dash_model_label">Model %1$s</string>
     <string name="dash_sub_agent">SUB-Agent %1$s</string>
     <string name="dash_sub_model">(Model %1$s)</string>

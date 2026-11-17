@@ -515,6 +515,31 @@ object RelayClient {
     private val _agentModels = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val agentModels: StateFlow<Map<String, List<String>>> = _agentModels.asStateFlow()
 
+    /**
+     * W18-Kette: Haupt-Arbeitsstatus je agent_id — agent.status-Frames des
+     * Relays (parallel-gebaut: agent_id/working/started_at/label(≤64)/
+     * sub{?id,name}/end). Letzter Frame gewinnt (chat.activity-Parität).
+     * label = Server-Maschinenwort (z. B. „Sucht im Web“) — die UI stellt es
+     * neben den Zeit-Timer, KEINE Client-Spezialfälle. Parsen+Faltung in
+     * [AgentStatusRules] (JVM-getestet, fail-soft).
+     */
+    private val _agentStatus =
+        MutableStateFlow<Map<String, AgentStatusRules.AgentStatusSlot>>(emptyMap())
+    val agentStatus: StateFlow<Map<String, AgentStatusRules.AgentStatusSlot>> =
+        _agentStatus.asStateFlow()
+
+    /**
+     * W18-Kette: laufende Sub-Agenten je agent_id (agent.status mit
+     * sub != null): sub.end != true = Upsert, end == true = entfernen
+     * (SIRS-Design — Slot verschwindet bei Ende). Key = sub.id (: sub.name).
+     * Räumen am selben Verbindungs-Punkt wie [agentStatus] (Parität
+     * agentWorking-Verband: ohne Verbindung lügt beides).
+     */
+    private val _agentSubs =
+        MutableStateFlow<Map<String, Map<String, AgentStatusRules.SubAgentSlot>>>(emptyMap())
+    val agentSubs: StateFlow<Map<String, Map<String, AgentStatusRules.SubAgentSlot>>> =
+        _agentSubs.asStateFlow()
+
     /** MEDIA-T1: Empfangene Agenten-Medien (vollständig reassembliert). */
     private val _chatMediaEvents = MutableStateFlow<List<ChatMediaEvent>>(emptyList())
     val chatMediaEvents: StateFlow<List<ChatMediaEvent>> = _chatMediaEvents.asStateFlow()
@@ -827,6 +852,10 @@ object RelayClient {
         _agentMeta.value = emptyMap()
         // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
         _agentModels.value = emptyMap()
+        // W18-Kette: agent.status-Hauptstatus + Sub-Slots ebenso — ohne
+        // Verbindung lügt beides (Parität agentWorking-Verband).
+        _agentStatus.value = emptyMap()
+        _agentSubs.value = emptyMap()
         // PH-FIX-CHAT-A (F6): bewusstes Trennen markiert die Agenten ebenso
         // offline (onClosed läuft hier nicht — disconnect() bumpt generation,
         // die Callbacks kehren früh zurück).
@@ -1086,6 +1115,9 @@ object RelayClient {
                 _agentMeta.value = emptyMap()
                 // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
                 _agentModels.value = emptyMap()
+                // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
+                _agentStatus.value = emptyMap()
+                _agentSubs.value = emptyMap()
                 // PH-FIX-CHAT-A (F6): die Agenten-Liste ist der letzte
                 // relay.state-Snapshot — ohne Verbindung ist JEDE „online“-
                 // Anzeige gelogen (Presence-Push ist Ein-Weg ohne Spool).
@@ -1134,6 +1166,9 @@ object RelayClient {
                 _agentMeta.value = emptyMap()
                 // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
                 _agentModels.value = emptyMap()
+                // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
+                _agentStatus.value = emptyMap()
+                _agentSubs.value = emptyMap()
                 // PH-FIX-CHAT-A (F6): wie onClosed — Snapshot „online“ ist
                 // ohne Verbindung gelogen.
                 markAgentsOffline()
@@ -1486,6 +1521,11 @@ object RelayClient {
                 // Quelle des Modell&Denken-Pickers (nur Gateway-gelieferte IDs).
                 "agent.models" -> { handleAgentModelsFrame(json); return }
                 "agent.models.enc" -> { handleAgentModelsEnc(json); return }
+                // W18-Kette: agent.status — Haupt-Arbeitsstatus + Sub-Agent-
+                // Slots (klar + enc-Spiegel; enc: Kettensync PFLICHT, Felder
+                // bleiben KLAR wie beim chat.activity.enc-Verband).
+                "agent.status" -> { handleAgentStatusFrame(json); return }
+                "agent.status.enc" -> { handleAgentStatusEnc(json); return }
                 // MEDIA-T1: chunked Media (E2E-only) + Chunk-Acks (Progress).
                 "chat.media.enc" -> { handleChatMediaEnc(json); return }
                 "chat.media.chunk_ack" -> { handleMediaChunkAck(json); return }
@@ -2382,6 +2422,55 @@ object RelayClient {
             return
         }
         handleChatActivityFrame(json)
+    }
+
+    /**
+     * W18-Kette: agent.status-Frame → [agentStatus]/[agentSubs]. Parsen
+     * (Pflicht-Felder, fail-soft) + Faltung in [AgentStatusRules]:
+     * sub == null → Haupt-Status-Update (last-write-wins), sub end != true →
+     * Sub-Upert, end == true → Sub-Entfernung. working=false ohne sub setzt
+     * den Haupt-Status ehrlich auf „fertig“.
+     */
+    private fun handleAgentStatusFrame(json: JsonObject) {
+        val parsed = AgentStatusRules.parse(json, System.currentTimeMillis()) ?: return
+        parsed.status?.let { slot ->
+            // SEC-W1 W1C-4-Muster: atomares update{} (CAS) — kein Lost-Update.
+            _agentStatus.update { AgentStatusRules.withStatus(it, parsed.agentId, slot) }
+        }
+        parsed.subUpsert?.let { sub ->
+            _agentSubs.update { AgentStatusRules.withSubUpsert(it, parsed.agentId, sub) }
+        }
+        parsed.subRemoveKey?.let { key ->
+            _agentSubs.update { AgentStatusRules.withSubRemove(it, parsed.agentId, key) }
+        }
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "agent.status: agent ${parsed.agentId.take(24)} " +
+                    (parsed.status?.let { "working=${it.working}${it.label?.let { l -> " label=$l" } ?: ""} " } ?: "") +
+                    (parsed.subUpsert?.let { "sub+${it.id.take(24)}" } ?: "") +
+                    (parsed.subRemoveKey?.let { "sub-${it.take(24)}" } ?: ""),
+            )
+        }
+    }
+
+    /**
+     * W18-Kette: agent.status.enc-Spiegel — entschlüsseln (Ketten-Sync
+     * PFLICHT, sonst Ratchet-Desync) und DIESELBE klare Frame-Wirkung wie
+     * agent.status (Klon des chat.activity.enc-Verbands: Top-Level-Felder
+     * bleiben klar, ct ist reiner Kettensync).
+     */
+    private fun handleAgentStatusEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        try {
+            peer.decryptFrame(json)
+            handleRotateHint(json, agentId, peer)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: agent.status.enc-Spiegel verworfen (Entschlüsselung fehlgeschlagen)")
+            return
+        }
+        handleAgentStatusFrame(json)
     }
 
     /** PH-3: session_fp des Agenten (für den FP-Abgleich-Button im Chat). */

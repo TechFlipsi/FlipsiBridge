@@ -347,6 +347,11 @@
     <string name="dash_last_active">Zuletzt aktiv %1$s</string>
     <string name="dash_no_activity">Noch keine Aktivität</string>
     <string name="dash_working">arbeitet … (%1$s)</string>
+    <!-- W18-Kette: Sub-Agenten-Slots (agent.status-Verband) — Titel +
+         Leer-Zustand. Slot-Labels (z. B. „Sucht im Web“) kommen vom Server
+         (Maschinenwort), KEINE Client-Spezialfälle. -->
+    <string name="dashboard_sub_agents_title">Sub-Agenten</string>
+    <string name="dashboard_sub_agents_empty">keine</string>
     <!-- W16 (Fixliste 14): Session-Quelle + Modell + Sub-Agenten am
          Agenten-Slot — fehlende Metadaten lassen je Zeile weg (keine
          Platzhalter). Plattform-Tokens (bridge/discord/cron) bleiben
