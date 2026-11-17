@@ -276,7 +276,7 @@ private fun VoiceBubbleRow(
                                 }
                             }
                         }
-                        .padding(horizontal = 14.dp, vertical = 12.dp)
+                        .padding(horizontal = 14.dp, vertical = 16.dp)
                         .semantics {
                             contentDescription = fetchBtnA11y
                         },
@@ -342,7 +342,8 @@ private fun SaveToDownloadsRow(media: ChatMediaInfo, subColor: Color) {
             .clickable(enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !saved) {
                 saved = saveToDownloads(context, media.name, media.mime, media.localPath)
             }
-            .padding(vertical = 4.dp)
+            // HIG-W19: Touch-Ziel 48 dp (war ~24 dp) — Tap-Fläche = ganze Zeile.
+            .padding(vertical = 16.dp)
             .semantics {
                 contentDescription = saveA11y
             },

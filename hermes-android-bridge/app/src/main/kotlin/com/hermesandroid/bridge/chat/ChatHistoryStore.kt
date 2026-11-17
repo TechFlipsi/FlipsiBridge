@@ -2,6 +2,7 @@ package com.hermesandroid.bridge.chat
 
 import android.content.Context
 import com.google.gson.Gson
+import com.hermesandroid.bridge.client.ChatStatusRank
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
@@ -84,6 +85,11 @@ object ChatHistoryStore {
         val mediaSize: Long? = null,
         val mediaPath: String? = null,   // lokale Datei (Verweis, kein Blob)
         val mediaId: String? = null,
+        val msgId: String? = null,  // HAKEN-FIX: Broker-msg_id des eigenen Sende-
+            // Ergebnisses (null bei Alt-Daten/Senden-Fehler). Kette Platte ↔
+            // Side-Car: der Restore bindet die msg_id wieder (Live-Frames
+            // treffen restaurierte Chips) und legt den Side-Car-Stand neben
+            // den Sendezeit-Snapshot (dort ist der HÖCHSTE bekannte Stand).
     )
 
     /** Persistiertes Verzeichnis unter filesDir (app-privat, kein Backup-Restore nötig). */
@@ -190,6 +196,95 @@ object ChatHistoryStore {
                     }
             }
         }
+    }
+
+    // ── HAKEN-FIX (17.11.2026): Status-Side-Car ──────────────────────────────
+    //
+    // Wurzel des 2-Haken-Bugs: delivered/read lebten NUR im In-Memory-Map
+    // (RelayClient._chatStatus, MAX_CHAT_STATUS = 500) — der App-Restart UND
+    // die >500-Eviction (Medien-Chunks steuern je POST eine msg_id bei!)
+    // kippten 2 grüne Haken auf 1. Dieser Side-Car hält je msg_id den
+    // HÖCHSTEN bekannten Rang-Status auf der Platte:
+    // - Schreiben: der RANG-GEWINNENDE chat.status-Frame (RelayClient.
+    //   handleChatStatusFrame), die Evicted-Einträge VOR dem Rauswurf und die
+    //   Session-Reset-Sweep-Diffs (queued/delivered → failed, Parität zur
+    //   Live-Regel: read heilt später nach). Sendezeit-Snapshots (Entry.status)
+    //   bleiben unangetastet — der Side-Car ist die ECHTE Status-Platte.
+    // - Bewusst EINE globale Datei (kein je-Agent-Zwilling): der chat.status-
+    //   Frame trägt keine agent_id (Beweis tools/android_relay.py
+    //   _set_chat_status: Frame = type/v/chat_id/msg_id/status/ts) — je-Agent
+    //   müsste die msg_id→Agent-Zuordnung RÄTEM (Fehl-Zwilling-Risiko). Die
+    //   Bindung passiert beim Restore aus dem Zwilling (Entry.msgId), daher
+    //   ist die agent-Freiheit hier korrekt.
+    // - Endung .sidecar (NICHT .jsonl): loadAll kann die Datei NIE als
+    //   Verlauf parsen.
+    // - clearAgent räumt sie nicht: Rows ohne Zwilling werden beim Restore
+    //   NIE befragt (Bindung läuft vom Eintrag aus), der Cap schneidet Ver-
+    //   lorenes mit. Kein Ghost-Chip-Risiko: ein Chip braucht IMMER eine
+    //   msg_id-Bindung aus einem bestehenden Disk-Zwilling oder Live-Send.
+    // - Absturz-sicher wie der Verlauf (Append-Only-Kehrseite: eine gerissene
+    //   Zeile kostet beim Falt-Lesen EINE Row); Trims ATOMAR (writeAtomic).
+
+    /** EINE Datei für alle Agenten — bewusst NICHT .jsonl (loadAll-Filter). */
+    internal val statusSidecarFile: (File) -> File = { root ->
+        File(root, STATUS_SIDECAR_FILE)
+    }
+
+    // 128 KiB ≈ ~2500 Rows; der Trim holt den Bestand auf SIDECAR_KEEP_LINES
+    // NEUESTE zurück (Amortisierung: nicht je Append ein Rewrite).
+    const val SIDECAR_MAX_BYTES = 128L * 1024
+    const val SIDECAR_KEEP_LINES = 1800
+
+    private const val STATUS_SIDECAR_FILE = "chat_status.sidecar"
+
+    /** Eine Zeile im Side-Car (JSON; gson-Konvention wie Entry). */
+    private data class StatusRow(val msgId: String, val status: String)
+
+    /**
+     * Einen gewonnenen Status an die Platte schreiben (SYNCHRON, winzige
+     * Append-Zeile auf dem Frame-Thread — die Vertrags-Kette „write-back VOR
+     * dem Evict" kann nicht über einen Executor-Rückstau brechen). Korrupte
+     * Status/Fremd-Werte werden verworfen (nie in die Faltung).
+     */
+    fun recordStatus(root: File, msgId: String, status: String) {
+        if (msgId.isBlank() || !ChatStatusRank.isKnown(status)) return
+        synchronized(fileLock) {
+            runCatching {
+                root.mkdirs()
+                val file = statusSidecarFile(root)
+                FileOutputStream(file, true).use {
+                    it.write(
+                        (gson.toJson(StatusRow(msgId, status)) + "\n")
+                            .toByteArray(Charsets.UTF_8),
+                    )
+                }
+                // Byte-Deckel bleibt harte Invariante (Parität zum Verlauf):
+                // Trim holt den Bestand auf SIDECAR_KEEP_LINES NEUESTE zurück.
+                if (file.length() > SIDECAR_MAX_BYTES) {
+                    val rows = readLines(file)
+                    if (rows.size > SIDECAR_KEEP_LINES) {
+                        writeAtomic(file, rows.takeLast(SIDECAR_KEEP_LINES))
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Side-Car lesen und FALTEN (ChatStatusRank.foldRows): je msg_id der
+     * HÖCHSTE bekannte Stand — korrupte Zeilen still übersprungen, Unbekannte
+     * Werte (ChatStatusRank.isKnown) nie in die Faltung. Restore-Aufrufer:
+     * ChatScreen (restoredStatusById + msg_id-Bindung).
+     */
+    fun loadStatuses(root: File): Map<String, String> = synchronized(fileLock) {
+        val rows = ArrayList<Pair<String, String>>()
+        for (line in readLines(statusSidecarFile(root))) {
+            val row = runCatching { gson.fromJson(line, StatusRow::class.java) }
+                .getOrNull()
+            if (row == null || row.msgId.isBlank()) continue
+            if (ChatStatusRank.isKnown(row.status)) rows.add(row.msgId to row.status)
+        }
+        ChatStatusRank.foldRows(rows)
     }
 
     // ── Interna ──────────────────────────────────────────────────────────────

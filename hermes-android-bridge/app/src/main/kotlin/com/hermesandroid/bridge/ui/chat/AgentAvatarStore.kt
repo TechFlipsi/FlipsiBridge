@@ -83,8 +83,8 @@ object AgentAvatarStore {
         Color(0xFF8FA9B8), // grau-blau
     )
 
-    /** Initial-Farbton (heller Text auf der Fallback-Fläche). */
-    val INITIAL_TEXT = Color(0xFFF5F1EA)
+    /** Initial auf der Fallback-Fläche (Void — 4,89–7,93:1 auf allen 8 Palett-Farben). */
+    val INITIAL_TEXT = Color(0xFF0E1013)
 
     /**
      * Deterministische Fallback-Farbe: SHA-256(agentId) → Palette-Index

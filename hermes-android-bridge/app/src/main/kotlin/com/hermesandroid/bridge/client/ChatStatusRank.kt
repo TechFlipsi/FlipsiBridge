@@ -59,4 +59,91 @@ object ChatStatusRank {
         }
         return if (changed) swept else statuses
     }
+
+    // ── HAKEN-FIX (17.11.2026): Monotonie + Persistenz-Regeln ────────────────
+    //
+    // Wurzel des 2-Haken-Bugs: delivered/read lebten NUR in der In-Memory-Map
+    // (RelayClient._chatStatus, MAX_CHAT_STATUS = 500, Insertion-Order-Eviction)
+    // — der Disk-Store trug nur den Sendezeit-Snapshot. Folgen: (a) >500
+    // msg_ids (Medien-Chunks!) evicten laufende Einträge → 2 grüne Haken kippen
+    // auf 1; (b) App-Neustart → alles fällt auf den Snapshot zurück. Diese
+    // Regeln geben der Fusion/Eviction/Side-Car-Faltordnung einen MONOTONEN
+    // Rang: ein fehlender/evicteter SICHTIGER (Live-)Eintrag drückt den Chip
+    // NIE unter den höchsten bekannten Stand.
+
+    /** true = Status aus dem bekannten Set (Side-Car-Filter: Korrupte Zeilen
+     *  mit Fremd-Wert kommen NIE in die Restore-Faltung). */
+    fun isKnown(status: String): Boolean = status in KNOWN
+
+    private val KNOWN = setOf("queued", "delivered", "read", "failed")
+
+    /**
+     * Eviction-Priorität (niedrigster Rang fliegt ZUERST raus): flüchtige
+     * Zwischenstände (queued → delivered) gehen vor den terminalen Ständen —
+     * failed (Sweep-Honesty, HERZ-Befund 8) und read (der Endstand, den der
+     * Side-Car zusätzlich sicherstellt) werden so lange wie möglich gehalten.
+     * Insertion-Order bleibt der Tie-Break (Parität zum alten Verhalten).
+     */
+    fun ejectRank(status: String): Int = when (status) {
+        "queued" -> 0
+        "delivered" -> 1
+        "failed" -> 2
+        else -> 3  // read (und defensiv Unbekannte — evictbar, aber zuletzt)
+    }
+
+    /**
+     * Eviction-Kandidaten, RANG-PRIORISIERT (niedrigster [ejectRank] zuerst,
+     * stabiler Insertion-Order-Tie-Break). RelayClient.handleChatStatusFrame
+     * holt bei Cap-Overflow die Kopf-Kandidaten, schreibt sie VOR dem Rauswurf
+     * in den Side-Car (Write-Back) und entfernt sie erst dann — 'read' wird
+     * praktisch nie ungepersisted evictet.
+     */
+    fun evictionVictims(statuses: Map<String, String>): List<String> =
+        statuses.entries
+            .sortedBy { ejectRank(it.value) }  // stable: Insertion-Order-Tie-Break
+            .map { it.key }
+
+    /**
+     * PAARWEISE Monotonie-Fusion (Symmetrisch!): nimmt den HÖHEREN der beiden
+     * bekannten Stände — mit der shouldApply-Spiegelung:
+     * - 'failed' (Session-Reset-Sweep) blockt queued/delivered (Herz-Befund 8),
+     *   verliert aber gegen ein reales 'read' (Selbstheilung, Parität).
+     * - NULL beiträgt nie (fehlende/evictete Quelle kann NICHT mehr senken
+     *   als den Rest der Quellen — Chip-Monotonie).
+     * - Unbekannte Status gewinnen NIE (rank -1, Parität zu shouldApply).
+     */
+    fun fuse(a: String?, b: String?): String? = when {
+        a == null -> b
+        b == null -> a
+        a == "failed" -> if (b == "read") "read" else "failed"
+        b == "failed" -> if (a == "read") "read" else "failed"
+        shouldApply(a, b) -> b
+        else -> a
+    }
+
+    /**
+     * N-äre Fusion der Chip-Quellen (statusOfMessage): chatStatus[msg_id]
+     * (Live, evictbar) ⊔ restoredStatusById (Platte: Side-Car + Sendezeit-
+     * Snapshot als Höchststand) ⊔ persistenter High-Water je local_id.
+     * Monotonie: das Maximum über die NICHT-Null-Quellen — eine Quelle, die
+     * verspringt (Eviction in der Live-Map), senkt den Chip nicht.
+     */
+    fun highestOf(sources: List<String?>): String? =
+        sources.fold(null as String?) { acc, status -> fuse(acc, status) }
+
+    /**
+     * Side-Car-Faltordnung: chronologische (msg_id, status)-Zeilen → je
+     * msg_id der HÖCHSTE bekannte Stand (Paarweise [fuse]). Ein späteres
+     * 'queued' nach 'read' (Session/Spool-Replay nach Neustart) senkt den
+     * Faltstand NICHT — dieselbe Monotonie wie shouldApply live. Duplikat-
+     * Zeilen (CAS-Retries) sind fold-idempotent.
+     */
+    fun foldRows(rows: List<Pair<String, String>>): Map<String, String> {
+        val folded = LinkedHashMap<String, String>()
+        for ((msgId, status) in rows) {
+            if (msgId.isBlank()) continue
+            folded[msgId] = fuse(folded[msgId], status) ?: continue
+        }
+        return folded
+    }
 }

@@ -29,8 +29,11 @@ import com.hermesandroid.bridge.i18n.AppLanguage
  * ZUGEKLAPPT, Sektions-Abstand 16 dp / Zeilen-Abstand 8 dp (SettingsCard),
  * Touch-Ziele ≥ 48 dp.
  *
- * Karten: Darstellung (P12 Color-Customizer), Berechtigungen (P4),
- * Standard-Assistent (P10). Der [legacyGroups]-Slot nimmt
+ * W19 (Apple-Audit): die Karte „Darstellung“ (P12 Color-Customizer) ist
+ * ENTFERNT — die 4 Regler wirkten NUR in der eigenen Preview (kein Screen
+ * konsumierte das ThemeEngine-Schema, App-Root blieb statisch
+ * FlipsiDarkScheme). Toter Regler = SIRS VERBOT (KEIN-GERAFFEL). Übrig:
+ * Berechtigungen (P4), Standard-Assistent (P10). Der [legacyGroups]-Slot nimmt
  * die BESTEHENDEN Gruppen (Server/App/Agenten/App-Sperre/Verschlüsselung/
  * Sprache) auf — so bleibt beim Umbau nichts auf der Strecke.
  *
@@ -54,7 +57,7 @@ fun SettingsHome(
     // P2c: Sektionen starten ZUGEKLAPPT; jeder Zustand einzeln (überlebt
     // Route-Wechsel + Prozess-Restore). W16: „legal“ entfällt (P20+) — der
     // Inhalt ist im About-Sheet.
-    var appearanceOpen by rememberSaveable { mutableStateOf(false) }
+    // W19: „Darstellung“-Zustand entfällt mit der entfernten Karte.
     var permissionsOpen by rememberSaveable { mutableStateOf(false) }
     var assistantOpen by rememberSaveable { mutableStateOf(false) }
 
@@ -80,12 +83,6 @@ fun SettingsHome(
         // SettingsHead-Zeile davor (P27 — das ℹ️ lebt dauerhaft an der TopBar).
         item(key = "legacyGroups") {
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) { legacyGroups() }
-        }
-        item(key = "appearance") {
-            AppearanceSettingsCard(
-                expanded = appearanceOpen,
-                onExpandedChange = { appearanceOpen = it },
-            )
         }
         item(key = "permissions") {
             PermissionsSettingsCard(

@@ -493,9 +493,11 @@ internal fun VoicePlayCircle(
     val glyphColor = FlipsiColors.OnEmber
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(48.dp)
             .clip(CircleShape)
             .background(FlipsiColors.Ember)
+            // HIG-W19: Touch-Ziel 48 dp; clip VOR clickable = Tap nur am Kreis,
+            // korrekte Reihenfolge (kein rechteckiger Überhang).
             .then(if (enabled) Modifier.clickable(onClick = onToggle) else Modifier)
             .semantics {
                 contentDescription = when {
@@ -571,7 +573,9 @@ private fun VoiceBubbleCoreRow(
 ) {
     val contentColor = if (fromAgent) FlipsiColors.TextPrimary else Color(WAVE_OWN_TEXT)
     val playedColor = if (fromAgent) FlipsiColors.Ember else contentColor
-    val restColor = if (fromAgent) Color(0xFF363D47) else contentColor.copy(alpha = 0.38f)
+    // HIG-W19: Rest-Raster = LineStrong (3,09:1 auf Panel, Grafik) — das alte
+    // 0xFF363D47 lag bei 1,54:1 (Raster unsichtbar).
+    val restColor = if (fromAgent) FlipsiColors.LineStrong else contentColor.copy(alpha = 0.38f)
     Row(verticalAlignment = Alignment.CenterVertically) {
         avatar?.let {
             it()

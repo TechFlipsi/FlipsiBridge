@@ -47,7 +47,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -78,6 +77,7 @@ import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.ChatStatusRank
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.media.VoiceMemoRecorder
@@ -99,8 +99,8 @@ import java.util.Locale
  * PH2-MERGE: REAL-Daten aus dem Relay — Agenten-Liste aus dem relay.state-
  * Hallo-Frame (RelayClient.agents), eingehende Agenten-Antworten aus den
  * chat.event-Frames (RelayClient.chatEvents), Senden via POST /chat
- * (RelayClient.sendChat). Liefert das Relay keine Agenten (leere Liste),
- * bleibt der Demo-Fallback mit den Beispiel-Einträgen (siehe sampleAgents).
+ * (RelayClient.sendChat). Liefert das Relay keine Agenten, zeigt die Liste
+ * den ehrlichen Leerzustand (HIG-W19: kein Demo-Fallback mehr).
  */
 @Composable
 fun ChatScreen(
@@ -139,7 +139,10 @@ fun ChatScreen(
     val context = LocalContext.current
     val mediaScope = rememberCoroutineScope()
 
-    val demoAgents = remember { sampleAgents() }
+    // HIG-W19 (Demo-Befund): Demo-Fallback ENTFERNT — erfundene „Agent 1-3“-
+    // Einträge und Beispiel-Verläufe lügen über den Kopplungsstand. Ohne
+    // Relay-Agenten zeigt die Liste den ehrlichen Leerzustand (siehe
+    // AgentListBody), der Verlauf startet leer.
     val agents = relayAgents.map { entry ->
         ChatAgent(
             id = entry.agentId.hashCode(),
@@ -147,7 +150,7 @@ fun ChatScreen(
             online = entry.online,
             agentId = entry.agentId,
         )
-    }.ifEmpty { demoAgents }
+    }
 
     // PH2-T10: Zuordnung eigene lokale Nachricht → Broker-msg_id (die App
     // bekommt sie aus der POST-/chat-Antwort).
@@ -172,8 +175,9 @@ fun ChatScreen(
     var sendErrors by remember { mutableStateOf(mapOf<String, String>()) }
 
     var selectedAgentId by rememberSaveable { mutableStateOf(-1) }
-    // W15: Demo-Verlauf mit Ressource-Texten (DE/EN) — context = Gate-Wrap.
-    var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(sampleMessages(context)) }
+    // W15/W19: Verlauf startet leer — echte Nachrichten kommen aus dem Relay
+    // (chatEvents/chatMedia-Einpflege unten). Kein Beispiel-Verlauf mehr.
+    var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(listOf<ChatMessage>()) }
     var inputText by rememberSaveable { mutableStateOf("") }
 
     // PH-FIX-CHAT-A (F1/J1): Bereits in `messages` übernommene chatEvents als
@@ -228,15 +232,51 @@ fun ChatScreen(
     var restoredStatusById by rememberSaveable(stateSaver = RestoredStatusSaver) {
         mutableStateOf<Map<Long, String>>(emptyMap())
     }
+    // HAKEN-FIX (2): persistenter High-Water je local_id (saveable, Rotation) —
+    // der HÖCHSTE je beobachtete Stand jeder msg_id-Bindung. Füllt die
+    // Lücke, die die Live-Map-Eviction (>500 msg_ids, z. B. Medien-Chunks)
+    // reißt: chatStatus[msg_id] fehlt danach (null), der Chip bleibt trotzdem
+    // auf dem höchsten Stand (Fusion unten, Nie-unter-Höchststand).
+    var statusHighWaterByLocalId by rememberSaveable(stateSaver = RestoredStatusSaver) {
+        mutableStateOf<Map<Long, String>>(emptyMap())
+    }
+    // HAKEN-FIX (2): High-Water-Sammler — je chatStatus-Änderung (und je neuer
+    // msg_id-Bindung, egal in welcher Reihenfolge) werden ALLE Bindungen
+    // nachgezogen (nicht nur gerenderte: die Conversation kann zu sein, wenn
+    // der Read-Frame eintrifft). Fuse = rang-monotone Anhebung, failed
+    // (Sweep) blockt wie live, read heilt.
+    LaunchedEffect(chatStatus, msgIdByLocalId) {
+        if (msgIdByLocalId.isEmpty()) return@LaunchedEffect
+        var raised: Map<Long, String>? = null
+        for ((localId, msgId) in msgIdByLocalId) {
+            val live = chatStatus[msgId] ?: continue
+            val current = statusHighWaterByLocalId[localId]
+            val fused = ChatStatusRank.fuse(current, live)
+            if (fused != null && fused != current) {
+                (raised ?: HashMap<Long, String>()).also { it[localId] = fused }
+                    .let { raised = it }
+            }
+        }
+        raised?.let { statusHighWaterByLocalId = statusHighWaterByLocalId + it }
+    }
     LaunchedEffect(historyRestored) {
         if (historyRestored) return@LaunchedEffect
-        val entries = withContext(Dispatchers.IO) {
-            ChatHistoryStore.loadAll(ChatHistoryStore.root(historyContext.applicationContext))
+        // HAKEN-FIX (1): der Side-Car (Platte = höchster bekannter Chip-Stand
+        // je msg_id) wandert in denselben IO-Sprung wie der Verlaus-Load.
+        val (entries, statusByMsgId) = withContext(Dispatchers.IO) {
+            val root = ChatHistoryStore.root(historyContext.applicationContext)
+            ChatHistoryStore.loadAll(root) to ChatHistoryStore.loadStatuses(root)
         }
         if (entries.isNotEmpty()) {
             var nextId = RESTORED_ID_BASE
             val restored = ArrayList<ChatMessage>(entries.size)
             val statusById = HashMap<Long, String>()
+            // HAKEN-FIX (1): msg_id-Bindungen der Disk-Zwillinge — der Restore
+            // baut die Platte↔Broker-Kette wieder auf: restaurierte Chips
+            // hören ab JETZT auf dieselben chat.status-Frames wie
+            // Live-Bubbles (msgIdByLocalId-Verband; Spool-Re-Flush nach
+            // Reconnect trifft sie live).
+            val restoredMsgIdByLocalId = HashMap<Long, String>()
             // PH-FIX-CHAT-A (F1, Restore-Race): Dedup-Schlüssel des Disk-
             // Standes — Live-Einträge mit gleichem Schlüssel werden beim
             // Merge unten gedroppt (ihr persistiertes Zwilling liegt schon
@@ -301,7 +341,18 @@ fun ChatScreen(
                 restoredKeys.add(
                     ChatTimelineMerge.dedupeKey(entry.agentId.hashCode(), entry.fromAgent, entry.text, entry.time),
                 )
-                entry.status?.let { statusById[id] = it }
+                // HAKEN-FIX (1): Chip des Zwilling-Senders ⊔ Side-Car-Höchst-
+                // stand (Platte trägt den höchsten bekannten Stand — der
+                // reine Sendezeit-Snapshot (null = 1 Haken) allein war der
+                // Neustart-Kipp). failed-Schranke des Side-Cars bleibt,
+                // read heilt (Parität: ChatStatusRank).
+                val entryMsgId = entry.msgId?.takeIf { it.isNotBlank() }
+                entryMsgId?.let { restoredMsgIdByLocalId[id] = it }
+                val diskChip = ChatStatusRank.fuse(
+                    entry.status,
+                    entryMsgId?.let { msgId -> statusByMsgId[msgId] },
+                )
+                diskChip?.let { statusById[id] = it }
             }
             // PH-FIX-CHAT-A (F1, Restore-Race): Sendet Sir, bevor der IO-Load
             // fertig ist, flog die Nachricht vorher aus der Anzeige (das
@@ -329,6 +380,12 @@ fun ChatScreen(
                 restored
             }
             restoredStatusById = statusById
+            // HAKEN-FIX (1): die restaurierten Bindungen schalten die Chip-
+            // Live-Kette wieder an (id-Raum getrennt: live < RESTORED_ID_BASE
+            // ≤ restored — keine Kollision im msgIdByLocalId-Verband).
+            if (restoredMsgIdByLocalId.isNotEmpty()) {
+                msgIdByLocalId = msgIdByLocalId + restoredMsgIdByLocalId
+            }
         }
         historyRestored = true
     }
@@ -612,8 +669,13 @@ fun ChatScreen(
             ) { ok, error, mediaId, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
+                    // HIG-W19 (Writing): Ressource + %-Parameter wie
+                    // chat_send_failed — kein „Media:"-Präfix, kein Literal.
                     sendErrors = sendErrors + (
-                        agent.agentId to "Media: ${error ?: "unbekannter Fehler"}"
+                        agent.agentId to context.getString(
+                            R.string.chat_upload_failed_desc,
+                            error ?: context.getString(R.string.chat_send_failed_unknown),
+                        )
                         )
                 } else {
                     if (mediaId != null) {
@@ -708,7 +770,7 @@ fun ChatScreen(
         if (granted) {
             runCatching { voiceRecorder.start() }.onSuccess { voiceRecording = true }
         } else {
-            sendErrors = sendErrors + (agent.agentId to "Media: Mikrofon-Berechtigung fehlt")
+            sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_permission_missing))
         }
     }
 
@@ -722,7 +784,7 @@ fun ChatScreen(
     fun submitVoiceFile(agent: ChatAgent, file: File) {
         val bytes = runCatching { file.readBytes() }.getOrNull()
         if (bytes == null || bytes.isEmpty()) {
-            sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht unlesbar")
+            sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_generic_error))
             return
         }
         submitMedia(agent, "voice", file.name, "audio/mp4", bytes)
@@ -735,7 +797,7 @@ fun ChatScreen(
             val file = voiceRecorder.stop()
             voiceRecording = false
             if (file == null) {
-                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
+                sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_too_short))
                 return
             }
             submitVoiceFile(agent, file)
@@ -747,7 +809,7 @@ fun ChatScreen(
             voiceHoldCancelling = false
             voiceRecording = false
             if (file == null) {
-                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
+                sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_too_short))
                 return
             }
             submitVoiceFile(agent, file)
@@ -759,7 +821,7 @@ fun ChatScreen(
                 runCatching { voiceRecorder.start() }
                     .onSuccess { voiceRecording = true }
                     .onFailure {
-                        sendErrors = sendErrors + (agent.agentId to "Media: Aufnahme fehlgeschlagen")
+                        sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_record_failed))
                     }
             } else {
                 micPermissionLauncher.launch(android.Manifest.permission.RECORD_AUDIO)
@@ -799,7 +861,7 @@ fun ChatScreen(
         if (!started) {
             // B2-Vertrag: START_DENIED (Recorder-Fail) — Release-Aktion entfällt;
             // der Click-Fallback darf B1s Toggle einen Neuversuch geben.
-            sendErrors = sendErrors + (agent.agentId to "Media: Aufnahme fehlgeschlagen")
+            sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_record_failed))
             return false
         }
         voiceRecording = true
@@ -822,12 +884,12 @@ fun ChatScreen(
         if (agent == null) return
         when (outcome) {
             VoiceHoldOutcome.SEND -> if (file == null) {
-                sendErrors = sendErrors + (agent.agentId to "Media: Sprachnachricht zu kurz")
+                sendErrors = sendErrors + (agent.agentId to context.getString(R.string.chat_media_too_short))
             } else {
                 submitVoiceFile(agent, file)
             }
             VoiceHoldOutcome.TOO_SHORT -> sendErrors = sendErrors +
-                (agent.agentId to "Media: Sprachnachricht zu kurz")
+                (agent.agentId to context.getString(R.string.chat_media_too_short))
             // SWIPE_CANCELLED / START_DENIED: still verwerfen (kein Send-Fehler).
             else -> {}
         }
@@ -978,12 +1040,28 @@ fun ChatScreen(
                 if (message.id in failedLocalIds) {
                     "failed"
                 } else {
-                    // PH2-T10: eigene Nachricht → msg_id → Broker-Status.
-                    // SIRS-02: restaurierte Nachrichten haben KEINE msg_id-
-                    // Zuordnung mehr (Broker-Map ist pro Session) → der
-                    // persistierte Status-Snapshot ist der ehrliche Fallback.
-                    msgIdByLocalId[message.id]?.let { msgId -> chatStatus[msgId] }
-                        ?: restoredStatusById[message.id]
+                    // HAKEN-FIX (2): MONOTONE CHIP-FUSION statt Fallback-Kette.
+                    // Vorher: msgIdByLocalId → chatStatus[msg_id] ?: restored...
+                    // — eine EVICTED Live-Zuordnung (>500 msg_ids, Medien-Chunks)
+                    // drückt den Chip auf 1 Haken, obwohl delivered/read schon
+                    // bekannt war; nach dem Neustart lag alles nur auf dem
+                    // Sendezeit-Snapshot. Jetzt: Maximum über ALLE Quellen
+                    // (ChatStatusRank.highestOf = Nie-unter-Höchststand):
+                    // - Live-Map (Broker, evictbar) — nach Eviction beitragslos,
+                    //   nie ein Downgrade-Anker;
+                    // - restoredStatusById (Platte: Side-Car-Höchststand ⊔
+                    //   Sendezeit-Snapshot, s. Restore-Verband);
+                    // - persistenter High-Water je local_id (Rotation), gefüllt
+                    //   vom Sammler-Effekt bei JEDEM Status-Frame.
+                    // 'failed' bleibt Schranke (Sweep-Honesty, HERZ-Befund 8),
+                    // read heilt — dieselbe Monotonie wie shouldApply.
+                    ChatStatusRank.highestOf(
+                        listOf(
+                            msgIdByLocalId[message.id]?.let { msgId -> chatStatus[msgId] },
+                            restoredStatusById[message.id],
+                            statusHighWaterByLocalId[message.id],
+                        ),
+                    )
                 }
             },
             elapsedMsByMessageId = { messageId ->
@@ -1169,6 +1247,27 @@ private fun AgentListBody(
         // 16-dp-Seiten-Rhythmik der Kapsel/Zeilen.
         contentPadding = PaddingValues(top = 12.dp, bottom = 16.dp),
     ) {
+        // HIG-W19 (Demo-Befund): ehrlicher Leerzustand ohne Kopplung — statt
+        // erfundener „Agent 1-3“-Einträge der Klartext-Stand plus der Pfad
+        // zu Einstellungen › Server (Demo-Daten sind entfernt).
+        if (agents.isEmpty()) {
+            item {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        stringResource(R.string.chat_empty_no_agents),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FlipsiColors.TextPrimary,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        stringResource(R.string.chat_empty_no_agents_hint),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
+            }
+        }
         // WELLE-13 P11b (Sirs Wunschbild): Such-Kapsel + Filter-Chips. Nur
         // ehrliche Filter: Alle / Online / Offline (Ungelesen-Leseschalter
         // existiert datenseitig nicht → der Chip LÜGT, also fehlt er).
@@ -1184,10 +1283,15 @@ private fun AgentListBody(
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        "🔍",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = FlipsiColors.TextSecondary,
+                    // HIG-W19: Magnifier als ic_search-Vector (Icons.Filled.Search) —
+                    // das 🔍-Emoji war schrift-/Versionsabhängig und kein echter
+                    // Ikonenschnitt (Such-Doppel-Befund, gleicher Stil wie
+                    // ConversationSearchBar).
+                    Icon(
+                        Icons.Filled.Search,
+                        contentDescription = null,
+                        tint = FlipsiColors.TextSecondary,
+                        modifier = Modifier.size(20.dp),
                     )
                     Spacer(Modifier.width(8.dp))
                     BasicTextField(
@@ -1679,7 +1783,13 @@ private fun ConversationBody(
                         if (conversation.isEmpty()) {
                             item {
                                 Text(
-                                    "Noch keine Nachrichten — schreibe die erste Nachricht an ${agent.name}.",
+                                    // HIG-W19 (Writing): Leerzustand als
+                                    // Ressource (DE/EN) statt deutschem
+                                    // Literal — aufgelöst agentenweise.
+                                    stringResource(
+                                        R.string.chat_empty_first_message,
+                                        agent.name,
+                                    ),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = FlipsiColors.TextSecondary,
                                     modifier = Modifier.padding(16.dp),
@@ -2105,15 +2215,22 @@ private fun ConversationHeader(
         // deterministische Farbe + Initial (AgentAvatarStore, derselbe Store
         // wie Bubble/Agenten-Tab). Tap öffnet „Agent ansehen“ (Header-Tap ↔
         // Sheet, WA-Muster); A11y-Beschilderung über contentDescription.
-        AgentAvatar(
-            agentId = agent.agentId,
-            name = agent.name,
-            diameter = 38.dp,
-            description = stringResource(R.string.agent_avatar_a11y),
+        // HIG-W19: Tap-Ziel 48 dp — 38-dp-Avatar sitzt zentriert in einer
+        // 48-dp-Wrapper-Box (der Tap erfasst den Ring, nicht nur das Bild).
+        Box(
             modifier = Modifier
+                .size(48.dp)
                 .clip(RoundedCornerShape(50))
                 .clickable(onClick = onMenuAgent),
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            AgentAvatar(
+                agentId = agent.agentId,
+                name = agent.name,
+                diameter = 38.dp,
+                description = stringResource(R.string.agent_avatar_a11y),
+            )
+        }
         Spacer(Modifier.width(10.dp))
         // W16-P32-Fix (Drill 05:50): der ungewichtete Titel-Text fraß die
         // Zeilenbreite — bei schmalen Flächen bekam das ⋮ (letztes Row-Kind)
@@ -2349,49 +2466,9 @@ private fun FpCheckNotice(result: RelayClient.FpCheckResult?, onDismiss: () -> U
     }
 }
 
-// ── Beispiel-Daten — Demo-Fallback für eine leere Relay-Agenten-Liste ─────
-// Bewusst generische Demo-Einträge („Agent 1“ …), KEINE privaten Namen.
-// PH2-MERGE: echter Fallback, wenn relay.state keine Agenten liefert.
-
-/**
- * Demo-Fallback — die echte Liste kommt vom Relay (relay.state-Hallo-Frame →
- * RelayClient.agents). Bleibt bewusst stehen: leere Agenten-Liste darf die
- * UI nie crashen, sondern zeigt diese generischen Einträge.
- */
-private fun sampleAgents() = listOf(
-    ChatAgent(id = 1, name = "Agent 1", online = true),
-    ChatAgent(id = 2, name = "Agent 2", online = false),
-    ChatAgent(id = 3, name = "Agent 3", online = true),
-)
-
-/**
- * Beispiel-Verlauf — echte Verläufe kommen mit PH-2-Main.
- * W15: Texte via Ressourcen (DE/EN) — der context ist der Gate-Wrap der
- * Komposition, getString löst also in der gewählten App-Sprache auf.
- */
-private fun sampleMessages(context: android.content.Context) = listOf(
-    ChatMessage(
-        id = 1L,
-        agentId = 1,
-        fromAgent = true,
-        text = context.getString(R.string.chat_demo_reply),
-        time = "14:02",
-    ),
-    ChatMessage(
-        id = 2L,
-        agentId = 1,
-        fromAgent = false,
-        text = context.getString(R.string.chat_demo_input),
-        time = "14:03",
-    ),
-    ChatMessage(
-        id = 3L,
-        agentId = 3,
-        fromAgent = true,
-        text = context.getString(R.string.chat_demo_greeting),
-        time = "09:41",
-    ),
-)
+// ── Medienart → String-Ressource ─────────────────────────────────────────────
+// HIG-W19 (Demo-Befund): sampleAgents()/sampleMessages() ENTFERNT — keine
+// erfundenen Chats mehr; eine leere Liste zeigt den ehrlichen Leerzustand.
 
 /**
  * W15 (I18n): Media-Art → String-Ressource (DE/EN) für Bubble-Platzhalter
@@ -2518,20 +2595,48 @@ private fun ConversationSearchBar(
             .padding(start = 12.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
-            singleLine = true,
+        // HIG-W19 (Such-Doppel): derselbe Kapsel-Schnitt wie die Such-Kapsel
+        // der Agenten-Liste (PanelElev, 24-dp-Radius, 16/10-Padding,
+        // ic_search-Vector) statt OutlinedTextField-Mischstil.
+        Row(
             modifier = Modifier
                 .weight(1f)
-                .focusRequester(focusRequester),
-            placeholder = {
-                Text(
-                    stringResource(R.string.chat_search_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            },
-        )
+                .clip(RoundedCornerShape(24.dp))
+                .background(FlipsiColors.PanelElev)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                tint = FlipsiColors.TextSecondary,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            BasicTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                singleLine = true,
+                textStyle = androidx.compose.ui.text.TextStyle(
+                    color = FlipsiColors.TextPrimary,
+                    fontSize = 15.sp,
+                ),
+                cursorBrush = SolidColor(FlipsiColors.Ember),
+                modifier = Modifier
+                    .weight(1f)
+                    .focusRequester(focusRequester),
+                decorationBox = { inner ->
+                    if (query.isEmpty()) {
+                        Text(
+                            stringResource(R.string.chat_search_hint),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = FlipsiColors.TextSecondary,
+                        )
+                    }
+                    inner()
+                },
+            )
+        }
         IconButton(onClick = onClose) {
             Icon(
                 Icons.Filled.Close,
@@ -2600,7 +2705,10 @@ private fun ConversationSearchResults(
                             ChatQuoteRules.quoteLabel(match.fromAgent, agentName),
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = if (match.fromAgent) FlipsiColors.Ember else FlipsiColors.LineStrong,
+                            // HIG-W19 (Apple-Audit): Treffer-Label als TEXT
+                            // braucht 4,5:1 — TextSecondary (6,63:1 auf Panel);
+                            // LineStrong (3,09:1) allein für Grafik-Kanten.
+                            color = FlipsiColors.TextSecondary,
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(

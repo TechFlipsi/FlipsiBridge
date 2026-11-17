@@ -1807,6 +1807,15 @@ object RelayClient {
      * Ungültige Frames (msg_id/status fehlt, unbekannter Status) werden still
      * verworfen — die Verbindung bleibt unberührt. Map bleibt begrenzt
      * (Status ist transient), älteste Keys fliegen zuerst raus.
+     *
+     * HAKEN-FIX (1)+(2): JEDER RANG-GEWINNENDE Stand wird zusätzlich in den
+     * Side-Car geschrieben (ChatHistoryStore.recordStatus — SYNCHRON, winzige
+     * Append-Zeile: Write-Back kann nie hinter dem Rauswurf hinken). Die
+     * Eviction ist rang-priorisiert (ChatStatusRank.evictionVictims: queued
+     * vor delivered vor failed vor read, Insertion-Order-Tie-Break) und
+     * schreibt jeden Rausschmeißer VOR dem Entfernen auf die Platte — die
+     * >500-Eviction (Medien-Chunks!) drückt einen Chip dadurch NIE mehr auf
+     * 1 Haken zurück, und 'read' wird praktisch nie ungepersisted evictet.
      */
     private fun handleChatStatusFrame(json: JsonObject) {
         val msgId = runCatching {
@@ -1824,6 +1833,7 @@ object RelayClient {
         // SEC-W1 W1C-4: Rang-Prüfung + Schreiben atomar in EINEM CAS-Schritt
         // (update{}) — der externe Check war ein TOCTOU-Fenster, parallele
         // Frame-Coroutinen konnten den Chip-Status still überschreiben.
+        val root = appContext?.let { ChatHistoryStore.root(it) }
         _chatStatus.update { cur ->
             if (!ChatStatusRank.shouldApply(cur[msgId], status)) {
                 if (BuildConfig.DEBUG) {
@@ -1834,11 +1844,30 @@ object RelayClient {
                 if (BuildConfig.DEBUG) Log.d(TAG, "chat.status: $status für msg ${msgId.take(12)}")
                 val next = LinkedHashMap(cur)
                 next[msgId] = status
+                // HAKEN-FIX (2): rang-priorisierte Eviction mit Write-Back VOR
+                // jeder Entfernung — der Side-Car hält jeden Stand, bevor die
+                // Live-Map ihn verliert (>500-Eviction kippt Chips nie mehr);
+                // ohne appContext (Fehl-Kontext) bleibt der Alt-Fallback
+                // (RAM-Evict ohne Platte). CAS-Retries = Duplikat-Zeilen im
+                // Side-Car — fold-idempotent, schadlos.
                 while (next.size > MAX_CHAT_STATUS) {
-                    next.remove(next.keys.first())
+                    val victimId = ChatStatusRank.evictionVictims(next).firstOrNull()
+                        ?: break
+                    if (root != null) {
+                        runCatching {
+                            ChatHistoryStore.recordStatus(root, victimId, next.getValue(victimId))
+                        }
+                    }
+                    next.remove(victimId)
                 }
                 next
             }
+        }
+        // Der RANG-GEWINNENDE Frame selbst → Side-Car (Platte = höchster
+        // bekannter Stand; Neustart stellt delivered/read daraus wieder her).
+        // Duplikat- zur Eviction-Zeile ist fold-idempotent.
+        if (root != null) {
+            runCatching { ChatHistoryStore.recordStatus(root, msgId, status) }
         }
     }
 
@@ -2383,7 +2412,24 @@ object RelayClient {
         // noch ungelesenen Nachrichten KEIN Read mehr liefern — Chips von
         // 'Zugestellt'/'Wartet' auf '✕ Fehlgeschlagen' fegen (stiller
         // Verwurf statt Endlos-Zustellt-Lüge).
-        _chatStatus.update { ChatStatusRank.sweepUnreadToFailed(it) }
+        // HAKEN-FIX (1): die Sweep-Diffs wandern auch in den Side-Car —
+        // nach dem Neustart bleibt '✕ Fehlgeschlagen' ehrlich (Platte =
+        // höchster bekannter Stand, inkl. der Sweep-Schranke); ein echtes
+        // 'read' heilt später live UND auf der Platte (Parität shouldApply).
+        _chatStatus.update { cur ->
+            val swept = ChatStatusRank.sweepUnreadToFailed(cur)
+            if (swept !== cur) {
+                val root = appContext?.let { ChatHistoryStore.root(it) }
+                if (root != null) {
+                    for ((mid, status) in swept) {
+                        if (status != cur[mid]) {
+                            runCatching { ChatHistoryStore.recordStatus(root, mid, status) }
+                        }
+                    }
+                }
+            }
+            swept
+        }
         publishE2eSessions()
         if (decision.isSecurityEvent) {
             // FIX-WELLE-2 B8: Grund ehrlich benennen — Takeover ist keine
@@ -2677,6 +2723,10 @@ object RelayClient {
         mediaSize: Long? = null,
         mediaPath: String? = null,
         mediaId: String? = null,
+        // HAKEN-FIX (1): Broker-msg_id des eigenen Sende-Ergebnisses — die
+        // Platte bindet den Disk-Zwilling an die msg_id-Kette des Side-Cars
+        // (null = Fehler-Pfad/Alt-Relay/Agenten-Bubble: kein Chip-Broker).
+        msgId: String? = null,
     ) {
         val root = appContext?.let { ChatHistoryStore.root(it) } ?: return
         ChatHistoryStore.appendAsync(
@@ -2695,6 +2745,7 @@ object RelayClient {
                 mediaSize = mediaSize,
                 mediaPath = mediaPath,
                 mediaId = mediaId,
+                msgId = msgId,
             ),
         )
     }
@@ -2866,6 +2917,10 @@ object RelayClient {
                                 mediaKind = kind, mediaName = name, mediaMime = mime,
                                 mediaSize = bytes.size.toLong(), mediaPath = localPath,
                                 mediaId = mediaId,
+                                // HAKEN-FIX (1): die Completing-Chunk-msg_id
+                                // (B3-Verband) in den Disk-Zwilling — der
+                                // Neustart bindet den Media-Chip wieder.
+                                msgId = result.finalMsgId,
                             )
                             // W4-01c (B3-Verband): Broker-msg_id des Final-Chunks
                             // an die UI (ChatScreen-Bindung → msgIdByLocalId →
@@ -3262,9 +3317,13 @@ object RelayClient {
                 // SIRS-02: eigener Versand persistieren (status-Snapshot:
                 // null = gesendet, failed = endgültig gescheitert).
                 // W18-1a: persist=false (verdeckter FP-Versand) — kein Eintrag.
+                // HAKEN-FIX (1): die msg_id reist in den Disk-Zwilling —
+                // Platte ↔ Side-Car-Kette (Neustart bindet restaurierte
+                // Chips wieder an die msg_id).
                 if (persist) persistChatBubble(agentId, historyChatId, fromAgent = false, text,
                     sentAtMs,
-                    if (code in 200..299) null else "failed")
+                    if (code in 200..299) null else "failed",
+                    msgId = msgId)
                 if (code in 200..299) {
                     deliverChatResult(onResult, true, null, msgId)
                 } else {

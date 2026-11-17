@@ -12,7 +12,6 @@ import android.os.Build
 import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -274,8 +274,16 @@ fun BridgeScreen(initialRoute: Int = 0) {
         }
     }
 
-    fun snack(text: String) {
-        scope.launch { snackbarHostState.showSnackbar(text) }
+    // W19 (Apple-Audit): Snackbar ist das EINHEITLICHE Feedback — kein
+    // Toast/Snackbar-Mix mehr. long = die früheren Toast.LENGTH_LONG-Fälle
+    // (Health partial; Text mit Liste braucht mehr Lesezeit).
+    fun snack(text: String, long: Boolean = false) {
+        scope.launch {
+            snackbarHostState.showSnackbar(
+                text,
+                duration = if (long) SnackbarDuration.Long else SnackbarDuration.Short,
+            )
+        }
     }
 
     // ── Bildschirmaufnahme: MediaProjection-Consent ────────────────────────
@@ -285,9 +293,10 @@ fun BridgeScreen(initialRoute: Int = 0) {
         val ok = result.resultCode == Activity.RESULT_OK
         if (ok && result.data != null) {
             ScreenRecorder.setProjectionPermission(result.resultCode, result.data!!)
-            Toast.makeText(context, context.getString(R.string.toast_record_granted), Toast.LENGTH_SHORT).show()
+            // W19: Grant-Feedback über die Snackbar (einheitlich mit feedback.md).
+            snack(context.getString(R.string.toast_record_granted))
         } else {
-            Toast.makeText(context, context.getString(R.string.toast_record_denied), Toast.LENGTH_SHORT).show()
+            snack(context.getString(R.string.toast_record_denied))
         }
         BridgeStatus.refreshConfig()
     }
@@ -296,12 +305,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
     val notificationsLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        Toast.makeText(
-            context,
+        // W19: Snackbar statt Toast (einheitliches Feedback).
+        snack(
             if (granted) context.getString(R.string.toast_notifications_granted)
             else context.getString(R.string.toast_notifications_denied),
-            Toast.LENGTH_SHORT,
-        ).show()
+        )
         BridgeStatus.refreshConfig()
     }
 
@@ -312,15 +320,12 @@ fun BridgeScreen(initialRoute: Int = 0) {
         val requested = HealthDataBridge.readPermissions
         when {
             granted.containsAll(requested) ->
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.toast_health_granted, granted.size),
-                    Toast.LENGTH_SHORT,
-                ).show()
+                // W19: Snackbar statt Toast (einheitliches Feedback).
+                snack(context.getString(R.string.toast_health_granted, granted.size))
             granted.isNotEmpty() -> {
                 val fehlt = requested.filter { it !in granted }
                     .joinToString { HealthDataBridge.metricLabel(it) }
-                Toast.makeText(context, context.getString(R.string.toast_health_partial, fehlt), Toast.LENGTH_LONG).show()
+                snack(context.getString(R.string.toast_health_partial, fehlt), long = true)
             }
             // Leerer Grant = abgelehnt/abgebrochen ODER still blockiert
             // (HyperOS) — Ursache + Auswege als Dialog, nicht als Blind-Toast.
@@ -1048,11 +1053,15 @@ private fun PairingCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )
+            // W19: Kopplungscode-Tap = GANZE Zeile als Touchfeld (Apple-HIG
+            // ≥44 pt) — der bloße Text-Tap bot nur ~30 dp Höhe.
             Text(
                 code,
                 style = FlipsiType.Code,
                 modifier = Modifier
                     .padding(top = 10.dp)
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
                     .clickable(onClickLabel = stringResource(R.string.pairing_copy_a11y)) { onCopy(code) },
             )
             Text(

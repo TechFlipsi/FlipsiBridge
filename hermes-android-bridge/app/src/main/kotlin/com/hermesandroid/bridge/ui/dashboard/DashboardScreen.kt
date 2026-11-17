@@ -62,8 +62,9 @@ import kotlinx.coroutines.isActive
  * sehen will: die Agenten-Slots mit Live-Arbeits-Kontext (Fixliste 14) —
  * Online/Offline/Beschäftigt, was der Agent gerade tut (chat.activity-
  * Working-Zustand mit mm:ss-Ticker), die SESSION-QUELLE + aktives Modell
- * (chat.activity-`session_meta` → [RelayClient.agentMeta]), laufende
- * SUB-AGENTEN (eingerückte Zeilen) und die letzte Aktivität (chat.event).
+ * (chat.activity-`session_meta` → [RelayClient.agentMeta]) und die letzte
+ * Aktivität (chat.event). Laufende SUB-AGENTEN stehen ALLEIN in der
+ * Slots-Sektion (W19 KEIN-DOPPEL: EIN Ort, nie zweimal am Screen).
  *
  * Daten-Verband: ALLE Zustände kommen aus vorhandenen RelayClient-Flows
  * (relay.state → [RelayClient.agents], chat.activity →
@@ -172,11 +173,14 @@ fun DashboardScreen(
             // SIRS-Design: läuft delegate_task, steht der Sub-Agent als Slot
             // im eigenen Abschnitt — end=true entfernt ihn (agent.status-
             // Verband). Slot-Labels kommen vom Server (Maschinenwort).
-            item(key = "subAgents") {
-                SubAgentSlotsSection(
-                    slots = agents.flatMap { entry -> agentSubs[entry.agentId].orEmpty().values },
-                    nowMs = nowMs,
-                )
+            // W19 KEIN-DOPPEL + Leerzustand: die Sektion erscheint NUR bei
+            // mindestens einem laufenden Sub-Agenten — sonst bleibt der
+            // Abschnitt (Titel + Zeile) komplett weg.
+            val subSlots = agents.flatMap { entry -> agentSubs[entry.agentId].orEmpty().values }
+            if (subSlots.isNotEmpty()) {
+                item(key = "subAgents") {
+                    SubAgentSlotsSection(slots = subSlots, nowMs = nowMs)
+                }
             }
         }
     }
@@ -202,9 +206,10 @@ private fun labelRes(label: DashboardRules.LabelRes): String =
  * EIN Agent-Slot: Avatar mit Anfangsbuchstaben (Zustandsfarbe), Name +
  * E2E-Kleppel, Live-Arbeitszeile („arbeitet … 2:14“ mit Spinner), die
  * SESSION-QUELLE + aktives Modell (W16, Fixliste 14 — fehlende Daten =
- * Zeile weglassen), die laufenden SUB-AGENTEN (eingerückte Zeilen) und
- * die Status-Pille rechts. Tap öffnet die Conversation dieses Agenten
- * (Chat-Tab).
+ * Zeile weglassen) und die Status-Pille rechts. Laufen Sub-Agenten, stehen
+ * sie AUSSCHLIESSLICH in der Slots-Sektion (W19 KEIN-DOPPEL) — hier nie
+ * eingerichtete Sub-Zeilen mehr. Tap öffnet die Conversation dieses
+ * Agenten (Chat-Tab).
  */
 @Composable
 private fun AgentSlotCard(
@@ -327,27 +332,9 @@ private fun AgentSlotCard(
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                // W16 (Fixliste 14): SUB-AGENTEN — eingerückte Zeile je Agent
-                // („SUB-Agent X am Coden (Modell Y)“); Status/Modell je nach
-                // Vorhandensein.
-                metaForAgent?.subAgents?.takeIf { it.isNotEmpty() }?.forEach { sub ->
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        buildString {
-                            append(stringResource(R.string.dash_sub_agent, sub.name))
-                            if (!sub.status.isNullOrBlank()) append(" ${sub.status}")
-                            if (!sub.model.isNullOrBlank())
-                                append(" " + stringResource(R.string.dash_sub_model, sub.model))
-                        },
-                        // Eingerückt — Kind-Ebene klar unter dem Slot-Header
-                        // (keine zweite Karten-Ebene, Sir-Layout-Fallwurf).
-                        modifier = Modifier.padding(start = 12.dp),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = FlipsiColors.TextSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+                // W19 KEIN-DOPPEL: Sub-Agenten stehen NICHT mehr in der
+                // SlotCard (das session_meta-Duplikat ist entfernt) — die
+                // SubAgentSlotsSection unter den Karten ist der EINE Ort.
                 // Letzte Aktivität: der letzte chat.event-Text des Agenten.
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -431,11 +418,18 @@ private fun AgentsEmptyCard() {
 
 /**
  * SIRS-Design: Sub-Agenten der laufenden delegate_task-Ketten als eigene
- * Slots UNTER den Agenten-Slots — Titel „Sub-Agenten“ + 0-n Slots (Name aus
+ * Slots UNTER den Agenten-Slots — Titel „Sub-Agenten“ + 1-n Slots (Name aus
  * sub.name, Status-Pille „arbeitet … (m:ss)“ aus dash_working), Farbe Ember
- * wenn der Sub arbeitet (10-Min-Deckel wie am Haupt-Slot), neutral sonst.
- * end=true entfernt den Slot — ohne laufende Sub-Agenten bleibt der
- * ehrliche Leer-Zustand („keine“).
+ * wenn der Sub arbeitet, neutral sonst. end=true entfernt den Slot; der
+ * 10-Minuten-Deckel bleibt NUR am Haupt-Slot (ein Sub-Slot endet mit
+ * end=true, wie SubAgentSlotRow es rechnet).
+ *
+ * W19 KEIN-DOPPEL (Konsolidierung): DIESE Sektion ist der EINZIGE Ort der
+ * Sub-Agenten am Dashboard — die eingerückten Zeilen in der AgentSlotCard
+ * (Quelle session_meta, dash_sub_agent/dash_sub_model) sind ENTFERNT.
+ * W19 Leerzustand: die Sektion existiert NUR bei ≥1 laufendem Sub-Agenten —
+ * der Screen ruft sie bedingungsgerendert (kein „keine“-Geraffel, keine
+ * leere Titelzeile).
  */
 @Composable
 private fun SubAgentSlotsSection(
@@ -443,15 +437,6 @@ private fun SubAgentSlotsSection(
     nowMs: Long,
 ) {
     SectionTitle(stringResource(R.string.dashboard_sub_agents_title))
-    if (slots.isEmpty()) {
-        Text(
-            stringResource(R.string.dashboard_sub_agents_empty),
-            style = MaterialTheme.typography.bodySmall,
-            color = FlipsiColors.TextSecondary,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        return
-    }
     // Sir-Design-Befund 17.11. (Screenshot img_2f233f93): der Sub-Agenten-
     // Titel klebte am ersten laufenden Slot — paddingFromBaseline wirkt nur
     // NACH OBEN, unter dem Titel fehlte der Rhythmus-Abstand. Einheitlich

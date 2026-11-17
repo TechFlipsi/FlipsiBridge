@@ -796,10 +796,12 @@ fun MessageBubble(
                             if (message.fromAgent && speaking && !showTtsBubble) {
                                 Row(
                                     Modifier
+                                        // HIG-W19: Touch-Ziel 48 dp (war ~18 dp).
+                                        .heightIn(min = 48.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(FlipsiColors.EmberDim)
                                         .clickable(onClick = onStopSpeaking)
-                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .padding(horizontal = 14.dp, vertical = 12.dp)
                                         .semantics { contentDescription = stopReadAloudA11y },
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
@@ -1002,7 +1004,10 @@ internal fun ChatQuoteBlock(quote: ChatQuote, modifier: Modifier = Modifier) {
                 label,
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.SemiBold,
-                color = accent,
+                // HIG-W19 (Apple-Audit): Label als TEXT braucht 4,5:1 — Ember
+                // (5,93:1) respektive TextSecondary (6,63:1); LineStrong
+                // (3,09:1) bleibt allein für die Grafik-Kante links.
+                color = if (quote.fromAgent) FlipsiColors.Ember else FlipsiColors.TextSecondary,
             )
             Text(
                 quote.text,
@@ -1151,6 +1156,9 @@ fun FilterChipFlipsi(
 ) {
     Row(
         modifier = modifier
+            // HIG-W19: Touch-Ziel 48 dp (war ~30 dp) — der Clip bleibt, die
+            // Zuhöhe wächst; heightIn zentriert per CenterVertically.
+            .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(if (active) FlipsiColors.Ember else FlipsiColors.PanelElev)
             .clickable(onClick = onClick, role = Role.Checkbox)
@@ -1321,7 +1329,8 @@ fun ChatInputBar(
             if (modelChipLabel != null && onModelChip != null) {
                 Row(
                     modifier = Modifier
-                        .heightIn(min = 36.dp)
+                        // HIG-W19: Touch-Ziel 48 dp (war min 36 dp).
+                        .heightIn(min = 48.dp)
                         .clip(RoundedCornerShape(18.dp))
                         .background(FlipsiColors.PanelElev)
                         .clickable(onClick = onModelChip, onClickLabel = chipA11y)

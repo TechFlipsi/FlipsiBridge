@@ -93,19 +93,6 @@
     <string name="about_version_label">Version</string>
     <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
 
-    <!-- Wave 13 / P12: appearance (color customizer) -->
-    <string name="settings_appearance_title">Appearance</string>
-    <string name="settings_appearance_desc">Accent, chat bubbles and background. The app keeps text colors readable automatically.</string>
-    <string name="appearance_slot_accent">Accent color</string>
-    <string name="appearance_slot_bubble_own">Own bubble</string>
-    <string name="appearance_slot_bubble_agent">Agent bubble</string>
-    <string name="appearance_slot_background">Background</string>
-    <string name="appearance_preview_label">Preview (text colors automatic)</string>
-    <string name="appearance_preview_agent">Connection is up — what can I do for you?</string>
-    <string name="appearance_preview_own">Ready for duty.</string>
-    <string name="appearance_preview_hint">Write a message</string>
-    <string name="appearance_reset">Reset to Flipsi standard</string>
-
     <!-- Wave 13 / P4: permissions with purpose + status + system jump -->
     <string name="settings_permissions_title">Permissions</string>
     <string name="settings_permissions_desc">Every permission with purpose and status — changes happen in the Android system settings.</string>
@@ -169,12 +156,12 @@
     <string name="common_sprache">Language</string>
     <string name="nav_tab_dashboard">Dashboard</string>
     <string name="nav_tab_e2e">E2E</string>
-    <string name="badge_active">active</string>
+    <string name="badge_active">Active</string>
     <string name="badge_missing">missing</string>
     <string name="badge_needed">needed</string>
     <string name="badge_check">check</string>
     <string name="badge_possible">available</string>
-    <string name="badge_not_active">inactive</string>
+    <string name="badge_not_active">Inactive</string>
     <string name="badge_on">ON</string>
     <string name="badge_off">OFF</string>
     <string name="a11y_open_setting">Open setting</string>
@@ -278,7 +265,7 @@
     <string name="banner_broken_badge">PAIRING</string>
     <string name="banner_connected_title">Connected — bridge is up</string>
     <string name="banner_connected_text">The agent can use the device — adjust capabilities in the Agents tab.</string>
-    <string name="banner_connected_badge">ACTIVE</string>
+    <string name="banner_connected_badge">Active</string>
     <string name="banner_connecting_title">Connecting…</string>
     <string name="banner_connecting_text">The reconnect loop runs (1–30 s intervals, then every 5 min).</string>
     <string name="banner_connecting_badge">CONNECTING</string>
@@ -361,13 +348,10 @@
     <string name="dash_last_active">Last active %1$s</string>
     <string name="dash_no_activity">No activity yet</string>
     <string name="dash_working">working … (%1$s)</string>
-    <!-- W18 chain: Sub-agent slots (agent.status) — title + empty state.
+    <!-- W18 chain: Sub-agent slots (agent.status) — title.
          Slot labels come from the server (machine word), no client special cases. -->
     <string name="dashboard_sub_agents_title">Sub-agents</string>
-    <string name="dashboard_sub_agents_empty">none</string>
     <string name="dash_model_label">Model %1$s</string>
-    <string name="dash_sub_agent">SUB-Agent %1$s</string>
-    <string name="dash_sub_model">(Model %1$s)</string>
     <!-- W15c (hunter B5/A): dashboard labels as resources — DashboardRules
          returns LabelRes (R constant + args), the UI resolves them live.
          Days/agent counts are plural resources (“1 day ago”/“1 agent”
@@ -397,6 +381,15 @@
     <string name="chat_error_close_a11y">Close error message</string>
     <string name="chat_send_failed">Chat: send failed — %1$s. Check the connection and send again.</string>
     <string name="chat_send_failed_unknown">unknown error</string>
+    <!-- HIG-W19 (english): honest empty states without demo data + media
+         errors per locale — no "Media:" prefix, WHAT + ACTION over literals -->
+    <string name="chat_empty_no_agents">No agents linked yet</string>
+    <string name="chat_empty_no_agents_hint">Open Settings › Servers and link an agent.</string>
+    <string name="chat_empty_first_message">No messages yet — write the first message to %1$s.</string>
+    <string name="chat_media_permission_missing">Microphone permission missing — grant it in Settings › Permissions.</string>
+    <string name="chat_media_too_short">Voice message too short — record it again a little longer.</string>
+    <string name="chat_media_record_failed">Recording failed — try again.</string>
+    <string name="chat_media_generic_error">Voice message unreadable — try again.</string>
     <string name="chat_media_unreadable">Media: file not readable — fetch again in the gallery view.</string>
     <string name="chat_media_too_large">Media: too large (max %1$s)</string>
     <string name="chat_e2e_missing">Chat: no active E2E session — fingerprint check only possible once connected</string>
@@ -524,9 +517,6 @@
     <string name="composer_effort_light">Light</string>
     <string name="composer_effort_high">High</string>
     <string name="composer_effort_max">Max</string>
-    <string name="chat_demo_reply">Example agent reply (AI) — backend integration comes with PH-2-Main.</string>
-    <string name="chat_demo_input">Example input — the history stays stored locally.</string>
-    <string name="chat_demo_greeting">Example greeting from Agent 3.</string>
     <string name="e2e_xdh_unavailable">Encryption unavailable on this device</string>
 
     <!-- W16 Fixliste 30a: composer = WA pill + inline round send/mic button -->

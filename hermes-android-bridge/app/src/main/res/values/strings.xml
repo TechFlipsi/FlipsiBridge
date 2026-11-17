@@ -83,19 +83,6 @@
     <string name="about_version_label">Version</string>
     <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
 
-    <!-- Welle 13 / P12: Darstellung (Color-Customizer) -->
-    <string name="settings_appearance_title">Darstellung</string>
-    <string name="settings_appearance_desc">Akzent, Chat-Bubbles und Hintergrund. Textfarben stellt die App automatisch lesbar ein.</string>
-    <string name="appearance_slot_accent">Akzentfarbe</string>
-    <string name="appearance_slot_bubble_own">Eigene Bubble</string>
-    <string name="appearance_slot_bubble_agent">Agenten-Bubble</string>
-    <string name="appearance_slot_background">Hintergrund</string>
-    <string name="appearance_preview_label">Vorschau (Textfarben automatisch)</string>
-    <string name="appearance_preview_agent">Verbindung steht — was kann ich für dich tun?</string>
-    <string name="appearance_preview_own">Bereit für den Einsatz.</string>
-    <string name="appearance_preview_hint">Nachricht schreiben</string>
-    <string name="appearance_reset">Auf Flipsi-Standard zurücksetzen</string>
-
     <!-- Welle 13 / P4: Berechtigungen mit Zweck + Status + System-Sprung -->
     <string name="settings_permissions_title">Berechtigungen</string>
     <string name="settings_permissions_desc">Jede Berechtigung mit Zweck und Status — Änderungen laufen über die Android-Systemeinstellungen.</string>
@@ -159,12 +146,12 @@
     <string name="common_sprache">Sprache</string>
     <string name="nav_tab_dashboard">Dashboard</string>
     <string name="nav_tab_e2e">E2E</string>
-    <string name="badge_active">aktiv</string>
+    <string name="badge_active">Aktiv</string>
     <string name="badge_missing">fehlt</string>
     <string name="badge_needed">nötig</string>
     <string name="badge_check">prüfen</string>
     <string name="badge_possible">möglich</string>
-    <string name="badge_not_active">nicht aktiv</string>
+    <string name="badge_not_active">Nicht aktiv</string>
     <string name="badge_on">AN</string>
     <string name="badge_off">AUS</string>
     <string name="a11y_open_setting">Einstellung öffnen</string>
@@ -268,7 +255,7 @@
     <string name="banner_broken_badge">KOPPLUNG</string>
     <string name="banner_connected_title">Verbunden — Brücke steht</string>
     <string name="banner_connected_text">Der Agent kann das Gerät nutzen — Fähigkeiten im Agenten-Tab anpassen.</string>
-    <string name="banner_connected_badge">AKTIV</string>
+    <string name="banner_connected_badge">Aktiv</string>
     <string name="banner_connecting_title">Verbinde …</string>
     <string name="banner_connecting_text">Die Wiederverbindungs-Schleife läuft (1–30 s Abstand, danach alle 5 min).</string>
     <string name="banner_connecting_badge">VERBINDE</string>
@@ -351,18 +338,14 @@
     <string name="dash_last_active">Zuletzt aktiv %1$s</string>
     <string name="dash_no_activity">Noch keine Aktivität</string>
     <string name="dash_working">arbeitet … (%1$s)</string>
-    <!-- W18-Kette: Sub-Agenten-Slots (agent.status-Verband) — Titel +
-         Leer-Zustand. Slot-Labels (z. B. „Sucht im Web“) kommen vom Server
+    <!-- W18-Kette: Sub-Agenten-Slots (agent.status-Verband) — Titel. Slot-Labels (z. B. „Sucht im Web“) kommen vom Server
          (Maschinenwort), KEINE Client-Spezialfälle. -->
     <string name="dashboard_sub_agents_title">Sub-Agenten</string>
-    <string name="dashboard_sub_agents_empty">keine</string>
     <!-- W16 (Fixliste 14): Session-Quelle + Modell + Sub-Agenten am
          Agenten-Slot — fehlende Metadaten lassen je Zeile weg (keine
          Platzhalter). Plattform-Tokens (bridge/discord/cron) bleiben
          Anzeige-Namen, NICHT übersetzt (platformLabel). -->
     <string name="dash_model_label">Modell %1$s</string>
-    <string name="dash_sub_agent">SUB-Agent %1$s</string>
-    <string name="dash_sub_model">(Modell %1$s)</string>
     <!-- W15c (Jäger B5/A): Dashboard-Labels als Ressourcen — DashboardRules
          gibt LabelRes (R-Konstante + Args) zurück, die UI löst live auf.
          Tage/Agenten-Zahlwörter sind Plural-Ressourcen („vor 1 Tag“/
@@ -392,6 +375,15 @@
     <string name="chat_error_close_a11y">Fehlermeldung schließen</string>
     <string name="chat_send_failed">Chat: Senden fehlgeschlagen — %1$s. Verbindung prüfen und erneut senden.</string>
     <string name="chat_send_failed_unknown">unbekannter Fehler</string>
+    <!-- HIG-W19 (Writing): ehrliche Leerzustände ohne Demo-Daten + Media-
+         Fehler jeLocale — kein "Media:"-Präfix, WAS + AKTION statt Literale -->
+    <string name="chat_empty_no_agents">Noch keine Kopplung</string>
+    <string name="chat_empty_no_agents_hint">Einstellungen › Server öffnen und einen Agenten koppeln.</string>
+    <string name="chat_empty_first_message">Noch keine Nachrichten — schreibe die erste Nachricht an %1$s.</string>
+    <string name="chat_media_permission_missing">Mikrofonzugriff fehlt — erteile ihn in Einstellungen › Berechtigungen.</string>
+    <string name="chat_media_too_short">Sprachnachricht zu kurz — nimm die Nachricht noch einmal auf.</string>
+    <string name="chat_media_record_failed">Aufnahme fehlgeschlagen — versuche es noch einmal.</string>
+    <string name="chat_media_generic_error">Sprachnachricht unlesbar — versuche es noch einmal.</string>
     <string name="chat_media_unreadable">Media: Datei nicht lesbar — in der Mediathek erneut holen.</string>
     <string name="chat_media_too_large">Media: zu groß (max %1$s)</string>
     <string name="chat_e2e_missing">Chat: keine aktive E2E-Sitzung — Fingerprint-Abgleich erst nach dem Verbinden möglich</string>
@@ -519,9 +511,6 @@
     <string name="composer_effort_light">Leicht</string>
     <string name="composer_effort_high">Hoch</string>
     <string name="composer_effort_max">Max</string>
-    <string name="chat_demo_reply">Beispiel-Antwort des Agenten (KI) — Backend-Anbindung folgt in PH-2-Main.</string>
-    <string name="chat_demo_input">Beispiel-Eingabe — der Verlauf bleibt lokal gespeichert.</string>
-    <string name="chat_demo_greeting">Beispiel-Begrüßung von Agent 3.</string>
     <string name="e2e_xdh_unavailable">Verschlüsselung auf diesem Gerät nicht verfügbar</string>
 
     <!-- W16 Fixliste 30a: Composer = WA-Pill + runder inline Send/Mikro-Button -->

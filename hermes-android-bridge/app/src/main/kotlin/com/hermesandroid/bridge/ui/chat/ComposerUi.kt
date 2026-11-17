@@ -3,7 +3,6 @@ package com.hermesandroid.bridge.ui.chat
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -12,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -298,7 +299,9 @@ fun ChatModelSheet(
                 colors = SliderDefaults.colors(
                     thumbColor = FlipsiColors.Ember,
                     activeTrackColor = FlipsiColors.Ember,
-                    inactiveTrackColor = FlipsiColors.PanelElev,
+                    // HIG-W19: inaktiver Track = LineStrong (3,09:1) — PanelElev
+                    // lag bei 1,11:1 (Regler unsichtbar).
+                    inactiveTrackColor = FlipsiColors.LineStrong,
                 ),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -344,6 +347,10 @@ fun ChatModelSheet(
                         checkedThumbColor = FlipsiColors.OnEmber,
                         checkedTrackColor = FlipsiColors.Ember,
                         uncheckedTrackColor = FlipsiColors.PanelElev,
+                        // HIG-W19: Daumen im Aus-Zustand = TextSecondary
+                        // (5,97:1 auf PanelElev-Track, war Material-Default
+                        // 2,79:1) — der Schalter bleibt sichtbar.
+                        uncheckedThumbColor = FlipsiColors.TextSecondary,
                     ),
                 )
             }
@@ -382,8 +389,19 @@ private fun ChipRow(
                 color = if (selected) FlipsiColors.EmberDim else FlipsiColors.PanelElev,
                 shape = RoundedCornerShape(12.dp),
             )
-            .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 12.dp),
+            // HIG-W19 (A11y): Auswahl-Zustand für TalkBack — Role.RadioButton
+            // + ausgewählt/State-Beschreibung (stateDescription „Aktiv“), die
+            // ganze Zeile ist das Ziel; Touch-Ziel 48 dp (inneres Padding
+            // vertikal 14, war 12 → war ~44 dp).
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = { onClick() },
+            )
+            .semantics {
+                if (selected) stateDescription = activeLabel
+            }
+            .padding(horizontal = 14.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
