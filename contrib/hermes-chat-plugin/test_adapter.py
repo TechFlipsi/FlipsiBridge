@@ -1768,7 +1768,7 @@ async def test_w19_hook_pre_tool_label_web_verband_and_scope() -> None:
     await a._drain_status_pending()
     assert a._status["working"] is True, "delegate_task endet NIEMALS den Verband"
     assert len(_w19_status_frames(ws)) == n
-    # Turn-Ende (eigenes Plattform-Value) lernt die Session → OFF:
+    # Plattform-Ende (Whitelist-Mitglied seit 17.11.) lernt die Session → OFF:
     assert await a.hook_on_session_end(
         session_id="own", platform="flipsibridge", completed=True) is None
     await a._drain_status_pending()
@@ -1777,11 +1777,10 @@ async def test_w19_hook_pre_tool_label_web_verband_and_scope() -> None:
     assert "own" in a._status["parent_sessions"]
     assert a._status["web_count"] == 0, "OFF setzt den web-Verband zurück"
     n = len(_w19_status_frames(ws))
-    # Fremde Plattform endet → weder lernen noch falten:
+    # Auch telegram endet → lernt jetzt MIT (W19-Whitelist discord+telegram):
     assert await a.hook_on_session_end(session_id="tg", platform="telegram") is None
     await a._drain_status_pending()
-    assert "tg" not in a._status["parent_sessions"]
-    assert len(_w19_status_frames(ws)) == n
+    assert "tg" in a._status["parent_sessions"]
     # Scope-ON ohne Inbound-Message (Cron-/Folge-Turn):
     assert await a.hook_pre_tool_call(tool_name="terminal", session_id="own") is None
     await a._drain_status_pending()

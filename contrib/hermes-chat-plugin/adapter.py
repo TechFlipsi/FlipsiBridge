@@ -178,6 +178,9 @@ AGENT_MODELS_DEFAULT_CATALOG: tuple[str, ...] = (
 AGENT_STATUS_FRAME = "agent.status"
 AGENT_STATUS_ENC_FRAME = "agent.status.enc"
 _STATUS_PLATFORM_ID = "flipsibridge"   # Scope: eigene Events ≠ fremde Plattformen
+# W19-Verband (17.11., Sir-Befund: Pill zeigte Discord/Telegram-Turns nie): Agentarbeit ist
+# plattformübergreifend sichtbar — Events dieser Plattformen zählen als eigener Agent-Status.
+_STATUS_PLATFORM_WHITELIST = frozenset({"flipsibridge", "discord", "telegram"})
 _STATUS_LABEL_CAP = 64                 # Relay-Gate-Parität: label/sub je str ≤ 64
 _STATUS_SUB_SLOTS_CAP = 16             # FIFO-RAM-Schutz der Sub-Slot-Map
 _STATUS_SEND_TIMEOUT_S = 0.5           # Status-Send-Gate (fail-soft, nie Chat-kritisch)
@@ -2623,7 +2626,7 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         Text); bereits working → KEIN Reset (Label/Herzschlag bleiben). Policy-
         Hook: Rückgabe IMMER None (nichts skippen/rewriten)."""
         platform, text = self._status_event_fields(kwargs.get("event"))
-        if platform != _STATUS_PLATFORM_ID or not text.strip():
+        if platform not in _STATUS_PLATFORM_WHITELIST or not text.strip():
             return None
         now = self._status_now_ms()
         frames: list[dict] = []
@@ -2799,7 +2802,7 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                     slot["started_at"] = now  # Herzschlag (kein Frame, kein Close)
                     st["started_at"] = now    # Herzschlag für künftige parent-Frames
                 return None
-            if platform and platform != _STATUS_PLATFORM_ID:
+            if platform and platform not in _STATUS_PLATFORM_WHITELIST:
                 return None
             st["parent_sessions"].add(session_id)
             if st["working"]:
