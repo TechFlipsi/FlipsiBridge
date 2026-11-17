@@ -1357,11 +1357,13 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # (HERZ-Befund 3). Unterdrückung meldet success=True: der Hinweis
         # ist informativ, kein Fehlerfall.
         is_home_notice = self._is_home_channel_notice(content)
-        if is_home_notice and \
-                (time.time() - self._home_notice_last_ts) < self._HOME_NOTICE_WINDOW_S:
-            logger.info("FlipsiBridge: Home-Kanal-Hinweis im %d-h-Fenster bereits "
-                        "zugestellt — unterdrückt (FIX-WELLE-2 B3)",
-                        self._HOME_NOTICE_WINDOW_S // 3600)
+        if is_home_notice:
+            # W18 (17.11.26, Sir): der Gateway-Home-Kanal-Hinweis (= die
+            # '/sethome'-Aufforderung) darf NIE im App-Chat landen — der
+            # 24-h-Fenster-Verband (FIX-WELLE-2 B3) ließ je Fenster einen
+            # Hinweis durch, den Sir als Chat-Verschmutzung meldet. Neu:
+            # IMMER still wegwerfen (success=True: informativ, kein Fehler).
+            logger.info("FlipsiBridge: Home-Kanal-Hinweis unterdrückt (W18: nie zustellen)")
             return SendResult(success=True)
         msg_id = uuid.uuid4().hex[:16]
         received_ms = self._received_at.get(wire_chat_id)
