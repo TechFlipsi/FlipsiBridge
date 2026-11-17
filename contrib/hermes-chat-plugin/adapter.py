@@ -35,8 +35,10 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import uuid
+import weakref
 from collections import deque
 from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
@@ -153,6 +155,37 @@ AGENT_MODELS_DEFAULT_CATALOG: tuple[str, ...] = (
     "glm-5.3", "glm-5.3-flash", "deepseek-v4-pro", "gpt-oss:120b",
     "mistral-large-4", "minimax-m3", "kimi-k3:cloud",
 )
+
+# ── W19 (Sir, 17.11.2026): agent.status-Broadcast (Hook-Verband) ─────────────
+# Live-Arbeitszustand je Agent auf der bestehenden Agent-WS: der Dashboard-
+# Pill/Slot-Verband der App (AgentStatusRules.kt, Relay-Vertrag bff3e63) liest
+#   {agent_id, working, started_at, label?(≤64), sub?{id≤64,name≤64}, end?}.
+# Adapterseitig wird der Zustand von Hermes-Lifecycle-Hooks gespeist:
+#   pre_gateway_dispatch (Policy-Hook → IMMER None!)     → parent ON (Text-Event)
+#   pre_tool_call (FAIL-CLOSED ≤ ~2 ms reine Dicts!)     → parent ON/Label-Refresh
+#   post_tool_call                                       → web-Verband-Zähler,
+#                             'delegate_task' wird NIE als Ende gewertet
+#   subagent_start / subagent_stop                       → Sub-Slot OPEN/CLOSE
+#                             (Join-Schlüssel = child_session_id)
+#   on_session_end (feurt je TURN, mehrfach!)            → platform 'subagent' =
+#                             NUR Herzschlag-Refresh (kein Close); eigene
+#                             Session → parent OFF.
+# Frames laufen via run_coroutine_threadsafe auf den Adapter-WS-Loop (Hook-
+# Callbacks auf Hermes-Threads), Coalesce-Cap: max 1 offener Send-Drain je
+# Adapter. enc-first: aktive E2E-Session → 'agent.status.enc' (Klar-Spiegel
+# working/started_at/label/sub/end + opaker ct, chat.activity-Parität), ohne
+# Session Klartext (Relay-Downgrade-Schutz verwirft den sonst).
+AGENT_STATUS_FRAME = "agent.status"
+AGENT_STATUS_ENC_FRAME = "agent.status.enc"
+_STATUS_PLATFORM_ID = "flipsibridge"   # Scope: eigene Events ≠ fremde Plattformen
+_STATUS_LABEL_CAP = 64                 # Relay-Gate-Parität: label/sub je str ≤ 64
+_STATUS_SUB_SLOTS_CAP = 16             # FIFO-RAM-Schutz der Sub-Slot-Map
+_STATUS_SEND_TIMEOUT_S = 0.5           # Status-Send-Gate (fail-soft, nie Chat-kritisch)
+_STATUS_WEB_TOOLS = frozenset({"web_search", "web_extract", "browser_exec"})
+_STATUS_WEB_LABEL = "Sucht im Web"     # web-Verband-Label (fester Vertrag an die App)
+# Live-Adapter-Registry: Modul-Level-Hooks fannen je Callback an alle
+# verbundenen Adapter-Instanzen (WeakSet → kein Leak bei Plugin-Reload).
+STATUS_ADAPTERS: "weakref.WeakSet" = weakref.WeakSet()
 
 
 class MediaError(RuntimeError):
@@ -1017,6 +1050,38 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                        or AGENT_MODELS_REFRESH_S))
         except ValueError:
             self.models_refresh_s = AGENT_MODELS_REFRESH_S
+
+        # --- W19 (Sir): agent.status-Zustandsmaschine (Hook-Verband) ---
+        # parent_working = Agent-Level-(ON beim FlipsiBridge-Text-Event bzw.
+        # Scope-Treffer im pre_tool_call / OFF beim on_session_end der EIGENEN
+        # plattform-Session); sub_slots = offene Subagent-Slots je
+        # child_session_id (OPEN/CLOSE per subagent_start/stop). parent_sessions
+        # = gelernte Gateway-Session-IDs (aus on_session_end mit EIGENER
+        # Plattform) — der Scope-Schlüssel für pre_tool_call/Subagent-Hooks,
+        # damit fremde Plattformen (Telegram/Discord/...) den Status nicht
+        # falten. Coalesce-Cap: max 1 offener Send-Drain; der Drain sendet
+        # gesammelte Frames nacheinander (dedupgleiche parent-Frames bleiben
+        # weg). Sämtliche Hook-Callbacks arbeiten reine in-memory (pre_tool_call
+        # ist FAIL-CLOSED — Timeout blockiert den Tool-Call!).
+        self._status_lock = threading.Lock()
+        self._status: dict = {
+            "loop": None,             # Adapter-WS-Event-Loop (setzt connect())
+            "working": False,         # parent_working
+            "started_at": None,       # Unix-ms des letzten ON (Herzschlag-refreshed)
+            "label": None,            # logischer Top-Level-Label (≤64 oder None)
+            "sent_working": None,     # zuletzt REAL gesendetes working (Dedup-Band)
+            "sent_label": None,       # zuletzt REAL gesendetes Label
+            "web_count": 0,           # web-Verband-Zähler (Suche-Offen-Verband)
+            "sub_slots": {},          # child_session_id → {id, name, started_at}
+            "recent_closed": {},      # zuletzt geschlossene child_session_id → ts
+                                      # (Doppel-Stop-Band, FIFO-Cap 64)
+            "pending": None,          # Coalesce-Cap: deque oder None
+            "fut": None,              # letzte Drain-Future (concurrent.futures.Future)
+            "parent_sessions": set(), # gelernte eigene Session-IDs (Scope)
+        }
+        # W19: Live-Registry für die Modul-Level-Hook-Fächer (WeakSet → kein
+        # Leak; Filtersatz "_connected" schließt nie verbundene Instanzen aus).
+        STATUS_ADAPTERS.add(self)
         self._models_task: Optional[asyncio.Task] = None  # W18: Refresh-Timer
 
     # ------------------------------------------------------------------ Pinning
@@ -1076,6 +1141,12 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                 "FlipsiBridge: cryptography fehlt — Legacy-Klartext-Modus (PH-3 nicht verfügbar)")
         self._frame_task = asyncio.get_running_loop().create_task(self._frame_loop())
         self._connected = True
+        # W19: WS-Loop für die Status-Hook-Callbacks merken (run_coroutine_threadsafe
+        # von Hermes-Threads). Wiederverbinden ersetzt Loop + wirft ein ggf. vom
+        # toten Loop hängendes Coalesce-Offen weg.
+        self._status["fut"] = None
+        self._status["pending"] = None
+        self._status["loop"] = asyncio.get_running_loop()
         logger.info("FlipsiBridge-Adapter verbunden (agent_id=%s)", self.agent_id)
         # W18 (Fixliste 35): Refresh-Timer für den agent.models-Broadcast
         # (Late-Joiner) + SOFORT-Broadcast je Connect — ohne Session als
@@ -1110,6 +1181,11 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Frame-Loop stoppen + WS sauber schließen."""
         self._connected = False
+        # W19: Status-Send-Verband vom (sterbenden) Loop abkoppeln — ein neuer
+        # connect() setzt Loop + Coalesce-Stand neu.
+        self._status["fut"] = None
+        self._status["pending"] = None
+        self._status["loop"] = None
         if self._models_task is not None:
             self._models_task.cancel()
             try:
@@ -2336,6 +2412,406 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("FlipsiBridge: chat.activity-Frame fehlgeschlagen: %s", exc)
 
+    # ───────────────────── W19: agent.status-Broadcast (Hook-Verband) ───────────
+
+    @staticmethod
+    def _status_now_ms() -> int:
+        """Unix-ms (Transitions-/Herzschlag-Zeitstempel, Parität chat.activity)."""
+        return int(time.time() * 1000)
+
+    @staticmethod
+    def _status_clip(value: Any, cap: int = _STATUS_LABEL_CAP) -> str:
+        """String-Gate (Parität Relay-_agent_status_ok): trim + ≤ cap; Nicht-String
+        oder leer → '' (Feld fällt beim Frame-Bau)."""
+        if not isinstance(value, str):
+            return ""
+        return value.strip()[:cap]
+
+    @classmethod
+    def _status_sub_ok(cls, sub: Any) -> Optional[dict]:
+        """sub-Gate: {id, name} je nicht-leer ≤64 (Relay-Vertrag), sonst None
+        (Feld-Drop statt Frame-Verlust, Parität _agent_status_ok)."""
+        if not isinstance(sub, dict):
+            return None
+        sid = cls._status_clip(sub.get("id"))
+        sname = cls._status_clip(sub.get("name"))
+        if not sid or not sname:
+            return None
+        return {"id": sid, "name": sname}
+
+    def _cap_sub_slots(self) -> None:
+        """FIFO-RAM-Schutz der Sub-Slot-Map (Aufruf NUR unter _status_lock)."""
+        slots = self._status["sub_slots"]
+        while len(slots) > _STATUS_SUB_SLOTS_CAP:
+            slots.pop(next(iter(slots)))
+
+    def _mark_recent_closed(self, child_session_id: str, now: int) -> None:
+        """Doppel-Stop-Band füttern (Aufruf NUR unter _status_lock): child_session_ids
+        mit bereits gesendetem CLOSE werden beim nächsten Stop still übersprungen
+        (Relayslot-Verband ist je Frame idempotent, aber kein Rauschen); FIFO-Cap."""
+        recent = self._status["recent_closed"]
+        recent[child_session_id] = now
+        while len(recent) > 64:
+            recent.pop(next(iter(recent)), None)
+
+    async def emit_agent_status(self, working: bool, label: Optional[str] = None,
+                                sub: Optional[dict] = None, end: bool = False,
+                                started_at: Optional[int] = None) -> bool:
+        """W19: agent.status-Frame über die bestehende Agent-WS — fail-soft.
+
+        enc-first (emit_models-Parität): aktive E2E-Session → 'agent.status.enc'
+        (Klar-Spiegel working/started_at/label/sub/end + opaker ct über
+        encrypt_frame; chat_id "" — der Status lebt JE AGENT, der Relay hat
+        KEINEN Owner-Claim), ohne Session Klartext 'agent.status' (Relay-
+        Downgrade-Schutz würde Klartext sonst verwerfen). end geht NUR als
+        Slot-Verband (mit sub IMMER; OPEN end=False, CLOSE end=True) — reine
+        parent-Frames ohne end halten den working-Dedup des Relays intakt.
+        Rückgabe gesendet (True/False); Fehler werfen NIE.
+        """
+        if not self._connected or self._ws is None:
+            return False
+        mirror: dict = {
+            "working": bool(working),
+            "started_at": (int(started_at) if started_at is not None
+                           else self._status_now_ms()),
+        }
+        label = self._status_clip(label)
+        if label:
+            mirror["label"] = label
+        sub_ok = self._status_sub_ok(sub)
+        if sub_ok is not None:
+            mirror["sub"] = sub_ok
+        if sub_ok is not None or end:
+            mirror["end"] = bool(end)
+        session = self._active_session()
+        if session is not None:
+            envelope = session.encrypt_frame(
+                AGENT_STATUS_ENC_FRAME, "", dict(mirror), clear=dict(mirror))
+        else:
+            envelope = {
+                "type": AGENT_STATUS_FRAME, "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, **mirror,
+            }
+        try:
+            # Send-Gate 0,5 s: ein hängender WS-Schreiber darf den Status-
+            # Verband (und über die Coalesce-Drain den Hook-Pfad) nie festnageln.
+            await asyncio.wait_for(self._send_json(envelope), _STATUS_SEND_TIMEOUT_S)
+            return True
+        except Exception as exc:
+            logger.warning("FlipsiBridge: agent.status-Send fehlgeschlagen: %s", exc)
+            return False
+
+    def _schedule_status_frames(self, frames: Optional[list[dict]]) -> None:
+        """Hook-Them: Status-Frames auf den Adapter-WS-Loop legen (nie blockierend —
+        pre_tool_call ist FAIL-CLOSED, Callbacks reine in-memory Dicts).
+
+        Coalesce-Cap: max 1 offener Send-Drain je Adapter. Läuft bereits einer,
+        hängen neue Frames an dessen Queue (Reihenfolge bleibt); sonst startet
+        genau ein neuer Drain. Deskriptoren tragen die emit_agent_status-Args
+        (working/label/sub/end/started_at) — der Drain liest sie unverändert,
+        kein State-Reread-Race.
+        """
+        if not frames or not self._connected or self._status["loop"] is None:
+            return
+        with self._status_lock:
+            pending = self._status["pending"]
+            if pending is not None:
+                for frame in frames:
+                    pending.append(dict(frame))
+                return
+            queue: deque = deque(dict(frame) for frame in frames)
+            self._status["pending"] = queue
+            loop = self._status["loop"]
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._status_drain_coro(queue), loop)
+        except Exception:
+            logger.warning("FlipsiBridge: agent.status-Scheduling fehlgeschlagen",
+                           exc_info=True)
+            with self._status_lock:
+                if self._status["pending"] is queue:
+                    self._status["pending"] = None
+            return
+        self._status["fut"] = future
+
+    async def _status_drain_coro(self, pending: deque) -> None:
+        """W19-Drain: sendet gesammelte Status-Frames je Reihenfolge, wartet auf
+        keine weiteren; dedupgleiche Wiederholungen (working/label wie zuletzt
+        REAL gesendet) bleiben weg. Send-Gate je Frame = _STATUS_SEND_TIMEOUT_S."""
+        try:
+            while True:
+                with self._status_lock:
+                    if not pending:
+                        if self._status["pending"] is pending:
+                            self._status["pending"] = None
+                        break
+                    frame = pending.popleft()
+                try:
+                    sent = await self.emit_agent_status(**frame)
+                except Exception:
+                    logger.warning("FlipsiBridge: agent.status-Drain-Fehler",
+                                   exc_info=True)
+                    sent = False
+                if sent:
+                    # sent_working/sent_label = Dedup-Band. JE Frame updaten
+                    # (auch Slot-Frames): der Relay übernimmt working aus JEDEM
+                    # Frame (auch sub/end-Verband) — sonst dropt unser nächster
+                    # parent-Frame ein legitimen Relay-Wechsel.
+                    with self._status_lock:
+                        self._status["sent_working"] = bool(frame.get("working"))
+                        self._status["sent_label"] = self._status_clip(
+                            frame.get("label"))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("FlipsiBridge: agent.status-Drain-Abbruch", exc_info=True)
+        finally:
+            # Safety-Net: Drain beendet/abgebrochen → Coalesce-Stand frei.
+            with self._status_lock:
+                if self._status["pending"] is pending:
+                    self._status["pending"] = None
+
+    async def _drain_status_pending(self, timeout: float = 2.0) -> None:
+        """Test-/Shutdown-Helfer: auf den laufenden Coalesce-Drain warten (fail-soft)."""
+        fut = self._status["fut"]
+        if fut is None:
+            return None
+        try:
+            await asyncio.wait_for(asyncio.wrap_future(fut), timeout)
+        except Exception:
+            logger.debug("FlipsiBridge: Status-Drain-Wait fehlgeschlagen/leer",
+                         exc_info=True)
+        return None
+
+    @staticmethod
+    def _status_event_fields(event: Any) -> tuple[str, str]:
+        """(platform, text) aus einem pre_gateway_dispatch-Event — objekt- oder
+        dict-förmig toleriert (Gateway-MessageEvent vs. Test-Injektion)."""
+        if event is None:
+            return "", ""
+        if isinstance(event, dict):
+            source = event.get("source")
+            text = event.get("text")
+        else:
+            source = getattr(event, "source", None)
+            text = getattr(event, "text", None)
+        if isinstance(source, dict):
+            platform = source.get("platform")
+        else:
+            platform = getattr(source, "platform", None)
+        platform = getattr(platform, "value", platform)
+        return str(platform or "").strip().lower(), str(text or "")
+
+    def _status_slot_name(self, child_role: str, child_goal: str) -> str:
+        """Slot-Name (≤64): goal (Volltext gekappt); sonst Rolle; sonst 'Subagent'
+        (Verband: 'goal[:64] oder Rolle+goal-kurz')."""
+        goal = self._status_clip(child_goal)
+        if goal:
+            return goal
+        role = self._status_clip(child_role)
+        return (role.capitalize() or "Subagent")[:_STATUS_LABEL_CAP]
+
+    # --- Hook-Callbacks (Hermes-Lifecycle, je Modul-Level-Fächer) -----------
+    # Kontrakt je Callback: async def **kwargs, try/except-suppress rundum
+    # (im Fächer), reine in-memory-Verbandsarbeit + _schedule_status_frames,
+    # Rückgabe IMMER None.
+
+    async def hook_pre_gateway_dispatch(self, **kwargs: Any) -> None:
+        """W19: parent ON beim EIGENEN Text-Event (platform=flipsibridge mit
+        Text); bereits working → KEIN Reset (Label/Herzschlag bleiben). Policy-
+        Hook: Rückgabe IMMER None (nichts skippen/rewriten)."""
+        platform, text = self._status_event_fields(kwargs.get("event"))
+        if platform != _STATUS_PLATFORM_ID or not text.strip():
+            return None
+        now = self._status_now_ms()
+        frames: list[dict] = []
+        with self._status_lock:
+            if not self._status["working"]:
+                self._status["working"] = True
+                self._status["started_at"] = now
+                self._status["label"] = None
+                self._status["web_count"] = 0
+                frames.append({"working": True, "label": None, "started_at": now})
+        self._schedule_status_frames(frames)
+        return None
+
+    async def hook_pre_tool_call(self, **kwargs: Any) -> None:
+        """W19: Label-Refresh 'Tool: <name>' (web-Tools → fester Label 'Sucht im
+        Web' + web-Verband-Zähler +1) sowie parent ON bei Scope-Treffer
+        (gelernte eigene Session — Folge-/Cron-Turns ohne Inbound-Text).
+        pre_tool_call ist FAIL-CLOSED: NUR Dict-Operationen, kein await/IO."""
+        tool_name = self._status_clip(kwargs.get("tool_name"))
+        if not tool_name:
+            return None
+        session_id = str(kwargs.get("session_id") or "").strip()
+        is_web = tool_name in _STATUS_WEB_TOOLS
+        if is_web:
+            label = _STATUS_WEB_LABEL
+        else:
+            label = self._status_clip(f"Tool: {tool_name}")
+            if not label:
+                label = "Tool"
+        now = self._status_now_ms()
+        frames: list[dict] = []
+        with self._status_lock:
+            st = self._status
+            if st["working"]:
+                if is_web:
+                    st["web_count"] += 1
+                st["label"] = label
+                frames.append({"working": True, "label": label,
+                               "started_at": st["started_at"]})
+            elif session_id and session_id in st["parent_sessions"]:
+                st["web_count"] = 1 if is_web else 0
+                st["working"] = True
+                st["started_at"] = now
+                st["label"] = label
+                frames.append({"working": True, "label": label, "started_at": now})
+        self._schedule_status_frames(frames)
+        return None
+
+    async def hook_post_tool_call(self, **kwargs: Any) -> None:
+        """W19: web-Verband-Zähler zurücknehmen (KEIN Frame — das Label flippt
+        erst beim nächsten pre_tool_call zurück); 'delegate_task' wird NIE als
+        Ende gewertet (Slots/Turn-Events schließen)."""
+        tool_name = self._status_clip(kwargs.get("tool_name"))
+        if tool_name == "delegate_task":
+            return None
+        if tool_name in _STATUS_WEB_TOOLS:
+            with self._status_lock:
+                if self._status["web_count"] > 0:
+                    self._status["web_count"] -= 1
+        return None
+
+    async def hook_subagent_start(self, **kwargs: Any) -> None:
+        """W19: Sub-Slot OPEN — emit working=True sub={id: child_subagent_id,
+        name: goal[:64] bzw. Rolle} end=False. Join-/Slot-Schlüssel =
+        child_session_id; Scope = gelernte eigene Parent-Session (fremde
+        Plattform-Subagents falten den Status nicht)."""
+        child_session_id = str(kwargs.get("child_session_id") or "").strip()
+        child_subagent_id = str(kwargs.get("child_subagent_id") or "").strip()
+        if not child_session_id or not child_subagent_id:
+            return None
+        parent_session_id = str(kwargs.get("parent_session_id") or "").strip()
+        now = self._status_now_ms()
+        frames: list[dict] = []
+        with self._status_lock:
+            st = self._status
+            if parent_session_id and parent_session_id not in st["parent_sessions"]:
+                return None  # Scope: fremde Plattform — still überspringen
+            slot = {
+                "id": self._status_clip(child_subagent_id),
+                "name": self._status_slot_name(str(kwargs.get("child_role") or ""),
+                                               str(kwargs.get("child_goal") or "")),
+                "started_at": now,
+            }
+            st["sub_slots"][child_session_id] = slot
+            self._cap_sub_slots()
+            frames.append({"working": True, "sub": {"id": slot["id"],
+                                                    "name": slot["name"]},
+                           "end": False, "started_at": now})
+        logger.info("FlipsiBridge: agent.status Sub-Slot OPEN id=%s name=%s",
+                    slot["id"], slot["name"])
+        self._schedule_status_frames(frames)
+        return None
+
+    async def hook_subagent_stop(self, **kwargs: Any) -> None:
+        """W19: Sub-Slot CLOSE — emit working=False sub={id, name} end=True
+        (started_at = Slot-Start; Phone rechnet die Laufzeit). child_status /
+        duration_ms landen im Info-Log (keine Slot-Felder im Vertrag).
+        child_session_id=None-Fallback: genau 1 offener Slot → dieser; sonst
+        Slot-ID 'unknown'. JE CLOSE merkt die child_session_id (Doppel-Stop-
+        Band) — ein zweiter Stop für dieselbe ID bleibt still."""
+        child_session_id = str(kwargs.get("child_session_id") or "").strip()
+        parent_session_id = str(kwargs.get("parent_session_id") or "").strip()
+        child_role = str(kwargs.get("child_role") or "")
+        child_status = self._status_clip(kwargs.get("child_status")) or "unknown"
+        try:
+            duration_ms = int(kwargs.get("duration_ms") or 0)
+        except (TypeError, ValueError):
+            duration_ms = 0
+        now = self._status_now_ms()
+        frames: list[dict] = []
+        with self._status_lock:
+            st = self._status
+            if parent_session_id and parent_session_id not in st["parent_sessions"]:
+                return None
+            slot = None
+            if child_session_id:
+                slot = st["sub_slots"].pop(child_session_id, None)
+                if slot is not None and child_session_id in st["recent_closed"]:
+                    # Slot wurde neu geöffnet und ist wieder zu — Normallfall
+                    # (Verband je Start/Stop-Paar), kein Doppel-Suppress.
+                    del st["recent_closed"][child_session_id]
+            elif len(st["sub_slots"]) == 1:
+                slot = st["sub_slots"].pop(next(iter(st["sub_slots"])))
+            if slot is not None:
+                sub_desc = {"id": slot["id"], "name": slot["name"]}
+                started_at = slot["started_at"]
+                if child_session_id:
+                    self._mark_recent_closed(child_session_id, now)
+            elif child_session_id:
+                if child_session_id in st["recent_closed"]:
+                    logger.debug(
+                        "FlipsiBridge: agent.status Sub-Slot CLOSE doppelt "
+                        "unterdrückt (id=%s)", self._status_clip(child_session_id))
+                    return None
+                # Slot war nie offen (Scope-Lücke beim OPEN) — Close trotzdem
+                # verbandstreu: child_session_id als Slot-ID, einmalig.
+                self._mark_recent_closed(child_session_id, now)
+                sub_desc = {"id": self._status_clip(child_session_id),
+                            "name": self._status_slot_name(child_role, "")}
+                started_at = now
+            else:
+                sub_desc = {"id": "unknown",
+                            "name": self._status_slot_name(child_role, "")}
+                started_at = now
+            frames.append({"working": False, "sub": sub_desc, "end": True,
+                           "started_at": started_at})
+        logger.info("FlipsiBridge: agent.status Sub-Slot CLOSE id=%s status=%s "
+                    "duration_ms=%d", sub_desc["id"], child_status, duration_ms)
+        self._schedule_status_frames(frames)
+        return None
+
+    async def hook_on_session_end(self, **kwargs: Any) -> None:
+        """W19: on_session_end feurt JE TURN (mehrfach!). platform='subagent' →
+        NUR Herzschlag-Refresh (passenden offenen Slot auffrischen; KEIN Close —
+        subagent_stop schließt). Eigenes Plattform-Value → parent OFF + Session
+        lernen (Scope-Schlüssel für pre_tool_call/Subagent-Hooks). Fremde
+        Plattform: weder lernen noch falten."""
+        session_id = str(kwargs.get("session_id") or "").strip()
+        platform = str(kwargs.get("platform") or "").strip()
+        if not session_id:
+            return None
+        now = self._status_now_ms()
+        frames: list[dict] = []
+        with self._status_lock:
+            st = self._status
+            if platform == "subagent":
+                slot = st["sub_slots"].get(session_id)
+                if slot is not None:
+                    slot["started_at"] = now  # Herzschlag (kein Frame, kein Close)
+                    st["started_at"] = now    # Herzschlag für künftige parent-Frames
+                return None
+            if platform and platform != _STATUS_PLATFORM_ID:
+                return None
+            st["parent_sessions"].add(session_id)
+            if st["working"]:
+                st["working"] = False
+                frames.append({"working": False, "label": None,
+                               "started_at": st["started_at"] or now})
+                st["label"] = None
+                st["web_count"] = 0
+                st["started_at"] = None
+                if st["sub_slots"]:
+                    logger.info(
+                        "FlipsiBridge: agent.status parent OFF mit %d offenen "
+                        "Sub-Slots (keine CLOSE-Frames — Zombie-Slots, FIFO-Cap "
+                        "begrenzt): %s", len(st["sub_slots"]),
+                        ", ".join(sorted(st["sub_slots"])[:4]))
+        self._schedule_status_frames(frames)
+        return None
+
     # ───────────────────────────────── MEDIA-T1: Medien im Chat (E2E-only)
 
     def _handle_media_chunk(self, envelope: dict, chat_id: str) -> None:
@@ -2618,6 +3094,74 @@ def check_flipsibridge_requirements() -> bool:
         return False
 
 
+# ── W19: Modul-Level-Hook-Fächer (register → ctx.register_hook) ─────────────
+# Modul-Level, weil Hermes die Hooks je PLUGIN registriert — zur Registrie-
+# rungszeit existiert noch keine Adapter-Instanz: je Callback fannen die
+# Funktionen an ALLE verbundenen Adapter (WeakSet-Registry, siehe oben).
+# Kontrakt (hooks.md/plugins_dispatch): async def **kwargs, exceptions sind
+# fail-soft weggefangen, Rückgabe IMMER None — pre_gateway_dispatch ist ein
+# Policy-Gate (Nicht-None würde skip/rewrite bedeuten) und pre_tool_call ein
+# FAIL-CLOSED-Gate (Nicht-None wäre ein Block-Directive); beides ist hier
+# NIEMALS die Absicht. Reine in-memory-Verbandsarbeit, Scheduling non-block
+# (run_coroutine_threadsafe + Coalesce-Cap).
+
+def _flipsi_status_adapters() -> list:
+    """Snapshot verbundener Adapter (fail-soft: Iterations-Races schlucken)."""
+    try:
+        return [adapter for adapter in list(STATUS_ADAPTERS)
+                if getattr(adapter, "_connected", False)]
+    except Exception:
+        logger.warning("FlipsiBridge: Status-Adapter-Snapshot fehlgeschlagen",
+                       exc_info=True)
+        return []
+
+
+async def _status_fan_out(hook_name: str, kwargs: dict) -> None:
+    """Fächer: je verbundenem Adapter die hook_*-Methode aufrufen; JEDE Ausnahme
+    je Adapter wegfangen (ein kaputter Verband darf nie den Gateway-Loop oder
+    einen Tool-Call belasten)."""
+    method_name = f"hook_{hook_name}"
+    for adapter in _flipsi_status_adapters():
+        method = getattr(adapter, method_name, None)
+        if method is None:
+            continue
+        try:
+            await method(**kwargs)
+        except Exception:
+            logger.warning("FlipsiBridge: Status-Hook '%s' fehlgeschlagen (%s)",
+                           hook_name, method_name, exc_info=True)
+
+
+async def _hook_pre_gateway_dispatch(**kwargs: Any) -> None:
+    await _status_fan_out("pre_gateway_dispatch", kwargs)
+    return None  # IMMER None (Policy-Hook)
+
+
+async def _hook_pre_tool_call(**kwargs: Any) -> None:
+    await _status_fan_out("pre_tool_call", kwargs)
+    return None  # IMMER None (FAIL-CLOSED-Hook: kein Block-Directive)
+
+
+async def _hook_post_tool_call(**kwargs: Any) -> None:
+    await _status_fan_out("post_tool_call", kwargs)
+    return None
+
+
+async def _hook_subagent_start(**kwargs: Any) -> None:
+    await _status_fan_out("subagent_start", kwargs)
+    return None
+
+
+async def _hook_subagent_stop(**kwargs: Any) -> None:
+    await _status_fan_out("subagent_stop", kwargs)
+    return None
+
+
+async def _hook_on_session_end(**kwargs: Any) -> None:
+    await _status_fan_out("on_session_end", kwargs)
+    return None
+
+
 def register(ctx) -> None:
     """Plugin-Eintrittspunkt (Muster: plugins/platforms/mattermost/adapter.py)."""
     ctx.register_platform(
@@ -2628,6 +3172,20 @@ def register(ctx) -> None:
         allowed_users_env="FLIPSI_ALLOWED_DEVICES",
         install_hint="pip install aiohttp",
         emoji="🟠")
+
+    # W19: agent.status-Hook-Verband (Muster: raft-Adapter register_hook-Schleife).
+    # Modul-Level-CBs fannen an alle verbundenen Adapter; kontraktgemäß IMMER
+    # None (pre_gateway_dispatch = Policy-Gate, pre_tool_call = FAIL-CLOSED) und
+    # Callbacks ≤ ~2 ms reine in-memory Dict-Operationen + non-block Scheduling.
+    for hook_name, callback in (
+        ("pre_gateway_dispatch", _hook_pre_gateway_dispatch),
+        ("pre_tool_call", _hook_pre_tool_call),
+        ("post_tool_call", _hook_post_tool_call),
+        ("subagent_start", _hook_subagent_start),
+        ("subagent_stop", _hook_subagent_stop),
+        ("on_session_end", _hook_on_session_end),
+    ):
+        ctx.register_hook(hook_name, callback)
 
 
 def crypto_cli(argv: Optional[list] = None) -> int:

@@ -8,10 +8,15 @@ Deckt ab (je Skeleton-Pflicht):
 - receive: chat.deliver → Nachricht-Callback (Roundtrip send→receive→send)
 - Agentenschutz: Tool-Call-Frames und fremde Namespaces werden ABGELEHNT
 - disconnect: sauberes Schließen
+- W19: agent.status-Broadcast — Hook→Slot-Verband (pre_gateway_dispatch/
+  pre_tool_call/post_tool_call/subagent_start/subagent_stop/on_session_end),
+  enc-first (agent.status.enc nach chat.activity-Parität), Coalesce-Cap,
+  None-Return-Kontrakt, Subagent-None-Fallback-Close
 """
 
 import asyncio
 import json
+import logging
 import os
 import sys
 
@@ -24,8 +29,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # greift automatisch der echte BasePlatformAdapter — dieser Test prüft isoliert.
 sys.modules["gateway"] = None  # None-Eintrag → ImportError im try/except des Adapters
 
+import adapter as adapter_mod  # noqa: E402
+
 from adapter import (  # noqa: E402
     AGENT_MODELS_DEFAULT_CATALOG, AGENT_MODELS_ENC_FRAME, AGENT_MODELS_FRAME,
+    AGENT_STATUS_ENC_FRAME, AGENT_STATUS_FRAME, STATUS_ADAPTERS,
     AdapterPinningError, FlipsiBridgeChatAdapter, check_flipsibridge_requirements)
 
 RELAY = "wss://relay.example.internal/agent_ws"
@@ -1576,3 +1584,518 @@ async def test_w18_models_refresh_timer_and_disconnect(tmp_path) -> None:
     n = len([t for t in ws.sent if t["type"] == AGENT_MODELS_FRAME])
     assert n >= 2, f"Timer muss nachgesendet haben (n={n})"
     print(f"OK W18: Refresh-Timer nachgesendet ({n}×) + sauberes disconnect()")
+
+
+# ═══════════════ W19 (Sir): agent.status-Broadcast — Hook→Slot-Verband ═══════
+
+def _w19_status_frames(ws) -> list[dict]:
+    """Nur die agent.status-Familie aus dem Mock-Log (Klar + enc)."""
+    return [f for f in ws.sent
+            if f.get("type") in (AGENT_STATUS_FRAME, AGENT_STATUS_ENC_FRAME)]
+
+
+def _w19_event(text: str = "Hallo Sir", platform: str = "flipsibridge") -> dict:
+    """pre_gateway_dispatch-Event (dict-Form; Objekt-Form ebenfalls toleriert)."""
+    return {"source": {"platform": platform}, "text": text}
+
+
+@pytest.mark.asyncio
+async def test_w19_agent_status_clear_frame_shape() -> None:
+    """Klartext-Weg ohne E2E-Session (emit_models-Parität): agent.status mit
+    Pflicht-Feldern agent_id/working/started_at, kein chat_id-Feld (Status lebt
+    je Agent); Slot-Frame trägt end=False explizit, reiner parent-Frame OHNE
+    end/sub/label (hält den Relay-working-Dedup intakt)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.emit_agent_status(True, label="Recherche",
+                                     sub={"id": "sub-1", "name": "Bauer"},
+                                     end=False, started_at=1730515200000) is True
+    f = _w19_status_frames(ws)[-1]
+    assert f["type"] == AGENT_STATUS_FRAME and f["v"] == 1
+    assert f["agent_id"] == "agent-a"
+    assert f["working"] is True and f["started_at"] == 1730515200000
+    assert f["label"] == "Recherche" and f["sub"] == {"id": "sub-1", "name": "Bauer"}
+    assert f["end"] is False
+    assert "chat_id" not in f, "Status-Frames leben JE AGENT — kein Owner-Claim"
+    assert await a.emit_agent_status(False, started_at=1730515200001) is True
+    g = _w19_status_frames(ws)[-1]
+    assert g["type"] == AGENT_STATUS_FRAME
+    assert g["working"] is False
+    assert "end" not in g and "sub" not in g and "label" not in g, \
+        "parent-Frame ohne Slot-Verband → working-Dedup-fähig am Relay"
+    await a.disconnect()
+    print("OK W19: agent.status-Klartext-Shape (agent-Global, end je Slot-Verband)")
+
+
+@pytest.mark.asyncio
+async def test_w19_agent_status_enc_first_after_handshake(tmp_path) -> None:
+    """Mit bestätigter E2E-Session ist der enc-Weg PFLICHT: agent.status.enc
+    mit klaren Top-Level-Mirror-Feldern (working/started_at/label/sub/end,
+    chat.activity.enc-Kette) + opaker ct; chat_id "" (je Agent, kein Owner-
+    Claim); der Relay-Downgrade-Guard würde Klartext sonst verwerfen."""
+    a, ws = _make_crypto_adapter(tmp_path)
+    await a.connect()
+    peer = await _establish_session(a, ws)
+    assert a._crypto_session is not None
+    assert await a.emit_agent_status(True, label="Recherche",
+                                     sub={"id": "sub-9", "name": "B"},
+                                     end=False, started_at=42) is True
+    f = _w19_status_frames(ws)[-1]
+    assert f["type"] == AGENT_STATUS_ENC_FRAME
+    assert f["working"] is True and f["started_at"] == 42
+    assert f["label"] == "Recherche" and f["sub"] == {"id": "sub-9", "name": "B"}
+    assert f["end"] is False
+    assert f.get("chat_id") == "", "AAD ohne Owner-Chat (Status je Agent)"
+    assert "ct" in f and "hdr" in f and "nonce" in f and "ts" in f
+    assert "session_id" in f
+    payload = peer.decrypt_frame(f)
+    assert payload == {"working": True, "started_at": 42, "label": "Recherche",
+                       "sub": {"id": "sub-9", "name": "B"}, "end": False}, \
+        "ct spiegelt die Klar-Metadaten (chat.activity.enc-Verband)"
+    assert not [x for x in ws.sent if x["type"] == AGENT_STATUS_FRAME], \
+        "mit aktiver Session darf KEIN Klartext-agent.status gehen"
+    await a.disconnect()
+    print("OK W19: enc-first nach Handshake (Klar-Mirror + opaker ct)")
+
+
+@pytest.mark.asyncio
+async def test_w19_agent_status_caps_and_fail_soft() -> None:
+    """Gate-Parität zum Relay-_agent_status_ok: zu langer Label wird adapter-
+    seitig GEKAPPT (≤64 — die App behält so 64 Zeichen statt nichts), ungültiges
+    sub (leere id/name) fällt als FELD (Frame bleibt gültig); Send-Fehler sind
+    fail-soft (False statt Exception)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.emit_agent_status(True, label="x" * 65,
+                                     sub={"id": "s", "name": ""}, end=False,
+                                     started_at=7) is True
+    f = _w19_status_frames(ws)[-1]
+    assert f["label"] == "x" * 64, "zu langer Label wird GEKAPPT (App behält 64)"
+    assert "sub" not in f, "sub ohne gültigen Namen fällt als FELD (Frame bleibt)"
+    assert f["working"] is True and f["started_at"] == 7
+    assert "end" not in f, "Slot-Verband entfällt mit ungültigem sub → parent-Frame"
+    assert await a.emit_agent_status(True, label="y" * 64,
+                                     sub={"id": "i" * 64, "name": "n" * 64},
+                                     end=True, started_at=8) is True
+    g = _w19_status_frames(ws)[-1]
+    assert g["label"] == "y" * 64
+    assert g["sub"] == {"id": "i" * 64, "name": "n" * 64}
+    assert g["end"] is True
+    ws.fail_types = {AGENT_STATUS_FRAME}
+    assert await a.emit_agent_status(False, started_at=9) is False, \
+        "Send-Crash → fail-soft False, keine Exception"
+    assert await a.emit_agent_status(False, started_at=10) is False
+    ws.fail_types = set()
+    await a.disconnect()
+    print("OK W19: ≤64-Gate (Feld-Drop) + fail-soft Send")
+
+
+@pytest.mark.asyncio
+async def test_w19_hook_pre_gateway_on_dedup_and_none_return() -> None:
+    """pre_gateway_dispatch: Policy-Hook gibt IMMER None; eigenes Text-Event
+    → parent ON-Frame; bereits working → kein Reset (kein 2. ON); ohne Text/
+    fremde Plattform/Event=None → still. Objekt-Events (MessageEvent-Form mit
+    source.platform.value) landen genauso wie dict-Events."""
+    class _P:
+        value = "flipsibridge"
+
+    class _Src:
+        platform = _P()
+
+    class _Ev:
+        text = "Objekt-Form"
+        source = _Src()
+
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.hook_pre_gateway_dispatch(event=_w19_event()) is None
+    await a._drain_status_pending()
+    f = _w19_status_frames(ws)[-1]
+    assert f["working"] is True
+    assert "label" not in f and "end" not in f
+    n = len(_w19_status_frames(ws))
+    assert await a.hook_pre_gateway_dispatch(event=_w19_event()) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n, "bereits working → kein Reset"
+    assert await a.hook_pre_gateway_dispatch(event=_w19_event("")) is None
+    assert await a.hook_pre_gateway_dispatch(
+        event=_w19_event(platform="telegram")) is None
+    assert await a.hook_pre_gateway_dispatch(event=None) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n, "kein Text/fremd/None → still"
+    assert await a.hook_pre_gateway_dispatch(event=_Ev()) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n, "Objekt-Event: bereits working → still"
+    assert a._status["working"] is True and a._status["web_count"] == 0
+    await a.disconnect()
+    print("OK W19: pre_gateway ON/None-Return/Dedup + dict- und Objekt-Events")
+
+
+@pytest.mark.asyncio
+async def test_w19_hook_pre_tool_label_web_verband_and_scope() -> None:
+    """pre_tool_call: Label-Refresh 'Tool: <name>', web-Tools → fester Label
+    'Sucht im Web' + web-Verband-Zähler +1; post_tool_call nimmt den Zähler
+    zurück (KEIN Frame); 'delegate_task' wird NIE als Ende gewertet; unbekannte
+    Session bei nicht-working → NICHTS (kein Cross-Plattform-Falten); gelernte
+    eigene Session → Scope-ON (Cron-/Folge-Turn ohne Inbound)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    # Nicht-working + unbekannte Session → kein Frame, kein ON:
+    assert await a.hook_pre_tool_call(tool_name="terminal", session_id="s-cron") is None
+    await a._drain_status_pending()
+    assert _w19_status_frames(ws) == []
+    # ON + Label-Verband:
+    await a.hook_pre_gateway_dispatch(event=_w19_event())
+    await a._drain_status_pending()
+    assert await a.hook_pre_tool_call(tool_name="terminal", session_id="own") is None
+    await a._drain_status_pending()
+    assert _w19_status_frames(ws)[-1]["label"] == "Tool: terminal"
+    assert await a.hook_pre_tool_call(tool_name="web_search", session_id="own") is None
+    await a._drain_status_pending()
+    assert _w19_status_frames(ws)[-1]["label"] == "Sucht im Web"
+    assert a._status["web_count"] == 1, "web-Verband-Zähler"
+    n = len(_w19_status_frames(ws))
+    # post: web → Zähler zurück, KEIN Frame:
+    assert await a.hook_post_tool_call(tool_name="web_search", result="{}") is None
+    await a._drain_status_pending()
+    assert a._status["web_count"] == 0
+    assert len(_w19_status_frames(ws)) == n, "post_tool_call emittet kein Frame"
+    # post: delegate_task NIE als Ende:
+    assert await a.hook_post_tool_call(
+        tool_name="delegate_task", result='{"children":[]}') is None
+    assert await a.hook_post_tool_call(
+        tool_name="delegate_task", status="error", error_type="boom") is None
+    await a._drain_status_pending()
+    assert a._status["working"] is True, "delegate_task endet NIEMALS den Verband"
+    assert len(_w19_status_frames(ws)) == n
+    # Turn-Ende (eigenes Plattform-Value) lernt die Session → OFF:
+    assert await a.hook_on_session_end(
+        session_id="own", platform="flipsibridge", completed=True) is None
+    await a._drain_status_pending()
+    last = _w19_status_frames(ws)[-1]
+    assert last["working"] is False and "end" not in last
+    assert "own" in a._status["parent_sessions"]
+    assert a._status["web_count"] == 0, "OFF setzt den web-Verband zurück"
+    n = len(_w19_status_frames(ws))
+    # Fremde Plattform endet → weder lernen noch falten:
+    assert await a.hook_on_session_end(session_id="tg", platform="telegram") is None
+    await a._drain_status_pending()
+    assert "tg" not in a._status["parent_sessions"]
+    assert len(_w19_status_frames(ws)) == n
+    # Scope-ON ohne Inbound-Message (Cron-/Folge-Turn):
+    assert await a.hook_pre_tool_call(tool_name="terminal", session_id="own") is None
+    await a._drain_status_pending()
+    f = _w19_status_frames(ws)[-1]
+    assert f["working"] is True and f["label"] == "Tool: terminal"
+    await a.disconnect()
+    print("OK W19: 'Tool:'-Label, 'Sucht im Web'+Zähler, post-Stille, "
+          "Scope-ON/-Lernen, fremd-Filter")
+
+
+@pytest.mark.asyncio
+async def test_w19_subagent_slot_open_close_join(caplog) -> None:
+    """Sub-Slot-Verband über den Join-Schlüssel child_session_id: OPEN →
+    working=True sub={id: child_subagent_id, name: goal[:64]} end=False; CLOSE
+    → working=False sub={id, name} end=True mit Slot-Start als started_at;
+    child_status/duration_ms landen im Info-Log. Fremder Parent → Scope still
+    (kein Slot, kein Frame)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.hook_on_session_end(session_id="p1", platform="flipsibridge") is None
+    await a._drain_status_pending()
+    assert _w19_status_frames(ws) == [], "Lernen allein emittiert nichts"
+    await a.hook_pre_gateway_dispatch(event=_w19_event())
+    await a._drain_status_pending()
+    with caplog.at_level(logging.INFO, logger="flipsibridge.chat"):
+        assert await a.hook_subagent_start(
+            parent_session_id="p1", child_session_id="c1",
+            child_subagent_id="sa-1-abcd1234", child_role="leaf",
+            child_goal="Recherche im Netz") is None
+        await a._drain_status_pending()
+        f = _w19_status_frames(ws)[-1]
+        assert f["working"] is True and f["end"] is False
+        assert f["sub"] == {"id": "sa-1-abcd1234", "name": "Recherche im Netz"}
+        assert f.get("chat_id") in (None, ""), "kein Owner-Claim"
+        slot = a._status["sub_slots"].get("c1")
+        assert slot is not None and slot["id"] == "sa-1-abcd1234"
+        assert f["started_at"] == slot["started_at"]
+        # CLOSE via Join-Schlüssel child_session_id:
+        assert await a.hook_subagent_stop(
+            parent_session_id="p1", child_session_id="c1", child_role="leaf",
+            child_status="completed", duration_ms=1234) is None
+        await a._drain_status_pending()
+        g = _w19_status_frames(ws)[-1]
+        assert g["working"] is False and g["end"] is True
+        assert g["sub"] == {"id": "sa-1-abcd1234", "name": "Recherche im Netz"}
+        assert g["started_at"] == f["started_at"], \
+            "CLOSE trägt den Slot-Start (Phone rechnet die Laufzeit)"
+        assert "c1" not in a._status["sub_slots"]
+        log_msgs = [r.getMessage() for r in caplog.records]
+        assert any("Sub-Slot CLOSE" in m and "status=completed" in m
+                   and "duration_ms=1234" in m for m in log_msgs), \
+            "child_status/duration_ms wandern ins Log (keine Slot-Felder)"
+    n = len(_w19_status_frames(ws))
+    # Fremder Parent (nicht gelernt) → Scope still:
+    assert await a.hook_subagent_start(
+        parent_session_id="fremd", child_session_id="c9",
+        child_subagent_id="sa-9", child_role="leaf", child_goal="Fremd") is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n and "c9" not in a._status["sub_slots"]
+    assert await a.hook_subagent_stop(
+        parent_session_id="fremd", child_session_id="c9",
+        child_status="completed", duration_ms=0) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n, "fremder CLOSE auch still"
+    await a.disconnect()
+    print("OK W19: Slot OPEN/CLOSE via child_session_id-Join, Log-Verband, Scope")
+
+
+@pytest.mark.asyncio
+async def test_w19_subagent_stop_none_fallback_and_double_stop() -> None:
+    """child_session_id=None-Fallback: genau 1 offener Slot → dieser (matched);
+    ≥2 offene → Slot-ID 'unknown' (Slots bleiben offen, je echter Stop schließt
+    sich selbst); nie offener Slot → Close mit der child_session_id als ID,
+    einmalig (Doppel-Stop-Band, 2. Stop still)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.hook_on_session_end(session_id="p1", platform="flipsibridge") is None
+    await a._drain_status_pending()
+    await a.hook_pre_gateway_dispatch(event=_w19_event())
+    await a._drain_status_pending()
+    # (a) genau 1 offener Slot → None matched ihn:
+    await a.hook_subagent_start(parent_session_id="p1", child_session_id="c1",
+                                child_subagent_id="sa-1-abcd1234",
+                                child_role="leaf", child_goal="Einzel-Slot")
+    await a._drain_status_pending()
+    f = _w19_status_frames(ws)[-1]
+    assert await a.hook_subagent_stop(
+        parent_session_id="p1", child_session_id=None, child_role="leaf",
+        child_status="failed", duration_ms=0) is None
+    await a._drain_status_pending()
+    g = _w19_status_frames(ws)[-1]
+    assert g["end"] is True and g["working"] is False
+    assert g["sub"] == {"id": "sa-1-abcd1234", "name": "Einzel-Slot"}, \
+        "None-Fallback matcht den EINZIGEN offenen Slot"
+    # (b) 2 offene Slots → 'unknown', Slots bleiben je echte Stop-Schlüssel:
+    await a.hook_subagent_start(parent_session_id="p1", child_session_id="c2",
+                                child_subagent_id="sa-2-11111111",
+                                child_role="leaf", child_goal="Slot Zwei")
+    await a.hook_subagent_start(parent_session_id="p1", child_session_id="c3",
+                                child_subagent_id="sa-3-22222222",
+                                child_role="leaf", child_goal="Slot Drei")
+    await a._drain_status_pending()
+    assert await a.hook_subagent_stop(parent_session_id="p1", child_session_id=None) is None
+    await a._drain_status_pending()
+    h = _w19_status_frames(ws)[-1]
+    assert h["sub"]["id"] == "unknown" and h["end"] is True
+    assert set(a._status["sub_slots"]) == {"c2", "c3"}, \
+        "ambiges None schließt NICHT blind einen Slot"
+    # (c) nie offener Slot → Close mit child_session_id als ID, einmalig:
+    n = len(_w19_status_frames(ws))
+    assert await a.hook_subagent_stop(
+        parent_session_id="p1", child_session_id="cX", child_status="failed",
+        duration_ms=0) is None
+    await a._drain_status_pending()
+    m = _w19_status_frames(ws)[-1]
+    assert m["sub"]["id"] == "cX" and m["end"] is True
+    assert len(_w19_status_frames(ws)) == n + 1
+    # Doppel-Stop derselben ID → still (Doppel-Stop-Band):
+    assert await a.hook_subagent_stop(parent_session_id="p1", child_session_id="cX") is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n + 1, "2. Stop ohne Slot bleibt still"
+    await a.disconnect()
+    print("OK W19: None-Fallback (matched/'unknown') + Doppel-Stop-Band")
+
+
+@pytest.mark.asyncio
+async def test_w19_on_session_end_subagent_heartbeat_only() -> None:
+    """on_session_end(platform='subagent') feurt JE TURN (mehrfach!): NUR
+    Herzschlag-Refresh des passenden offenen Slots (started_at neu) — KEIN
+    Close, KEIN Frame; unbekannte Subagent-Session → ganz still."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.hook_on_session_end(session_id="p1", platform="flipsibridge") is None
+    await a._drain_status_pending()
+    await a.hook_pre_gateway_dispatch(event=_w19_event())
+    await a._drain_status_pending()
+    await a.hook_subagent_start(parent_session_id="p1", child_session_id="c1",
+                                child_subagent_id="sa-1-abcd1234",
+                                child_role="leaf", child_goal="Läuft")
+    await a._drain_status_pending()
+    snap = a._status["sub_slots"]["c1"]["started_at"]
+    parent_snap = a._status["started_at"]
+    n = len(_w19_status_frames(ws))
+    await asyncio.sleep(0.002)  # Herzschlag muss einen NEUEN Zeitstempel tragen
+    assert await a.hook_on_session_end(
+        session_id="c1", platform="subagent", completed=True) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n, "Herzschlag emittiert KEINEN Frame"
+    assert a._status["sub_slots"]["c1"]["started_at"] > snap, \
+        "Slot-Start neu (Herzschlag)"
+    assert a._status["started_at"] > parent_snap, "parent-Start mitgelebt"
+    assert a._status["working"] is True, "KEIN Close durch Turn-Ende"
+    # Fremde Subagent-Session (ohne Slot) → ganz still:
+    assert await a.hook_on_session_end(
+        session_id="c-fremd", platform="subagent") is None
+    assert await a.hook_on_session_end(
+        session_id="c1", platform="subagent", interrupted=True) is None
+    await a._drain_status_pending()
+    assert len(_w19_status_frames(ws)) == n
+    assert "c1" in a._status["sub_slots"], "Slot bleibt offen bis subagent_stop"
+    await a.disconnect()
+    print("OK W19: on_session_end(subagent) = Herzschlag-Refresh, kein Close")
+
+
+@pytest.mark.asyncio
+async def test_w19_parent_off_with_zombie_slots_logged(caplog) -> None:
+    """parent OFF (eigenes Turn-Ende) trotz offener Slots (Kind gecrasht):
+    OFF-Frame geht raus, Slots bleiben als Zombie (keine CLOSE-Frames im
+    Verband), Diagnose-Warnung nennt die Slots; FIFO-Cap bewahrt den RAM."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert await a.hook_on_session_end(session_id="p2", platform="flipsibridge") is None
+    await a._drain_status_pending()
+    await a.hook_pre_gateway_dispatch(event=_w19_event())
+    await a._drain_status_pending()
+    assert await a.hook_subagent_start(
+        parent_session_id="p2", child_session_id="zz", child_subagent_id="sa-z-33333333",
+        child_role="leaf", child_goal="Zombie") is None
+    await a._drain_status_pending()
+    assert a._status["working"] is True and "zz" in a._status["sub_slots"]
+    n = len(_w19_status_frames(ws))
+    with caplog.at_level(logging.INFO, logger="flipsibridge.chat"):
+        assert await a.hook_on_session_end(
+            session_id="p2", platform="flipsibridge", interrupted=True) is None
+        await a._drain_status_pending()
+    last = _w19_status_frames(ws)[-1]
+    assert last["working"] is False and "end" not in last, "parent OFF-Frame"
+    assert len(_w19_status_frames(ws)) == n + 1, "nur 1 Frame (OFF) — kein CLOSE"
+    assert "zz" in a._status["sub_slots"], "Zombie-Slot bleibt (kein Phantom-Close)"
+    assert any("Zombie-Slots" in r.getMessage() and "zz" in r.getMessage()
+               for r in caplog.records), "Diagnose nennt die hängenden Slots"
+    await a.disconnect()
+    print("OK W19: parent OFF mit Zombie-Slots (Log-Diagnose, kein Phantom-Close)")
+
+
+@pytest.mark.asyncio
+async def test_w19_coalesce_cap_and_thread_scheduling() -> None:
+    """Coalesce-Cap: max 1 offener Send-Drain je Adapter — ein zweites
+    Scheduling während laufendem Drain hängt an dessen Queue (Reihenfolge
+    bleibt), startet KEINEN zweiten; nach Leerlauf ist der Stand frei. Das
+    Hook-Theming funktioniert von einem Hermes-artigen WORKER-Thread via
+    run_coroutine_threadsafe auf den Adapter-WS-Loop."""
+    a, ws = make_adapter({})
+    a._connected = True  # ohne frame_loop: nur Send + Drain-Verband im Test
+    a._ws = ws
+    a._status["loop"] = asyncio.get_running_loop()
+    real_emit = a.emit_agent_status
+
+    async def slow_emit(**kw):
+        await asyncio.sleep(0.05)  # Coalesce-Fenster bewusst weiten
+        return await real_emit(**kw)
+
+    setattr(a, "emit_agent_status", slow_emit)  # Test-Monkeypatch (Drain zielt auf Instanz)
+    a._schedule_status_frames([{"working": True, "label": "A", "started_at": 1}])
+    a._schedule_status_frames([{"working": True, "label": "B", "started_at": 2}])
+    assert a._status["pending"] is not None, "Drain läuft noch → Cap aktiv"
+    await a._drain_status_pending()
+    assert [f.get("label") for f in _w19_status_frames(ws)] == ["A", "B"], \
+        "beide Frames je Reihenfolge EINES Drains"
+    assert a._status["pending"] is None, "Leerlauf → Coalesce-Stand frei"
+
+    # Hook-Pfad von einem WORKER-Thread (wie Hermes-Hooks ohne Loop) —
+    # run_coroutine_threadsafe muss auf den Test-Loop legen:
+    from threading import Thread
+    errs: list = []
+
+    def _worker() -> None:
+        try:
+            a._schedule_status_frames([{"working": False, "label": None,
+                                        "started_at": 3}])
+        except Exception as exc:  # pragma: no cover
+            errs.append(exc)
+
+    t = Thread(target=_worker)
+    t.start()
+    t.join(timeout=5)
+    assert errs == [] and not t.is_alive(), "Thread-Scheduling ohne Hänger"
+    await a._drain_status_pending()
+    frames = _w19_status_frames(ws)
+    assert frames[-1]["working"] is False and "label" not in frames[-1]
+    assert a._status["pending"] is None
+    await a.disconnect()
+    print("OK W19: Coalesce-Cap (Queue-Anhang, 1 Drain) + Thread-Scheduling")
+
+
+class _W19Ctx:
+    """Fake-Plugin-Kontext für register()-Nachweis."""
+
+    def __init__(self):
+        self.platforms: list = []
+        self.hooks: dict = {}
+
+    def register_platform(self, **kwargs):
+        self.platforms.append(kwargs.get("name"))
+
+    def register_hook(self, name, callback):
+        self.hooks.setdefault(name, []).append(callback)
+
+
+def test_w19_register_wires_all_six_hooks() -> None:
+    """register(ctx) erweitert um die W19-Hook-Schleife (raft-Muster): alle
+    6 Lifecycle-Hooks mit Modul-Level-Callbacks registriert, callable, und der
+    register_platform-Eintrag bleibt unverändert erhalten."""
+    ctx = _W19Ctx()
+    adapter_mod.register(ctx)
+    assert ctx.platforms == ["flipsibridge"]
+    assert set(ctx.hooks) == {
+        "pre_gateway_dispatch", "pre_tool_call", "post_tool_call",
+        "subagent_start", "subagent_stop", "on_session_end"}, \
+        f"alle 6 W19-Hooks müssen registriert sein, war: {sorted(ctx.hooks)}"
+    for name, cbs in ctx.hooks.items():
+        assert len(cbs) == 1 and callable(cbs[0]), name
+    # Kontrakt der beiden Gate-Hooks: Modul-Level-Callbacks sind async-def →
+    # Rückgabewert (nach Await) ist IMMER None — nichts entscheiden.
+    print("OK W19: register() verdrahtet alle 6 Hooks (raft-Muster)")
+
+
+@pytest.mark.asyncio
+async def test_w19_module_hooks_fan_out_and_none_contract() -> None:
+    """Modul-Level-Fächer: je lebendem Adapter fannen die Callbacks an
+    (WeakSet-Registry), beide Gate-Hooks (pre_gateway_dispatch = Policy,
+    pre_tool_call = FAIL-CLOSED) geben nach Await IMMER None zurück."""
+    STATUS_ADAPTERS.clear()
+    a, ws = make_adapter({})
+    await a.connect()
+    assert adapter_mod._hook_pre_gateway_dispatch is not None
+    r1 = await adapter_mod._hook_pre_gateway_dispatch(event=_w19_event())
+    assert r1 is None, "Policy-Hook: niemals skip/rewrite"
+    await a._drain_status_pending()
+    frames = _w19_status_frames(ws)
+    assert frames and frames[-1]["working"] is True, "Fächer traf den Adapter"
+    r2 = await adapter_mod._hook_pre_tool_call(
+        tool_name="terminal", session_id="p-fehlt")  # kein Scope → stille
+    assert r2 is None, "FAIL-CLOSED-Hook: niemals ein Block-Directive"
+    r3 = await adapter_mod._hook_post_tool_call(tool_name="web_extract", result="{}")
+    r4 = await adapter_mod._hook_subagent_start(
+        parent_session_id="fremd", child_session_id="c0",
+        child_subagent_id="sa-0", child_role="leaf", child_goal="stille")
+    r5 = await adapter_mod._hook_subagent_stop(child_session_id=None)
+    r6 = await adapter_mod._hook_on_session_end(
+        session_id="c0", platform="subagent")
+    assert (r2, r3, r4, r5, r6) == (None, None, None, None, None)
+    # Fächer schlucken Adapter-Ausnahmen fail-soft (kaputter Verband darf nie
+    # den Gateway-Loop oder einen Tool-Call belasten):
+    async def _boom(**kwargs):
+        raise RuntimeError("kaputt")
+
+    a2 = make_adapter({})[0]
+    a2._connected = True
+    a2.hook_pre_gateway_dispatch = _boom
+    STATUS_ADAPTERS.add(a2)
+    assert await adapter_mod._hook_pre_gateway_dispatch(event=_w19_event()) is None, \
+        "Ausnahme je Adapter weggefangen"
+    await a.disconnect()
+    STATUS_ADAPTERS.discard(a)
+    STATUS_ADAPTERS.discard(a2)
+    print("OK W19: Modul-Fächer (Fan-out, None-Kontrakt, fail-soft-Suppress)")
