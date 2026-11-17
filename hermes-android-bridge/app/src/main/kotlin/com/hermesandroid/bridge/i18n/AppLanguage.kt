@@ -91,7 +91,7 @@ object AppLanguage {
                         }
                     }
                 } else if (tag != SYSTEM) {
-                    lm?.applicationLocales = LocaleList.create(Locale.forLanguageTag(tag))
+                    lm?.applicationLocales = LocaleList(Locale.forLanguageTag(tag))
                 }
             }
         }
@@ -120,7 +120,7 @@ object AppLanguage {
             runCatching {
                 context.getSystemService(LocaleManager::class.java)?.applicationLocales =
                     if (tag == SYSTEM) LocaleList.getEmptyLocaleList()
-                    else LocaleList.create(Locale.forLanguageTag(tag))
+                    else LocaleList(Locale.forLanguageTag(tag))
             }
         }
     }

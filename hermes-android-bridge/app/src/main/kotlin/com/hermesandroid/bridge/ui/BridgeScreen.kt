@@ -1475,6 +1475,13 @@ private fun AccordionCard(
     }
 }
 
+/**
+ * mTLS-Zertifikats-Bereich (W16.3, Fixliste 41): Statuszeile + EIN Button, der
+ * wirklich etwas tut — Enrollment am Relay (app-verwalteter AndroidKeystore-
+ * Leg, Server stellt das Kette via Device-CA aus). Der KeyChain-Systemdialog
+ * ist raus (Sackgasse: ohne installiertes Zertifikat schließt er still).
+ */
+@Composable
 private fun MtlsCard(configVersion: Int) {
     val context = LocalContext.current
     var cn by remember(configVersion) { mutableStateOf(MtlsSupport.Enrollment.deviceCn(context)) }
