@@ -1,3 +1,22 @@
+## [0.16.5] - 2026-11-17
+### Behoben
+- **mTLS-Client-Kette (W17-Fix, Handy-Befund „Enroll-Loop, keine Verbindung"):** der
+  TLS-Client legte als Client-Kette das Android-auto-erzeugte SELF-SIGNED-Dummy-Zert
+  („CN=flipsibridge-device") aus dem Keystore-Entry vor statt das vom Server
+  ausgestellte Device-Zertifikat — nginx verifiziert die Kette gegen die Device-CA
+  → FAILED → 421 → die App lief in einen Endlos-Enroll-Renewal-Loop, WS nie verbunden.
+  Neu: die Kette = das Server-Zertifikat aus dem Enrollment (Prefs), KeyStore-Kette
+  nur als Fallback. Beweisbasis: serverseitige Kette (421/Gate/Bearer) 100% grün
+  (DIAG-Log am NPM), Handy-Enrollments 4× 200, WS-Handshake stumm.
+### Rückholung (17.11.26, Sir)
+- **mTLS-Verband wieder vollständig in der App** (MtlsSupport/MtlsCard/Enrollment):
+  war in der 17.11-Nacht-Sitzung komplett entfernt; Sir-Abwägung = Zertifikat bleibt
+  zusätzlich aktiv (Device-Faktor), optionales Kopplungs-Passwort (Einstellungen ›
+  Server) bleibt.
+### Serverseite
+- Play vc110 Notes-Fix (0.16.1-Text unter 0.16.4 — korigiert), mTLS-Stufe-2-Verband
+  (nginx + Relay-Gate) wieder scharf, Device-CA frisch ausgestellt.
+
 ## [0.16.4] - 2026-11-16
 ### Behoben
 - **Verbindungsversuch-Verband (P42):** WS-Verbindungsversuche laufen ENDLOS weiter

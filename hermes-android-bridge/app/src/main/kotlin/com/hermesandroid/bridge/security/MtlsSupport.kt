@@ -323,9 +323,26 @@ object MtlsSupport {
             val entry = ks.getEntry(DEVICE_ALIAS, null) as? KeyStore.PrivateKeyEntry
                 ?: throw IllegalStateException("Kein Device-Leg im Keystore")
             val key = entry.privateKey
+            // W17-FIX (17.11.26, Handy-'enrollt-Loop'-Befund): die Kette muss das
+            // SERVER-Zertifikat (Device-CA-signed, aus Enrollment) sein — NICHT die
+            // AndroidKeyStore-Entry-Kette. Der KeyPairGenerator-Entry trägt nur das
+            // Android-auto-erzeugte SELF-SIGNED-Dummy-Zert („CN=flipsibridge-device");
+            // nginx verifiziert die Client-Kette gegen die Device-CA → FAILED:verify
+            // → 421 → Enroll-Renewal-Loop. Beweis: server-seitige Kette 100% grün
+            // (Test-Zert über nginx → Gate-PASS → Bearer-Schicht), Handy /ws stumm.
+            val serverPem = prefs(com.hermesandroid.bridge.BridgeApplication.instance)
+                .getString(PREF_DEV_CERT, null)
+            val serverCert = serverPem?.let { pem ->
+                runCatching {
+                    CertificateFactory.getInstance("X.509")
+                        .generateCertificate(ByteArrayInputStream(pem.toByteArray()))
+                        as X509Certificate
+                }.getOrNull()
+            }
             val chain: Array<X509Certificate> =
-                entry.certificateChain?.mapNotNull { it as? X509Certificate }?.toTypedArray()
-                    ?: arrayOf(entry.certificate as X509Certificate)
+                if (serverCert != null) arrayOf(serverCert) else
+                    entry.certificateChain?.mapNotNull { it as? X509Certificate }?.toTypedArray()
+                        ?: arrayOf(entry.certificate as X509Certificate)
             val cnPref = prefs(com.hermesandroid.bridge.BridgeApplication.instance).getString(PREF_DEV_CN, "flipsibridge-device")
             return object : X509ExtendedKeyManager() {
                 override fun chooseClientAlias(
