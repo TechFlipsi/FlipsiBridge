@@ -1,3 +1,7 @@
+## [0.16.7] - 2026-11-17
+### Behoben
+- **Composer-Chip als Kürzel A/M (W18, Schrumpf-Fix):** der Composer-Chip zeigt statt „Auto · <Modell>“ nur mehr die Kürzel **A** (kein explizites Modell = Agenten-/Config-Standard) und **M** (Manuel = abweichendes Modell für diesen Chat) — die lange Chip-Beschriftung blähte die Composer-Pill auf und ließ die Nachrichten-Zeile schrumpfen; Modell-Details bleiben im Modell- und Denken-Sheet, TalkBack-Klartext in composer_chip_*_a11y (je values/values-de/values-en). versionCode 50 (github) / 113 (play).
+- **Home-Kanal-Hinweis wird nie im Chat zugestellt (W18):** der Adapter wirft den /sethome-Hinweis immer still weg (statt nur im 24-h-Fenster) — der Hinweis landet nie im Agent-Chat (test_fw2_b3_home_notice.py grün).
 ## [0.16.5] - 2026-11-17
 ### Behoben
 - **mTLS-Client-Kette (W17-Fix, Handy-Befund „Enroll-Loop, keine Verbindung"):** der
