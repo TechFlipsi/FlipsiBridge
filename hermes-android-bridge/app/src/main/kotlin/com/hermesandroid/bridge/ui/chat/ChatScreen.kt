@@ -126,6 +126,11 @@ fun ChatScreen(
     // PH2-T10: Zustell-/Lese-Status je msg_id + Arbeitsstatus je Agent.
     val chatStatus by RelayClient.chatStatus.collectAsState()
     val agentWorking by RelayClient.agentWorking.collectAsState()
+    // W19 (17.11.26): Gateway-Modell-Katalog je agent (agent.models-Frames) —
+    // die Sendeklammer (submitQuoted) bindet die Auswahl an die Server-Liste:
+    // sendbar ist ALLEIN ein exakter Listen-Wert → getippte Namen (stale
+    // Prefs alter Versionen) erreichen den Relay-Weg technisch nicht mehr.
+    val agentModelsForSend by RelayClient.agentModels.collectAsState()
     // MEDIA-T1: empfangene Agenten-Medien + Upload-Fortschritt je media_id.
     val chatMedia by RelayClient.chatMediaEvents.collectAsState()
     val mediaUploads by RelayClient.mediaUploads.collectAsState()
@@ -518,7 +523,13 @@ fun ChatScreen(
             // eine Uhr, keine Minuten-Roll-Kluft zwischen Anzeige und Platte.
             RelayClient.sendChat(
                 agent.agentId, wire, sentAtMs,
-                model = composerModel, effort = composerEffort,
+                // W19 (17.11.26): sendbar ist NUR ein Wert der Server-Liste
+                // (agent.models) — Freitext-Feld ist AUS (Sir), stale getippte
+                // App-Prefs werden hier final abgefangen → null = Auto, der
+                // Gateway entscheidet. Kein Modell-Name hat den Draht ohne
+                // Server-Vertrag (Sir-Generik-Regel: alles dynamisch).
+                model = sendableModel(composerModel, agentModelsForSend[agent.agentId]),
+                effort = composerEffort,
             ) { ok, error, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
@@ -1352,10 +1363,24 @@ private fun ConversationBody(
         ChatMotionRules.reduced(ChatMotionRules.animatorScale(compositionContext.contentResolver))
     }
     // ── Komposer Welle 12: Modell-/Denken-Auswahl am Komposer ────────────────
+    // W19 (17.11.26): Gateway-Stand dieses Agenten — Modell-Katalog + laufendes
+    // Modell ('current') + Denk-Stufe ('effort'), ALLES aus agent.models-Frames
+    // (keine App-Defaults, Sir-Generik-Regel).
+    val agentModelsLive by RelayClient.agentModels.collectAsState()
+    val gatewayModelCurrent by RelayClient.agentModelCurrent.collectAsState()
+    val gatewayModelEffort by RelayClient.agentModelEffort.collectAsState()
     // Auswahl lebt PRO AGENT (SharedPreferences via ChatComposerPrefs); die
     // lokalen States spiegeln sie für die Chips. Das Sheet öffnet per Chip.
-    var composerModel by remember(agent.agentId) {
-        mutableStateOf(ChatComposerPrefs.model(compositionContext, agent.agentId))
+    // W19: initial überlebt NUR ein exakter Server-Listenwert (stale getippte
+    // Namen aus Vorgängerversionen fallen auf Auto — Anzeige ehrlich, sendbar
+    // via submitQuoted ebenfalls serverlisten-gebunden).
+    var composerModel by remember(agent.agentId, agentModelsLive[agent.agentId]) {
+        mutableStateOf(
+            sendableModel(
+                ChatComposerPrefs.model(compositionContext, agent.agentId),
+                agentModelsLive[agent.agentId],
+            )
+        )
     }
     var composerEffort by remember(agent.agentId) {
         mutableStateOf(ChatComposerPrefs.effort(compositionContext, agent.agentId))
@@ -1374,8 +1399,6 @@ private fun ConversationBody(
     // WELLE-13 P9: Speaking-Chips je Bubble — zustandsgesteuert vom TTS-Singleton
     // (IDs der gerade/nächst vorgelesenen Antworten; Tap auf den Chip stoppt).
     val speakingIds by ChatSpeechSpeaker.speakingIds.collectAsState()
-    // ── W16 (Fixliste 35): LIVE-Modell-Quelle am Composer-Chip —
-    val agentModelsLive by RelayClient.agentModels.collectAsState()
     // W18 (17.11.26, Sir): Composer-Chip als KURZEL — "A" = Auto (Agenten-
     // Standard-Modell aus der Konfiguration), "M" = Manuel (ein anderes
     // Modell wurde für diesen Chat gewählt). Das lange 'Auto · <Modell>'
@@ -1814,6 +1837,11 @@ private fun ConversationBody(
                 // W16 (Fixliste 35): wählbare Modell-Liste — NUR der vom
                 // Gateway/Adapter gelieferte Katalog dieses Agenten.
                 gatewayModels = agentModelsLive[agent.agentId],
+                // W19 (17.11.26): Gateway-Stand ANZEIGEN (Aktiv-Zeile) + als
+                // Slider-Suggestion, solange der Nutzer keine App-Auswahl hat
+                // (die App-Auswahl gewinnt weiterhin).
+                gatewayCurrent = gatewayModelCurrent[agent.agentId],
+                gatewayEffort = gatewayModelEffort[agent.agentId],
             )
         }
         // W16 (Fixliste 34): „Unterstützen“-Sheet am Herz-Tap (direkt im Chat,

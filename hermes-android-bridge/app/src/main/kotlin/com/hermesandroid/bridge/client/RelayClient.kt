@@ -476,9 +476,6 @@ object RelayClient {
     /** W16 (Fixliste 14): max. Sub-Agenten-Zeilen je Agent-Slot (Meta ist kein Archiv). */
     private const val MAX_SESSION_META_SUB_AGENTS = 8
 
-    /** W16 (Fixliste 35): max. Einträge im Modell-Katalog (Parität Relay-Gate). */
-    private const val MAX_AGENT_MODELS = 24
-
     /** Agenten-Liste (relay.state) — letzte Meldung des Relays. */
     private val _agents = MutableStateFlow<List<AgentEntry>>(emptyList())
     val agents: StateFlow<List<AgentEntry>> = _agents.asStateFlow()
@@ -514,6 +511,27 @@ object RelayClient {
      */
     private val _agentModels = MutableStateFlow<Map<String, List<String>>>(emptyMap())
     val agentModels: StateFlow<Map<String, List<String>>> = _agentModels.asStateFlow()
+
+    /**
+     * W19 (17.11.26, Sir-Befund): agent.models(-enc) liest ab jetzt AUCH
+     * 'current' (das aktuell vom Gateway laufende Modell) je agent_id —
+     * REPLACE je Frame; fehlernder/verletzter Key = Bestand bleibt
+     * (fail-soft, Parität [AgentModelsPayload]). Räumen am selben
+     * Verbindungs-Punkt wie [agentModels] (Parität). Der Wert ist REIN
+     * serverseitig — die App kennt KEINE Modell-Namen und KEINE Defaults
+     * (Sir-Generik-Regel: was der Frame nicht liefert, existiert app-seitig
+     * nicht).
+     */
+    private val _agentModelCurrent = MutableStateFlow<Map<String, String>>(emptyMap())
+    val agentModelCurrent: StateFlow<Map<String, String>> = _agentModelCurrent.asStateFlow()
+
+    /**
+     * W19 (17.11.26): Denk-Stufe des Gateways je agent_id (agent.models
+     * 'effort', fail-soft REPLACE wie [agentModelCurrent]). Verbraucher:
+     * Aktiv-Zeile im Modell-Sheet + Slider-Suggestion ohne App-Pref.
+     */
+    private val _agentModelEffort = MutableStateFlow<Map<String, String>>(emptyMap())
+    val agentModelEffort: StateFlow<Map<String, String>> = _agentModelEffort.asStateFlow()
 
     /**
      * W18-Kette: Haupt-Arbeitsstatus je agent_id — agent.status-Frames des
@@ -850,8 +868,11 @@ object RelayClient {
         // W16 (Fixliste 14): Session-Quelle/Modell/Sub-Agenten ebenso —
         // ohne Verbindung ist die Meta gelogen (Parität agentWorking).
         _agentMeta.value = emptyMap()
-        // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+        // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta)
+        // + W19 (17.11.26): Gateway-Modell-/Denken-Stand ebenso.
         _agentModels.value = emptyMap()
+        _agentModelCurrent.value = emptyMap()
+        _agentModelEffort.value = emptyMap()
         // W18-Kette: agent.status-Hauptstatus + Sub-Slots ebenso — ohne
         // Verbindung lügt beides (Parität agentWorking-Verband).
         _agentStatus.value = emptyMap()
@@ -1113,8 +1134,11 @@ object RelayClient {
                 _agentWorking.value = emptyMap()
                 // W16 (Fixliste 14): Meta ebenso (Parität agentWorking).
                 _agentMeta.value = emptyMap()
-                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta)
+                // + W19 (17.11.26): Gateway-Modell-/Denken-Stand ebenso.
                 _agentModels.value = emptyMap()
+                _agentModelCurrent.value = emptyMap()
+                _agentModelEffort.value = emptyMap()
                 // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
                 _agentStatus.value = emptyMap()
                 _agentSubs.value = emptyMap()
@@ -1164,8 +1188,11 @@ object RelayClient {
                 _agentWorking.value = emptyMap()
                 // W16 (Fixliste 14): Meta ebenso (Parität agentWorking).
                 _agentMeta.value = emptyMap()
-                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta).
+                // W16 (Fixliste 35): Modell-Katalog ebenso (Parität agentMeta)
+                // + W19 (17.11.26): Gateway-Modell-/Denken-Stand ebenso.
                 _agentModels.value = emptyMap()
+                _agentModelCurrent.value = emptyMap()
+                _agentModelEffort.value = emptyMap()
                 // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
                 _agentStatus.value = emptyMap()
                 _agentSubs.value = emptyMap()
@@ -1888,7 +1915,9 @@ object RelayClient {
 
     /**
      * W16 (Fixliste 35): agent.models (Klartext-Legacy) → [agentModels]-Flow.
-     * Downgrade-Guard in chat.session_meta-Parität: bei aktiver
+     * W19 (17.11.26): zusätzlich 'current' + 'effort' lesen →
+     * [agentModelCurrent] / [agentModelEffort] ([AgentModelsPayload], fail-soft
+     * je Key). Downgrade-Guard in chat.session_meta-Parität: bei aktiver
      * E2E-Session ist der Klartext-Frame verworfen (der Adapter sendet enc).
      */
     private fun handleAgentModelsFrame(json: JsonObject) {
@@ -1903,13 +1932,14 @@ object RelayClient {
                 return
             }
         }
-        applyAgentModels(agentId, parseAgentModels(json.get("models")))
+        applyAgentModelsFrame(agentId, AgentModelsPayload.parse(json))
     }
 
     /**
      * W16 (Fixliste 35): agent.models.enc — Payload entschlüsseln (Kettensync
-     * PFLICHT, sonst desync) und die Liste NUR aus dem verschlüsselten
-     * Payload lesen (kein Klartext-Fallback).
+     * PFLICHT, sonst desync) und die Auswirkung NUR aus dem verschlüsselten
+     * Payload lesen (kein Klartext-Fallback). W19 (17.11.26): derselbe Eintritt
+     * wie Klartext — Katalog + 'current' + 'effort' ([AgentModelsPayload]).
      */
     private fun handleAgentModelsEnc(json: JsonObject) {
         val agentId = stringOf(json, "agent_id") ?: return
@@ -1921,32 +1951,25 @@ object RelayClient {
             return
         }
         handleRotateHint(json, agentId, peer)
-        applyAgentModels(agentId, parseAgentModels(payload.get("models")))
+        applyAgentModelsFrame(agentId, AgentModelsPayload.parse(payload))
     }
 
     /**
-     * W16 (Fixliste 35): models-Array streng lesen — Strings, getrimmt,
-     * nicht-leer, Dedup, Deckel [MAX_AGENT_MODELS] (Parität Relay-Gate
-     * _agent_models_ok). null (Feld fehlt) = Update auslassen (fail-soft).
+     * W19 (17.11.26): geparste agent.models-Auswirkung veröffentlichen —
+     * atomar (update{}-CAS, W1C-4-StateFlow-Verband) und je Komponente
+     * unabhängig fail-soft: null (Key fehlt/verletzt) = DIESES Feld bleibt
+     * unangetastet; REPLACE je agent_id nur bei vorhandenem gültigem Wert
+     * (letzter Frame gewinnt). Klartext- UND enc-Pfad laufen über denselben
+     * Eintritt. KEIN Modell-Name kommt aus der App — ausschließlich aus dem
+     * Payload ([AgentModelsPayload], Sir-Generik-Regel).
      */
-    private fun parseAgentModels(raw: Any?): List<String>? {
-        val arr = raw as? JsonArray ?: return null
-        val out = ArrayList<String>(arr.size())
-        for (element in arr) {
-            val s = runCatching {
-                element.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isString }?.asString
-            }.getOrNull()?.trim() ?: continue
-            if (s.isEmpty() || s.length > 64) continue
-            if (out.size >= MAX_AGENT_MODELS) break
-            if (s !in out) out.add(s)
+    private fun applyAgentModelsFrame(agentId: String, frame: AgentModelsPayload.Frame?) {
+        if (agentId.isEmpty() || frame == null) return
+        frame.models?.let { models -> _agentModels.update { it + (agentId to models) } }
+        frame.current?.let { current ->
+            _agentModelCurrent.update { it + (agentId to current) }
         }
-        return out
-    }
-
-    /** W16 (Fixliste 35): geparsten Katalog veröffentlichen (atomar, REPLACE je Frame). */
-    private fun applyAgentModels(agentId: String, models: List<String>?) {
-        if (agentId.isEmpty() || models == null) return
-        _agentModels.update { it + (agentId to models) }
+        frame.effort?.let { effort -> _agentModelEffort.update { it + (agentId to effort) } }
     }
 
     // ── PH-3 Welle 2: E2E-Handshake + chat.*.enc-Empfang ───────────────────

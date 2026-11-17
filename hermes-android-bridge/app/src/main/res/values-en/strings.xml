@@ -442,15 +442,14 @@
     <string name="composer_demo_hint">Demo entry (not paired) — the selection only applies locally until the agent is paired.</string>
     <string name="composer_auto">Auto</string>
     <string name="composer_auto_sub">Agent default</string>
-    <string name="composer_add_placeholder">Add your own model…</string>
-    <string name="composer_add">Add</string>
     <string name="composer_chip_auto_a11y">A = Auto: agent default model from config is in use — tap to open model &amp; thinking</string>
     <string name="composer_chip_manual_a11y">M = Manual: a different model was chosen for this chat — tap to open model &amp; thinking</string>
     <string name="composer_chip_auto">A</string>
     <string name="composer_chip_manual">M</string>
     <string name="composer_chip_a11y">Open model &amp; thinking — shows the active model</string>
-    <string name="composer_custom_add">Custom model…</string>
-    <string name="composer_no_list">No model list has arrived from the server — Auto stays active. Add a custom model below as an advanced option.</string>
+    <string name="composer_active_line">Active: %1$s · Thinking: %2$s</string>
+    <string name="composer_active_line_model">Active: %1$s</string>
+    <string name="composer_no_list">No model list has arrived from the server — Auto stays active.</string>
     <string name="composer_read_aloud">Read agent replies aloud on the device</string>
     <string name="lock_title">FlipsiBridge is locked</string>
     <string name="lock_subtitle">Enter the PIN to open chat and settings</string>
@@ -516,7 +515,6 @@
     <string name="composer_effort_light">Light</string>
     <string name="composer_effort_high">High</string>
     <string name="composer_effort_max">Max</string>
-    <string name="composer_remove_a11y">Remove model %1$s</string>
     <string name="chat_demo_reply">Example agent reply (AI) — backend integration comes with PH-2-Main.</string>
     <string name="chat_demo_input">Example input — the history stays stored locally.</string>
     <string name="chat_demo_greeting">Example greeting from Agent 3.</string>

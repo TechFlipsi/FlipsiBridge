@@ -437,15 +437,14 @@
     <string name="composer_demo_hint">Demo-Eintrag (nicht gekoppelt) — Auswahl wirkt nur lokal, bis der Agent gekoppelt ist.</string>
     <string name="composer_auto">Auto</string>
     <string name="composer_auto_sub">Agenten-Standard</string>
-    <string name="composer_add_placeholder">Eigenes Modell hinzufügen …</string>
-    <string name="composer_add">Hinzu</string>
     <string name="composer_chip_auto_a11y">A = Auto: Agenten-Standard-Modell der Konfiguration wird verwendet — tippen öffnet Modell &amp; Denken</string>
     <string name="composer_chip_manual_a11y">M = Manuel: für diesen Chat wurde ein anderes Modell gewählt — tippen öffnet Modell &amp; Denken</string>
     <string name="composer_chip_auto">A</string>
     <string name="composer_chip_manual">M</string>
     <string name="composer_chip_a11y">Modell &amp; Denken öffnen — zeigt das aktive Modell</string>
-    <string name="composer_custom_add">Eigenes Modell …</string>
-    <string name="composer_no_list">Vom Server liegt keine Modell-Liste vor — Auto bleibt aktiv. Eigenes Modell unten als erweiterte Option.</string>
+    <string name="composer_active_line">Aktiv: %1$s · Denken: %2$s</string>
+    <string name="composer_active_line_model">Aktiv: %1$s</string>
+    <string name="composer_no_list">Vom Server liegt keine Modell-Liste vor — Auto bleibt aktiv.</string>
     <string name="composer_read_aloud">Agenten-Antworten vom Gerät vorlesen</string>
     <string name="lock_title">FlipsiBridge ist gesperrt</string>
     <string name="lock_subtitle">PIN eingeben, um Chat und Einstellungen zu öffnen</string>
@@ -511,7 +510,6 @@
     <string name="composer_effort_light">Leicht</string>
     <string name="composer_effort_high">Hoch</string>
     <string name="composer_effort_max">Max</string>
-    <string name="composer_remove_a11y">Modell %1$s entfernen</string>
     <string name="chat_demo_reply">Beispiel-Antwort des Agenten (KI) — Backend-Anbindung folgt in PH-2-Main.</string>
     <string name="chat_demo_input">Beispiel-Eingabe — der Verlauf bleibt lokal gespeichert.</string>
     <string name="chat_demo_greeting">Beispiel-Begrüßung von Agent 3.</string>

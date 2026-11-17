@@ -12,25 +12,15 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -52,13 +42,12 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  * behält sein Profil-Modell, nichts wird still verschlechtert.
  */
 
-/** Denken-Stufen: Anzeige (DE) + Leitungs-Wert (Gateway-Grammatik). */
-val THINK_STAGES = listOf(
-    "aus" to null,
-    "leicht" to "low",
-    "hoch" to "high",
-    "max" to "max",
-)
+/**
+ * W19 (17.11.26): Denken-Stufen + Slider-/Sende-Regeln leben in
+ * ModelSheetRules.kt (reine JVM-Logik, getestet) — THINK_STAGES,
+ * effortStageIndex (App-Auswahl gewinnt, Gateway-Fallback) und sendableModel
+ * (NUR Server-Liste, Freitext-Pfad AUS).
+ */
 
 /** Chip-Beschriftung für die Denken-Stufe (null = 'aus' → kein Chip). */
 fun effortGermanLabel(level: String?): String? = when (level) {
@@ -82,9 +71,12 @@ fun effortLabelRes(level: String?): Int = when (level) {
     else -> R.string.composer_effort_off
 }
 
+// W19 (17.11.26): die Nutzer-Modell-Liste (chat_models_csv + add/remove) ist
+// ENTFERNT — Sir: „das fliegt komplett raus, nur Dropdown, nichts selbst
+// einzugeben“. Auswahl nur noch aus der Server-Liste (agent.models); diese
+// Prefs halten NUR die je-Agent-Auswahl (model_<agentId>) + Denk-Stufe.
 object ChatComposerPrefs {
     private const val FILE = "composer_prefs"
-    private const val KEY_MODELS = "chat_models_csv"
 
     fun model(context: Context, agentId: String): String? {
         if (agentId.isBlank()) return null
@@ -111,40 +103,21 @@ object ChatComposerPrefs {
         if (level.isNullOrBlank()) p.edit().remove("effort_$agentId").apply()
         else p.edit().putString("effort_$agentId", level).apply()
     }
-
-    fun models(context: Context): List<String> {
-        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-        return (p.getString(KEY_MODELS, "") ?: "")
-            .split(',')
-            .map { it.trim() }
-            .filter { it.isNotEmpty() }
-            .distinct()
-            .sorted()
-    }
-
-    fun addModel(context: Context, model: String) {
-        val m = model.trim()
-        if (m.isEmpty()) return
-        val cur = models(context).toMutableList()
-        if (m !in cur) cur.add(m)
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .edit().putString(KEY_MODELS, cur.joinToString(",")).apply()
-    }
-
-    fun removeModel(context: Context, model: String) {
-        val cur = models(context).toMutableList()
-        cur.remove(model.trim())
-        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-            .edit().putString(KEY_MODELS, cur.joinToString(",")).apply()
-    }
 }
 
 /**
  * Bottom-Sheet (Referenz: das 'Auto'-Chip öffnet die Auswahl): Modell-Liste
- * (Auto + eigene Einträge, ergänz- und entfernbar), Denk-Schieber (4 Rasten)
- * und — WELLE-13 P9 — der Vorlesen-Regler je Agent (Gerät spricht Agenten-
- * Antworten). Jede Änderung wirkt SOFORT (die Chips am Komposer spiegeln
- * den Stand) und gilt für die NÄCHSTE Nachricht dieses Chats.
+ * NUR aus dem Gateway-Katalog (agent.models) — das Freitext-Feld ist AUS
+ * (Sir 0.16.9: „nur Dropdown, nichts selbst einzugeben“, Senden fremder Namen
+ * via sendableModel technisch zu), Denk-Schieber (4 Rasten) und — WELLE-13
+ * P9 — der Vorlesen-Regler je Agent (Gerät spricht Agenten-Antworten). Jede
+ * Änderung wirkt SOFORT (die Chips am Komposer spiegeln den Stand) und gilt
+ * für die NÄCHSTE Nachricht dieses Chats.
+ *
+ * W19 (17.11.26): Aktiv-Zeile — der GATEWAY-Stand (agent.models 'current' +
+ * 'effort') wird im Sheet angezeigt; ohne 'current' bleibt die Zeile weg
+ * (kein Platzhalter-Geraffel). Ohne App-Auswahl ist der Gateway-'effort' die
+ * Slider-Suggestion ([effortStageIndex]); die App-Auswahl GEWINNT weiter.
  *
  * WELLE-13 P6 (Auto-Chip-Bug, Fix-Bein 2): das FRÜHERE `if (agentId.isBlank())
  * return` war die eigentliche tote Stelle — bei Demo-Agenten (Emu-Kette ohne
@@ -167,19 +140,22 @@ fun ChatModelSheet(
     onToggleReadAloud: (Boolean) -> Unit = {},
     // W16 (Fixliste 35): Modell-Katalog DIESES Agenten aus agent.models /
     // agent.models.enc (RelayClient.agentModels). null/leer = fail-soft:
-    // nur Auto-Modus + Hinweis; eigenes Modell bleibt erweiterte Option.
+    // nur Auto-Modus + Hinweis ('keine Modell-Liste') — KEIN Eingabefeld mehr.
     gatewayModels: List<String>? = null,
+    // W19 (17.11.26): GATEWAY-Stand dieses Agenten — das aktuell laufende
+    // Modell (agent.models 'current') + Denk-Stufe ('effort'), je Frame-
+    // Verband (RelayClient.agentModelCurrent / agentModelEffort). Fail-soft:
+    // null = Zeile/Suggestion weglassen. Werte sind REIN serverseitig
+    // (Sir-Generik-Regel: keine Modell-Namen, keine Defaults in der App).
+    gatewayCurrent: String? = null,
+    gatewayEffort: String? = null,
 ) {
     val context = LocalContext.current
-    var customRefresh by remember { mutableIntStateOf(0) }
-    var addText by remember { mutableStateOf("") }
-    val custom = remember(customRefresh) { ChatComposerPrefs.models(context) }
-    // W16 (Fixliste 35): Freitext-Eingabe = ERWEITERTE OPTION (zugeklappt) —
-    // statt Freitext-Pflicht ist die Gateway-Liste die Quelle; das Eingabefeld
-    // legt man bewusst frei (Label „Eigenes Modell …“).
-    var customAddOpen by remember { mutableStateOf(false) }
-    val stageIndex = THINK_STAGES.indexOfFirst { it.second == currentEffort }
-        .takeIf { it >= 0 } ?: 0
+    // W19 (17.11.26): Slider-Raste — die App-Auswahl GEWINNT (setEffort schreibt
+    // die App-Pref beim Slider-Zug); ohne App-Pref ist der Gateway-Stand
+    // ('effort') die Vorschlags-Raste (Regel in ModelSheetRules, JVM-getestet;
+    // Befund-Regression: der Slider stand ohne App-Pref dauerhaft auf Raste 0).
+    val stageIndex = effortStageIndex(currentEffort, gatewayEffort)
 
     // WELLE-13 P9: Engine-Zustand für den ehrlichen Fail-Hinweis (Checkliste K).
     val speechState by ChatSpeechSpeaker.state.collectAsState()
@@ -201,6 +177,24 @@ fun ChatModelSheet(
                  style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
                  color = FlipsiColors.TextPrimary, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
+            // W19 (17.11.26): Gateway-Stand ANZEIGEN — 'Aktiv: <current> ·
+            // Denken: <effort>' aus den agent.models-Frames (gateway-seitiger
+            // Stand, NUR Serverwissen). Ohne 'current' KEINE Zeile (kein
+            // Platzhalter-Geraffel); die Anzeige ist rein lesend — gewählt
+            // wird darunter aus der Server-Liste / Auto.
+            if (gatewayCurrent != null) {
+                Text(
+                    text = if (gatewayEffort.isNullOrBlank())
+                        stringResource(R.string.composer_active_line_model, gatewayCurrent)
+                    else
+                        stringResource(
+                            R.string.composer_active_line, gatewayCurrent, gatewayEffort,
+                        ),
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                    color = FlipsiColors.TextSecondary,
+                )
+                Spacer(Modifier.height(8.dp))
+            }
             // W16 (Fixliste 35): „Auto" bleibt STAND OBEN — der Gateway-Standard.
             ChipRow(
                 label = stringResource(R.string.composer_auto),
@@ -210,10 +204,12 @@ fun ChatModelSheet(
                 ChatComposerPrefs.setModel(context, agentId, null)
                 onPickModel(null)
             }
-            // W16 (Fixliste 35): fail-soft ohne Liste — nur Auto-Modus + Hinweis.
-            // (Liste fehlt = Adapter/Gateway liefert agent.models noch nicht;
-            // eigenes Modell bleibt unten als erweiterte Option frei.)
-            if (gatewayModels.isNullOrEmpty() && custom.isEmpty()) {
+            // W19 (17.11.26): fail-soft ohne Liste — nur Auto-Modus + Hinweis
+            // (Liste fehlt = Adapter/Gateway liefert agent.models noch nicht).
+            // KEIN Eingabefeld, KEINE Nutzer-Liste mehr: freie Modell-Namen
+            // können die App technisch nicht mehr verlassen (Sendepfad via
+            // sendableModel serverlisten-gebunden, Ende der Freitext-Weg).
+            if (gatewayModels.isNullOrEmpty()) {
                 Text(
                     stringResource(R.string.composer_no_list),
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
@@ -232,62 +228,11 @@ fun ChatModelSheet(
                     onPickModel(m)
                 }
             }
-            // Eigene Einträge (bestandene Nutzer-Liste) — unverändert
-            // entfernbar (Jaeger-2: Prefs miträumen).
-            custom.forEach { m ->
-                ChipRow(
-                    label = m,
-                    selected = currentModel == m,
-                    onRemove = {
-                        ChatComposerPrefs.removeModel(context, m)
-                        if (currentModel == m) { ChatComposerPrefs.setModel(context, agentId, null) } // Jaeger-2: Prefs mitraeumen
-                        if (currentModel == m) onPickModel(null)
-                        customRefresh++
-                    },
-                ) {
-                    ChatComposerPrefs.setModel(context, agentId, m)
-                    onPickModel(m)
-                }
-            }
-            // W16 (Fixliste 35): erweiterte Option — Freitext-Eingabe zugeklappt.
-            // Der Tap legt sie frei; die Auswahl selbst braucht KEINE Freitext-
-            // Pflicht mehr (Liste kommt vom Gateway).
-            val customAddA11y = stringResource(R.string.composer_custom_add)
-            Text(
-                text = stringResource(R.string.composer_custom_add),
-                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-                color = FlipsiColors.Ember,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
-                    .background(color = FlipsiColors.PanelElev, shape = RoundedCornerShape(12.dp))
-                    .clickable { customAddOpen = !customAddOpen }
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
-                    .semantics { contentDescription = customAddA11y },
-            )
-            if (customAddOpen) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = addText,
-                        onValueChange = { addText = it },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                        placeholder = { Text(stringResource(R.string.composer_add_placeholder),
-                                             color = FlipsiColors.TextSecondary) },
-                    )
-                    TextButton(
-                        onClick = {
-                            ChatComposerPrefs.addModel(context, addText)
-                            addText = ""
-                            customRefresh++
-                        },
-                        enabled = addText.isNotBlank(),
-                    ) { Text(stringResource(R.string.composer_add),
-                         color = if (addText.isNotBlank()) FlipsiColors.Ember
-                         else FlipsiColors.TextSecondary) }
-                }
-            }
+            // W19 (17.11.26): Eigene Einträge + Freitext-Eingabe sind ENTFERNT
+            // (Sir: „nur Dropdown, nichts selbst einzugeben“). NUR die vom
+            // Gateway gelieferten Modell-IDs (agent.models) bleiben wählbar;
+            // sendbar ist allein ein exakter Listen-Wert (ModelSheetRules.
+            // sendableModel — Freitext-Pfad technisch zu).
 
             Spacer(Modifier.height(16.dp))
             Text(stringResource(R.string.composer_thinking_title),
@@ -378,17 +323,18 @@ fun ChatModelSheet(
     }
 }
 
-/** Eine Auswahl-Zeile im Sheet (Auto-Zeile ohne Entfernen-Knopf). */
+/**
+ * Eine Auswahl-Zeile im Sheet (Entfernen-Knopf entfiel mit der Nutzer-Liste —
+ * Auswahl ausschließlich aus der Server-Liste; Auto-Zeile mit Sub-Label).
+ */
 @Composable
 private fun ChipRow(
     label: String,
     selected: Boolean,
     sub: String? = null,
-    onRemove: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
-    // W15: A11y- und Aktiv-Texte als Ressource (DE/EN) statt deutscher Literale.
-    val removeModelA11y = stringResource(R.string.composer_remove_a11y, label)
+    // W15: Aktiv-Text als Ressource (DE/EN) statt deutscher Literale.
     val activeLabel = stringResource(R.string.badge_active)
     Row(
         Modifier
@@ -402,15 +348,6 @@ private fun ChipRow(
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(Modifier.width(if (onRemove != null) 44.dp else 0.dp),
-            horizontalArrangement = Arrangement.Start) {
-            if (onRemove != null) {
-                IconButton(onClick = onRemove, modifier = Modifier.height(28.dp)) {
-                    Icon(Icons.Filled.Delete, contentDescription = removeModelA11y,
-                         tint = FlipsiColors.TextSecondary)
-                }
-            }
-        }
         Text(
             label,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
