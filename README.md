@@ -9,7 +9,7 @@
 ![Platform](https://img.shields.io/badge/platform-Android-blue)
 ![Built with](https://img.shields.io/badge/Kotlin%20%7C%20Jetpack%20Compose-blue)
 
-A community **Hermes Android companion app** — works with any Hermes Agent setup regardless of model provider (Ollama Cloud, OpenAI, local models): FlipsiBridge bridges your self-hosted gateway, not the model backend. Installable today from GitHub releases — no beta invite required.
+A community **Hermes Android companion app** — FlipsiBridge builds the connection between your phone and the Hermes Agent Gateway: encrypted agent chat (Double Ratchet, the relay sees only ciphertext) plus 40+ device tools over your own TLS-authenticated relay. Everything behind the gateway is your setup — FlipsiBridge doesn't touch it. Installable today from GitHub releases — no beta invite required.
 
 > ⚠️ Not affiliated with Nous Research — community project (TechFlipsi), listed in the official [plugin catalog](https://hermes-agent.nousresearch.com/docs/plugins/hermes-android) and on [hermesatlas.com](https://hermesatlas.com).
 
