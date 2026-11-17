@@ -1,8 +1,11 @@
 package com.hermesandroid.bridge.i18n
 
 import android.app.Activity
+import android.app.LocaleManager
 import android.content.Context
 import android.content.res.Configuration
+import android.os.Build
+import android.os.LocaleList
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.State
@@ -66,10 +69,33 @@ object AppLanguage {
     fun init(context: Context) {
         if (loaded) return
         loaded = true
-        mutableState.value = runCatching {
+        var tag = runCatching {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getString(KEY, SYSTEM) ?: SYSTEM
         }.getOrDefault(SYSTEM).takeIf { isOption(it) } ?: SYSTEM
+        // P45-W17: ab API 33 zählt die PLATTFORM-Wahl mit (per-app-Locale, z. B. in
+        // HyperOS gesetzt). Plattformwahl gesetzt und abweichend → übernehmen (System
+        // wählt, wir folgen); Plattformwahl leer und wir haben eine Wahl → unsere
+        // Wahl am System eintragen, damit sie auch systemseitig greift.
+        if (Build.VERSION.SDK_INT >= 33) {
+            runCatching {
+                val lm = context.getSystemService(LocaleManager::class.java)
+                val lmTag = lm?.applicationLocales
+                    ?.toLanguageTags()?.takeIf { it.isNotBlank() }
+                    ?.substringBefore('-')
+                if (lmTag == DE || lmTag == EN) {
+                    if (tag != lmTag) {
+                        runCatching {
+                            context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                .edit().putString(KEY, lmTag).apply()
+                        }
+                    }
+                } else if (tag != SYSTEM) {
+                    lm?.applicationLocales = LocaleList.create(Locale.forLanguageTag(tag))
+                }
+            }
+        }
+        mutableState.value = tag
     }
 
     /**
@@ -85,6 +111,18 @@ object AppLanguage {
                 .edit().putString(KEY, tag).apply()
         }
         mutableState.value = tag
+        // P45-W17 (Sir 17.11.: Umschaltung wirkte am HyperOS-Handy nicht, auch nach
+        // Kill/Restart): ab API 33 ZUSÄTZLICH der Plattform-Weg — per-app-Locale via
+        // LocaleManager. Warum: MIUI/HyperOS kann den reinen Compose-Wrap umgehen;
+        // applicationLocales trägt das System selbst ein und überlebt Kill/Restart
+        // garantiert. Der Compose-Wrap (unten) bleibt für Sofort-Wirksamkeit + <33.
+        if (Build.VERSION.SDK_INT >= 33) {
+            runCatching {
+                context.getSystemService(LocaleManager::class.java)?.applicationLocales =
+                    if (tag == SYSTEM) LocaleList.getEmptyLocaleList()
+                    else LocaleList.create(Locale.forLanguageTag(tag))
+            }
+        }
     }
 
     /**

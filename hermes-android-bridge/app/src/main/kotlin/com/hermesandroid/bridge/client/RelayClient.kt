@@ -26,6 +26,7 @@ import com.hermesandroid.bridge.crypto.IdentityStore
 import com.hermesandroid.bridge.crypto.PrefsIdentityStore
 import com.hermesandroid.bridge.crypto.PhoneCryptoPeer
 import com.hermesandroid.bridge.event.EventStore
+import com.hermesandroid.bridge.security.MtlsSupport
 import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
@@ -152,7 +153,7 @@ object RelayClient {
     // W4-FIX-JAG2 (Drill-Hatch): lazy statt eager — der Trust-Schalter liest
     // Settings.Global beim ERSTEN Connect (BridgeApplication.instance + die
     // Drill-Einstellung sind dann gesetzt; beim Object-Init war beides null).
-    private val client: OkHttpClient by lazy {
+    private val client: OkHttpClient by lazy { MtlsSupport.decorate(
         OkHttpClient.Builder()
             // PH-FIX-CHAT-A (F6, 30-s-Keepalive): WS-Ping-Frames (opcode 0x9)
             // im 30-s-Raster — Spiegel zum 30-s-Keepalive-Raster der Agenten.
@@ -166,8 +167,10 @@ object RelayClient {
             // (v0.12.0 Akku P1-1 hatte 20→45 s erhöht, weil der Relay eh alle
             // 15 s heartbeatet — die App-EIGENE Toterkennung war der Engpass.)
             .pingInterval(java.time.Duration.ofSeconds(30))
-            // W4-01b (W3-03, App-Lane A): SPKI-PINNING — der Pin-Verband
-            // hängt direkt am Client (certificatePinner).
+            // W4-01b (W3-03, App-Lane A): SPKI-PINNING VOR decorate() — der
+            // Pin-Verband hängt am Client, BEVOR MtlsSupport.decorate() über
+            // newBuilder() das mTLS-Socket einbaut (OkHttp newBuilder() erbt
+            // certificatePinner — decorate() kann das Pinning nicht umgehen).
             // Nur der eigene Relay-Host ist gepinnt (PinSource/SF5); Nutzer-
             // Relays laufen hostname-only. Debug-Kill-Switch für Drills: siehe
             // PinSource.setPinningDisabledForDrill (nimmt NUR die PIN-Schicht).
@@ -201,7 +204,7 @@ object RelayClient {
                 Log.w(TAG, "DRILL-TRUST-ALL aktiv (Debug + Settings-Knopf) — NUR Drill-Socket")
             })
             .build()
-    }
+    ) }
 
     /** Status-Zuhörer — MainActivity/Service/UI hören je selbst zu (keine Slot-Race). */
     private val statusListeners = CopyOnWriteArrayList<(connected: Boolean, message: String) -> Unit>()

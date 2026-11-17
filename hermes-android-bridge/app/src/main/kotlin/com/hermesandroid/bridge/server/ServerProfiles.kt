@@ -27,7 +27,7 @@ import java.util.UUID
  * bestehende Kopplung (RelayClient.serverUrl-Prefs + PairingManager-Code) ab,
  * damit Upgrade-Installationen KEINEN Wizard sehen (QA J2).
  *
- * SINGLETONS-FASER (Sir-Verband): RelayClient object + PairingManager
+ * SINGLETONS-FASER (Sir-Verband): RelayClient object + MtlsSupport + PairingManager
  * folgen dem AKTIVEN Profil — es gibt bewusst GENAU EINE
  * WebSocket-Kette, kein Multi-WS:
  *  - Profil-Wechsel = [connectViaProfile]: SSOT-Adoption des Profil-Codes in
@@ -36,6 +36,8 @@ import java.util.UUID
  *  - Der OkHttpClient-Konstrukt in RelayClient (der Lane-A-Pin/Pins-Verband)
  *    bleibt UNBERÜHRT — Profile wechseln NUR URL+Code, niemals die
  *    Client-Fabrrik (Lane-A-Zone).
+ *  - mTLS-Alias bleibt Geräte-Ebene (MtlsSupport.selectedAlias) — je-Profil-
+ *    Zertifikate wären eine Lane-A-Kette und sind hier bewusst nicht angerührt.
  *
  * ER-START-DETECT (A6): onboardingDone ist ein persistenter Merker im
  * JSON-Speicher. false → MainActivity zeigt den Onboarding-Wizard statt der

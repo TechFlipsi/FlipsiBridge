@@ -22,6 +22,7 @@ class BridgeApplication : Application() {
         WakeLockManager.init(applicationContext)
         // FlipsiBridge-Fix (v0.9.2): CapabilityGate initialisieren — ohne init() ist prefs null,
         // alle Schalter lesen/kein Speichern (Alles nach App-Neustart wieder AUS, Gate lahmgelegt).
+        com.hermesandroid.bridge.security.MtlsSupport.init(applicationContext)
         com.hermesandroid.bridge.security.CapabilityGate.init(applicationContext)
         BridgeServer.start(port = 8765)
 

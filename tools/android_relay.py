@@ -1185,6 +1185,17 @@ def set_pairing_code(code: str) -> None:
         logger.info("Pairing code updated")
     if state is None or not changed:
         return
+    # W16.3 (P41): Code-Wechsel öffnet das Enrollment-Fenster neu
+    # (CODE-EINMALIGKEIT: je Epoch ein Neugerät; Reset hier).
+    try:
+        try:
+            from tools.mtls_enroll import reset_epoch as _mtls_reset_epoch
+        except ImportError:
+            from mtls_enroll import reset_epoch as _mtls_reset_epoch
+        import threading as _threading
+        _threading.Thread(target=_mtls_reset_epoch, daemon=True).start()
+    except Exception as exc:
+        logger.warning("mtls_enroll epoch-reset fehlgeschlagen (fail-soft): %s", exc)
     # Kick der Phone-WS im Relay-Loop (Thread-sicher; Aufrufer ist Sync-Kontext)
     loop = state.loop
     if loop is None or state.thread is None or not state.thread.is_alive():
@@ -1344,13 +1355,55 @@ _RELAY_NATIVE_ROUTES = frozenset(
     {"/chat", "/chat_event", "/key_publish", "/key_get", "/crypto_hello", "/media"})
 
 
+# ── W16.3 Stufe 2, Layer 2 (16.11.26): CN-vs-Registry-Gate (W17-RÜCKHOLUNG auf
+# Sir-Weisung 17.11.: Zertifikat bleibt zusätzlich drin, PW = dritter Faktor) ──
+_MTLS_GATE_PATHS = frozenset(
+    {"/ws", "/chat", "/chat_event", "/media", "/key_publish", "/key_get", "/crypto_hello"})
+
+def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
+    """Layer 2 hinter dem NPM-Zert-Zwang (Layer 1 = nginx 421 bei fehlendem Zert):
+    NPM reicht X-SSL-Verify/X-SSL-Device-DN durch (server_proxy.conf, Regex-Location);
+    hier: Verify=SUCCESS UND CN in der Device-Registry nötig. Fail-closed bei
+    Registry-Fehlern. Exklusiv Prod (ANDROID_MTLS_ENFORCE=1) — Drills/direkte
+    Agenten-Verbindungen (/agent_ws Direct) laufen ohne Gate."""
+    if os.getenv("ANDROID_MTLS_ENFORCE", "0") != "1":
+        return None
+    if request.path not in _MTLS_GATE_PATHS:
+        return None
+    dn = request.headers.get("X-SSL-Device-DN") or ""
+    m = re.search(r"CN=flipsibridge-([0-9a-fA-F-]+)", dn)
+    if request.headers.get("X-SSL-Verify", "") == "SUCCESS" and m:
+        try:
+            try:
+                from tools.mtls_enroll import _registry_load as _rg
+            except Exception:
+                from mtls_enroll import _registry_load as _rg
+            enrolled = (_rg() or {}).get("enrolled") or {}
+            if m.group(1).lower() in {str(k).lower() for k in enrolled}:
+                return None
+        except Exception as exc:
+            logger.warning("mtls-gate: Registry-Fehler — fail-closed: %s", exc)
+    else:
+        logger.info("mtls-gate: Ablehnung %s (verify=%r, dn=%.60s)", request.path,
+                    request.headers.get("X-SSL-Verify", "<kein Header>"), dn)
+    return web.json_response({"error": "mtls-unknown-device"}, status=403)
+
+@web.middleware
+async def _mtls_gate_mw(request: "web.Request", handler):
+    gated = _mtls_gate(request)
+    if gated is not None:
+        return gated
+    return await handler(request)
+
+
 async def _serve(state: _RelayState, ready: threading.Event) -> None:
     """Build the aiohttp app, start the site, and block until shutdown."""
     # v0.10.8-Deploy-Fix: aiohttp-Default client_max_size ist 1MB - grosse
     # POST-Bodies (files_push mit APK als base64) wurden still gekappt, die App
     # sah ein leeres JSON und antwortete 'Pflichtfelder fehlen'. 96MB deckt das
     # app-seitige 48MB-Dateilimit (x1.37 Base64) plus JSON-Overhead ab.
-    app = web.Application(client_max_size=96 * 1024 * 1024)
+    app = web.Application(client_max_size=96 * 1024 * 1024,
+                          middlewares=[_mtls_gate_mw])
     state.app = app
 
     # WebSocket endpoint
@@ -1528,6 +1581,22 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
         if method in ("POST", "BOTH"):
             app.router.add_post(path, handler)
 
+    # W16.3 (P41, Sir): Enrollment-Routen /mtls/enroll[/challenge] — fail-soft:
+    # Init-Fehler (keine OpenSSL-CA-Materialien) = Routen OFF + Log, der Rest
+    # des Relays läuft unverändert (P22-Stufe 1: Ausstellen + Registry +
+    # Code-Einmaligkeit; Enforcement am Socket = Stufe 2 nginx-Verband).
+    # W17-RÜCKHOLUNG (17.11., Sir: „Zertifikat bleibt zusätzlich drin“).
+    try:
+        try:  # Daemon lädt android_relay als tools.android_relay → Package-Weg
+            from tools.mtls_enroll import add_routes as _mtls_add_routes
+        except ImportError:  # Flat-Import (direkter Modul-Lauf)
+            from mtls_enroll import add_routes as _mtls_add_routes
+        if _mtls_add_routes(app):
+            logger.info("mTLS-Enrollment-Routen aktiv (P41)")
+        else:
+            logger.info("mTLS-Enrollment OFF (Init fehlgeschlagen — fail-soft)")
+    except Exception as exc:
+        logger.warning("mTLS-Enrollment-Wiring fehlgeschlagen (fail-soft): %s", exc)
     runner = web.AppRunner(app)
     state.runner = runner
     await runner.setup()

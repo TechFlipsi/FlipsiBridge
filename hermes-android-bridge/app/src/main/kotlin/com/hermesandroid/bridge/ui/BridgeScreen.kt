@@ -102,6 +102,7 @@ import com.hermesandroid.bridge.ui.chat.ChatScreen
 import com.hermesandroid.bridge.ui.dashboard.DashboardScreen
 import com.hermesandroid.bridge.ui.settings.AboutSheetHost
 import com.hermesandroid.bridge.ui.settings.AboutState
+import com.hermesandroid.bridge.security.MtlsSupport
 import com.hermesandroid.bridge.ui.settings.PairingPasswordCard
 import com.hermesandroid.bridge.ui.settings.PairingPasswordPromptFlow
 import com.hermesandroid.bridge.ui.settings.SettingsHome
@@ -585,6 +586,11 @@ fun BridgeScreen(initialRoute: Int = 0) {
                         },
                         onRegenerateRequest = { showRegenDialog = true },
                     )
+                    // mTLS (W16.3, Fixliste 41): Karte zeigt den app-verwalteten
+                    // Device-Leg + Enrollment-Button (Server stellt das
+                    // Zertifikat aus). Der tote KeyChain-Systemdialog ist rauf —
+                    // KeyChain bleibt nur als Fallback in MtlsSupport.decorate().
+                    MtlsCard(configVersion = configVersion)
                 }
 
 
@@ -1463,6 +1469,77 @@ private fun AccordionCard(
                         .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     content = content,
+                )
+            }
+        }
+    }
+}
+
+private fun MtlsCard(configVersion: Int) {
+    val context = LocalContext.current
+    var cn by remember(configVersion) { mutableStateOf(MtlsSupport.Enrollment.deviceCn(context)) }
+    var running by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    Card(
+        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
+        shape = MaterialTheme.shapes.medium,
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text(stringResource(R.string.mtls_title), fontWeight = FontWeight.SemiBold)
+            Text(
+                text = if (cn != null)
+                    stringResource(R.string.mtls_device_ok, cn!!)
+                else
+                    stringResource(R.string.mtls_device_none),
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextSecondary,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            OutlinedButton(
+                onClick = {
+                    android.util.Log.i("MtlsCard", "click: running=" + running +
+                        ", profile=" + (ServerProfiles.activeProfile()?.id ?: "-null-"))
+                    if (running) return@OutlinedButton
+                    val profile = ServerProfiles.activeProfile()
+                    if (profile == null) {
+                        BridgeStatus.showText(context.getString(R.string.mtls_no_profile))
+                        return@OutlinedButton
+                    }
+                    running = true
+                    scope.launch {
+                        val res = kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO,
+                        ) {
+                            val code = ServerProfiles.codeOf(profile.id)
+                            if (code.isBlank()) {
+                                MtlsSupport.Enrollment.Result(ok = false, error = "no-code")
+                            } else {
+                                MtlsSupport.Enrollment.enrollDevice(context, profile.url, code)
+                            }
+                        }
+                        running = false
+                        when {
+                            res.ok -> {
+                                cn = res.cn
+                                BridgeStatus.showText(
+                                    context.getString(R.string.mtls_enroll_ok, res.cn ?: "?"))
+                            }
+                            res.error == "no-code" ->
+                                BridgeStatus.showText(context.getString(R.string.mtls_no_code))
+                            res.error != null && res.error!!.startsWith("enroll:403") ->
+                                BridgeStatus.showText(context.getString(R.string.mtls_code_used))
+                            else -> BridgeStatus.showText(
+                                context.getString(R.string.mtls_enroll_error, res.error ?: "?"))
+                        }
+                    }
+                },
+                enabled = !running,
+                modifier = Modifier.padding(top = 10.dp).height(48.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
+            ) {
+                Text(
+                    if (running) stringResource(R.string.mtls_enrolling)
+                    else stringResource(R.string.mtls_request)
                 )
             }
         }
