@@ -129,6 +129,31 @@ _HELP_TEXT = (
     "Hinweis: Befehle steuert der Adapter, nicht die App."
 )
 
+# ── W18 (Sir, 17.11.2026): agent.models-Broadcast (Fixliste 35) ───────────────
+# Das Modell & Denken-Sheet der App braucht die WÄHLISTE vom Server, sonst
+# bleibt nur „Auto". Der Adapter sammelt den Katalog + aktuelles Modell/
+# Denk-Stufe aus der Agenten-Konfiguration und broadcastet sie:
+#   - JE Connect (ohne Session: Klartext 'agent.models' Late-Joiner-Sofort),
+#   - JE bestätigtem E2E-Handshake (hello_ack-Verband, PFLICHT enc),
+#   - JE 60 s Refresh-Timer (spät verbindende Geräte kriegen den Katalog
+#     nachgeschoben, statt ihn erst bei der ersten Nachricht zu sehen).
+# Verband: chat.session_meta (Fixliste 14) — enc-Spiegel bei aktiver Session,
+# Klartext nur, wenn KEINE Session aktiv (der App-Downgrade-Guard verwirft
+# Klartext bei aktiver Session). Der Relay ist opaker Pass-Through mit den
+# Typen 'agent.models'/'agent.models.enc' (Fixliste 35, W16-Verband); Struktur-
+# Gate-Parität zum Relay-_agent_models_ok + App-MAX_AGENT_MODELS.
+AGENT_MODELS_FRAME = "agent.models"
+AGENT_MODELS_ENC_FRAME = "agent.models.enc"
+AGENT_MODELS_LIST_MAX = 24    # Relay _agent_models_ok / App MAX_AGENT_MODELS
+AGENT_MODELS_ENTRY_MAX = 64   # je Modell-ID ≤ 64 (Parität _agent_models_ok)
+AGENT_MODELS_REFRESH_S = 60   # Refresh-Timer für Late-Joiner (Fixliste 35)
+# Default-Katalog (Provider ollama-cloud): sir-festgelegte sinnvolle Sammlung.
+# Override: FLIPSI_MODELS (Komma-Liste); fehlt die Zerlegung → bleibt dieser Katalog.
+AGENT_MODELS_DEFAULT_CATALOG: tuple[str, ...] = (
+    "glm-5.3", "glm-5.3-flash", "deepseek-v4-pro", "gpt-oss:120b",
+    "mistral-large-4", "minimax-m3", "kimi-k3:cloud",
+)
+
 
 class MediaError(RuntimeError):
     """Media-Übertragung fehlgeschlagen (Struktur/Größe/Integrität)."""
@@ -972,6 +997,28 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # Zustellung: 1 Hinweis je Agent (Adapter-Instanz) pro Zeitfenster.
         self._home_notice_last_ts: float = 0.0
 
+        # --- W18 (Sir): agent.models-Broadcast (Fixliste 35) ---
+        # Katalog + current/effort je Connect, je bestätigtem Handshake und
+        # alle 60 s Refresh. Fail-soft: der Broadcast bricht nie den Chat.
+        # Override-Kette je Wert: Env/extra → Hermes-Config (delegation.*) →
+        # Default-Katalog-Verband.
+        _models_env = _cfg(extra, "FLIPSI_MODELS")
+        self._models_override: Optional[list[str]] = (
+            [m.strip() for m in _models_env.split(",") if m.strip()]
+            if _models_env else None)
+        self._current_model_override: str = _cfg(extra, "FLIPSI_CURRENT_MODEL")
+        self._current_effort_override: str = _cfg(extra, "FLIPSI_REASONING_EFFORT")
+        self.hermes_config_path: str = _cfg(extra, "FLIPSI_HERMES_CONFIG") or os.path.join(
+            os.path.expanduser("~"), ".hermes", "config.yaml")
+        try:
+            self.models_refresh_s: int = max(
+                1, int(_cfg(extra, "FLIPSI_MODELS_REFRESH_S",
+                            default=str(AGENT_MODELS_REFRESH_S))
+                       or AGENT_MODELS_REFRESH_S))
+        except ValueError:
+            self.models_refresh_s = AGENT_MODELS_REFRESH_S
+        self._models_task: Optional[asyncio.Task] = None  # W18: Refresh-Timer
+
     # ------------------------------------------------------------------ Pinning
     def _pin_relay_url(self) -> str:
         """Whitelist-Pinning (I3): geprüfte Relay-URL oder AdapterPinningError.
@@ -1030,6 +1077,17 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._frame_task = asyncio.get_running_loop().create_task(self._frame_loop())
         self._connected = True
         logger.info("FlipsiBridge-Adapter verbunden (agent_id=%s)", self.agent_id)
+        # W18 (Fixliste 35): Refresh-Timer für den agent.models-Broadcast
+        # (Late-Joiner) + SOFORT-Broadcast je Connect — ohne Session als
+        # Klartext, mit Session nur enc (App-Downgrade-Guard würde Klartext
+        # verwerfen). Fail-soft: kein Connect-Erfolg hängt am Broadcast.
+        self._models_task = asyncio.get_running_loop().create_task(
+            self._models_refresh_loop())
+        try:
+            await self.emit_models()
+        except Exception:
+            logger.warning("FlipsiBridge: agent.models-Connect-Send fehlgeschlagen",
+                           exc_info=True)
         return True
 
     async def _open_ws(self, url: str) -> Any:
@@ -1052,6 +1110,13 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Frame-Loop stoppen + WS sauber schließen."""
         self._connected = False
+        if self._models_task is not None:
+            self._models_task.cancel()
+            try:
+                await self._models_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._models_task = None
         if self._frame_task is not None:
             self._frame_task.cancel()
             try:
@@ -1275,6 +1340,162 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             await self._send_json({"type": "typing", "v": _PROTOCOL_VERSION,
                                    "agent_id": self.agent_id,
                                    "chat_id": self._relay_chat_id_for(chat_id)})
+
+    # ───────────────────────── W18: agent.models-Broadcast (Fixliste 35) ──
+
+    @staticmethod
+    def _sanitize_model_list(raw: Any) -> list[str]:
+        """Katalog hart trimmen — Struktur-Gate-Parität zum Relay
+        (_agent_models_ok) + App-MAX_AGENT_MODELS: nicht-leere Strings ≤ 64,
+        Dedup (Reihenfolge bleibt), Deckel 24. Ungültige Einträge fliegen
+        still (fail-soft: schrottige Overrides nehmen den Katalog nicht mit).
+        Zusätzlich _COMPOSER_MODEL_RE-Charset: jede gepickte Modell-ID muss
+        denselben /model-Weg wieder zurücklaufen dürfen."""
+        out: list[str] = []
+        if not isinstance(raw, (list, tuple)):
+            return out
+        for item in raw:
+            if not isinstance(item, str):
+                continue
+            entry = item.strip()
+            if (not entry or len(entry) > AGENT_MODELS_ENTRY_MAX
+                    or not _COMPOSER_MODEL_RE.match(entry) or entry in out):
+                continue
+            if len(out) >= AGENT_MODELS_LIST_MAX:
+                break
+            out.append(entry)
+        return out
+
+    def _read_hermes_delegation(self) -> tuple[str, str, str]:
+        """Aktuelles Modell/Denk-Stufe aus der Hermes-Agenten-Konfig lesen
+        (self.hermes_config_path → delegation.model/reasoning_effort/provider).
+
+        PyYAML wenn vorhanden, sonst toleranter Zeilen-Scan (fail-soft):
+        Kinder des Top-Level-Blocks 'delegation:' bis zum nächsten Key.
+        Rückgabe ('', '', '') = nicht lesbar — der Verband fällt dann auf
+        Env-Override bzw. den Default-Katalog zurück.
+        """
+        try:
+            with open(self.hermes_config_path, "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            return "", "", ""
+        try:
+            import yaml  # type: ignore[import-untyped]
+            data = yaml.safe_load(text) or {}
+            block = data.get("delegation") if isinstance(data, dict) else None
+            if isinstance(block, dict):
+                return (str(block.get("model") or "").strip(),
+                        str(block.get("reasoning_effort") or "").strip(),
+                        str(block.get("provider") or "").strip())
+            return "", "", ""
+        except Exception:
+            pass
+        # Zeilen-Scan (kein yaml-Modul / ungültiges YAML):
+        model = effort = provider = ""
+        in_block = False
+        for line in text.splitlines():
+            if re.match(r"^delegation:\s*(?:#.*)?$", line):
+                in_block = True
+                continue
+            if not in_block:
+                continue
+            if line and not line[0].isspace():
+                break  # nächster Top-Level-Key
+            m = re.match(r"\s+model:\s*([^\s#]+)", line)
+            if m:
+                model = m.group(1).strip().strip("'\"")
+            m = re.match(r"\s+reasoning_effort:\s*([^\s#]+)", line)
+            if m:
+                effort = m.group(1).strip().strip("'\"")
+            m = re.match(r"\s+provider:\s*([^\s#]+)", line)
+            if m:
+                provider = m.group(1).strip().strip("'\"")
+        return model, effort, provider
+
+    def _model_catalog(self) -> tuple[list[str], str, str]:
+        """(Katalog, current, effort) sammeln — override-fähig, fail-soft.
+
+        Katalog: FLIPSI_MODELS-Override (init-Zerlegung) sonst AGENT_MODELS_
+        DEFAULT_CATALOG; current: FLIPSI_CURRENT_MODEL → delegation.model;
+        effort: FLIPSI_REASONING_EFFORT → delegation.reasoning_effort.
+        current zählt als Katalog-Mitglied (fehlt er, wird er angehängt).
+        """
+        base = self._sanitize_model_list(self._models_override) \
+            if self._models_override is not None \
+            else self._sanitize_model_list(list(AGENT_MODELS_DEFAULT_CATALOG))
+        current = self._current_model_override
+        effort = self._current_effort_override
+        if not current or not effort:
+            cfg_model, cfg_effort, _provider = self._read_hermes_delegation()
+            if not current:
+                current = cfg_model
+            if not effort:
+                effort = cfg_effort
+        current = current.strip()
+        if len(current) > AGENT_MODELS_ENTRY_MAX:
+            current = ""
+        if current and current not in base:
+            if len(base) < AGENT_MODELS_LIST_MAX:
+                base = base + [current]
+            else:
+                base = base[:-1] + [current]  # Deckel: current verdrängt das letzte
+        if not current and base:
+            current = base[0]  # Auto-Default: erster Katalog-Eintrag
+        return base, current, effort.strip()
+
+    async def emit_models(self) -> bool:
+        """agent.models-Broadcast — enc-first in chat.session_meta-Parität:
+        aktive E2E-Session → PFLICHT 'agent.models.enc' (Klartext würde vom
+        App-Downgrade-Guard verworfen); ohne Session → Klartext 'agent.models'
+        (Legacy-Weg, App akzeptiert ihn nur ohne Session). Payload: models
+        (Liste), current (aktives Modell), effort (Denk-Stufe). Rückgabe:
+        gesendet (True) — Fehler sind fail-soft geloggt, nie fatal.
+
+        REPLAY-GRENZE (Relay-Verband, W18-Stand): _handle_agent_models baut
+        den weitergereichten Klartext-Frame NEU (models-only) — current/effort
+        kommen real nur im enc-Pfad ans Phone (opaker Pass-Through). Der
+        enc-Pfad ist der verbandspflichtige (Session aktiv = Pflicht), der
+        Klartext-Weg bleibt Übergangs-Legacy (nur Liste, vor erstem Handshake).
+        """
+        if not self._connected or self._ws is None:
+            return False
+        try:
+            models, current, effort = self._model_catalog()
+        except Exception:
+            logger.warning("FlipsiBridge: agent.models-Katalog unlesbar — Broadcast übersprungen",
+                           exc_info=True)
+            return False
+        session = self._active_session()
+        if session is not None:
+            envelope = session.encrypt_frame(
+                AGENT_MODELS_ENC_FRAME, "",
+                {"models": models, "current": current, "effort": effort})
+        else:
+            envelope = {
+                "type": AGENT_MODELS_FRAME, "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id,
+                "models": models, "current": current, "effort": effort,
+            }
+        try:
+            await self._send_json(envelope)
+            return True
+        except Exception as exc:
+            logger.warning("FlipsiBridge: agent.models-Broadcast fehlgeschlagen: %s", exc)
+            return False
+
+    async def _models_refresh_loop(self) -> None:
+        """agent.models je 60 s nachsenden — spät verbindende Geräte kriegen
+        den Katalog ohne erstes Warten. Fehler sind fail-soft; Canceln über
+        disconnect(). Start-Verzögerung = models_refresh_s (je Connect sendet
+        connect() bereits sofort)."""
+        while True:
+            await asyncio.sleep(self.models_refresh_s)
+            try:
+                await self.emit_models()
+            except Exception:
+                logger.warning("FlipsiBridge: agent.models-Refresh fehlgeschlagen",
+                               exc_info=True)
 
     async def send_image(self, chat_id: str, image_url: str,
                          caption: Optional[str] = None) -> SendResult:
@@ -1536,13 +1757,23 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
 
     async def _send_ack(self, ack: dict, session: AgentCryptoSession) -> None:
         """hello_ack senden; scheitert der Send, wird die frische Session
-        wieder verworfen (kein Zustand ohne bestätigte Verbindung)."""
+        wieder verworfen (kein Zustand ohne bestätigte Verbindung). Nach
+        ERFOLGREICHEM Ack gilt die Session als bestätigt → W18: der
+        agent.models-Broadcast geht sofort als 'agent.models.enc' raus
+        (enc-Verband-Pflicht: Klartext würfe der App-Downgrade-Guard weg).
+        Fail-soft: kein Ack-Erfolg hängt am Broadcast."""
         try:
             await self._send_json(ack)
         except Exception as exc:
             logger.warning("FlipsiBridge: hello_ack-Send fehlgeschlagen: %s", exc)
             if self._crypto_session is session:
                 self._crypto_session = None
+            return
+        try:
+            await self.emit_models()
+        except Exception:
+            logger.warning("FlipsiBridge: agent.models-Handshake-Send fehlgeschlagen",
+                           exc_info=True)
 
     def _read_phone_pin(self) -> Optional[dict]:
         """FIX-WELLE-2 B2: Phone-Pin-Datei lesen (dict) — None = unlesbar.

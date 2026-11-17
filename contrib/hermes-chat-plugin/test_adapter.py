@@ -25,6 +25,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.modules["gateway"] = None  # None-Eintrag → ImportError im try/except des Adapters
 
 from adapter import (  # noqa: E402
+    AGENT_MODELS_DEFAULT_CATALOG, AGENT_MODELS_ENC_FRAME, AGENT_MODELS_FRAME,
     AdapterPinningError, FlipsiBridgeChatAdapter, check_flipsibridge_requirements)
 
 RELAY = "wss://relay.example.internal/agent_ws"
@@ -1430,3 +1431,148 @@ async def test_media_dir_retention_prunes_oldest(tmp_path) -> None:
     await a.disconnect()
     print(f"OK MEDIA-T1: Retention hält Budget ({total_bytes} Bytes, "
           f"{len(remaining)} Dateien)")
+
+
+# ── W18: agent.models-Broadcast (Fixliste 35, Sir 17.11.2026) ─────────────────
+# Verband: Adapter broadcastet Modell-Katalog + current/effort — JE Connect
+# (Klartext, keine Session), JE bestätigtem Handshake (agent.models.enc,
+# PFLICHT), alle 60 s Refresh (Late-Joiner). Tests sind hermetisch: jede
+# setzt FLIPSI_HERMES_CONFIG auf tmp-Pfade, nie auf die Live-Konfiguration.
+
+_W18_HERMES_CONFIG = """\
+model:
+  provider: ollama-cloud
+  model: top-level-ignored:1
+delegation:
+  provider: ollama-cloud
+  model: w18-hermes-model
+  reasoning_effort: max
+"""
+
+
+@pytest.mark.asyncio
+async def test_w18_agent_models_plain_broadcast_on_connect(tmp_path) -> None:
+    """Klartext-Weg ohne E2E-Session: JE Connect geht agent.models raus
+    (Fixliste 35: 'Katalog klar je Connect'). Shape: type/v/agent_id +
+    models (Strings ≤64, Gate-Parität Relay _agent_models_ok / App
+    MAX_AGENT_MODELS) + current + effort aus der Hermes-Config."""
+    cfg = tmp_path / "hermes.yaml"
+    cfg.write_text(_W18_HERMES_CONFIG)
+    a, ws = make_adapter({"FLIPSI_HERMES_CONFIG": str(cfg),
+                          "FLIPSI_MODELS": "glm-5.3, glm-5.3-flash, w18-x:cloud"})
+    ok = await a.connect()
+    assert ok and a.is_connected()
+    frames = [f for f in ws.sent if f["type"] == AGENT_MODELS_FRAME]
+    assert frames, "connect() muss den agent.models-Broadcast senden"
+    f = frames[0]
+    assert f["v"] == 1 and f["agent_id"] == "agent-a"
+    assert f["models"] == ["glm-5.3", "glm-5.3-flash", "w18-x:cloud",
+                           "w18-hermes-model"], "Override + current-Anhang"
+    assert f["current"] == "w18-hermes-model"
+    assert f["effort"] == "max"
+    assert not [t for t in ws.sent if t["type"] == AGENT_MODELS_ENC_FRAME], \
+        "ohne Session darf KEINE enc-Variante gesendet werden"
+    await a.disconnect()
+    print("OK W18: agent.models je Connect (Shape, Katalog + current + effort)")
+
+
+@pytest.mark.asyncio
+async def test_w18_agent_models_enc_first_after_handshake(tmp_path) -> None:
+    """Mit bestätigter E2E-Session ist der enc-Weg PFLICHT: nach dem
+    hello_ack-Verband geht 'agent.models.enc' (chat.session_meta-Parität),
+    NIE mehr Klartext (App-Downgrade-Guard verwirft ihn), und models/current/
+    effort leben NUR im AES-GCM-ct."""
+    a, ws = _make_crypto_adapter(tmp_path, env_extra={
+        "FLIPSI_MODELS": "glm-5.3-flash, w18-y:cloud",
+        "FLIPSI_HERMES_CONFIG": str(tmp_path / "fehlt.yaml")})
+    await a.connect()
+    peer = await _establish_session(a, ws)
+    assert a._crypto_session is not None
+    enc = [f for f in ws.sent if f["type"] == AGENT_MODELS_ENC_FRAME]
+    assert enc, "nach bestätigtem Handshake (Ack-Verband) muss agent.models.enc gehen"
+    # enc-Envelope: keine Klartext-Modell-Felder, ct-Pflicht:
+    assert "models" not in enc[-1] and "current" not in enc[-1]
+    assert "ct" in enc[-1] and "session_id" in enc[-1]
+    # Kette in Sendereihenfolge konsumieren & letzten Payload lesen:
+    payload = None
+    for frame in enc:
+        payload = peer.decrypt_frame(frame)
+    assert isinstance(payload.get("models"), list) and payload["models"]
+    assert payload["models"] == ["glm-5.3-flash", "w18-y:cloud"]
+    assert payload["current"] == "glm-5.3-flash"  # Auto-Default = 1. Katalog-Eintrag
+    assert "effort" in payload
+    # Kein Klartext-Downgrade mit aktiver Session (bewusst doppelt gesendet):
+    before_plain = len([t for t in ws.sent if t["type"] == AGENT_MODELS_FRAME])
+    before_enc = len(enc)
+    assert await a.emit_models() is True
+    assert len([t for t in ws.sent if t["type"] == AGENT_MODELS_FRAME]) == before_plain, \
+        "mit aktiver Session darf KEIN Klartext-agent.models mehr gehen"
+    enc2 = [t for t in ws.sent if t["type"] == AGENT_MODELS_ENC_FRAME]
+    assert len(enc2) == before_enc + 1
+    payload2 = peer.decrypt_frame(enc2[-1])
+    assert payload2["models"] == ["glm-5.3-flash", "w18-y:cloud"]
+    await a.disconnect()
+    print("OK W18: enc-first nach Handshake (ct-only-Payload, kein Downgrade)")
+
+
+@pytest.mark.asyncio
+async def test_w18_agent_models_default_catalog_when_no_config(tmp_path) -> None:
+    """Ohne Overrides/Config: der sir-festgelegte Default-Katalog
+    (ollama-cloud-Sammlung, ≥6 Modelle) landet im Frame; current-Auto-Default
+    = erster Katalog-Eintrag, effort leer (keine lesbaren delegation-Werte)."""
+    assert len(AGENT_MODELS_DEFAULT_CATALOG) >= 6
+    a, ws = make_adapter({"FLIPSI_HERMES_CONFIG": str(tmp_path / "fehlt.yaml")})
+    await a.connect()
+    f = [t for t in ws.sent if t["type"] == AGENT_MODELS_FRAME][-1]
+    assert f["models"] == list(AGENT_MODELS_DEFAULT_CATALOG)
+    assert f["current"] == AGENT_MODELS_DEFAULT_CATALOG[0]
+    assert f["effort"] == ""
+    await a.disconnect()
+    print("OK W18: Default-Katalog + current-Auto-Default")
+
+
+def test_w18_model_catalog_sanitizes_and_caps(tmp_path) -> None:
+    """Katalog-Härtung (Struktur-Gate-Parität): Trim, Dedup, ≤64 Zeichen,
+    _COMPOSER_MODEL_RE-Charset, Deckel 24; schrottige Einträge fliegen still;
+    current aus der Hermes-Config zählt als Katalog-Mitglied (verdrängt am
+    Deckel das letzte)."""
+    junk = ["  ", "", "x" * 80, "glm-5.3", "glm 5.3!bad", "glm-5.3"] \
+        + [f"w18-m{i}" for i in range(26)]
+    cfg = tmp_path / "hermes.yaml"
+    cfg.write_text(_W18_HERMES_CONFIG)
+    a, _ws = make_adapter({"FLIPSI_MODELS": ",".join(junk),
+                           "FLIPSI_HERMES_CONFIG": str(cfg)})
+    models, current, effort = a._model_catalog()
+    assert "glm 5.3!bad" not in models and "x" * 80 not in models
+    assert "" not in models
+    assert models.count("glm-5.3") == 1, "Dedup bleibt"
+    assert len(models) == 24, "Katalog-Deckel 24"
+    assert models[-1] == "w18-hermes-model" and current == "w18-hermes-model"
+    assert effort == "max"
+    print("OK W18: Katalog-Sanitierung (Trim/Dedup/64/Charset/Deckel, current-Anhang)")
+
+
+def test_w18_hermes_config_line_scan_fallback(tmp_path) -> None:
+    """Ungültiges YAML → toleranter Zeilen-Scan des delegation-Blocks
+    (fail-soft, kein Crash, delegation.model/effort trotzdem gelesen)."""
+    cfg = tmp_path / "broken.yaml"
+    cfg.write_text("delegation:\n  model: scan-model\n"
+                   "  reasoning_effort: low\n  @bad-zeile\n")
+    a, _ws = make_adapter({"FLIPSI_HERMES_CONFIG": str(cfg)})
+    model, effort, _provider = a._read_hermes_delegation()
+    assert (model, effort) == ("scan-model", "low")
+
+
+@pytest.mark.asyncio
+async def test_w18_models_refresh_timer_and_disconnect(tmp_path) -> None:
+    """Refresh-Timer: agent.models wiederholt sich (intervall hochgedreht)
+    — spät verbindende Geräte kriegen den Katalog nachgeschoben; der Timer
+    stirbt sauber mit disconnect()."""
+    a, ws = make_adapter({"FLIPSI_HERMES_CONFIG": str(tmp_path / "fehlt.yaml")})
+    a.models_refresh_s = 0.05
+    await a.connect()
+    await asyncio.sleep(0.3)
+    await a.disconnect()
+    n = len([t for t in ws.sent if t["type"] == AGENT_MODELS_FRAME])
+    assert n >= 2, f"Timer muss nachgesendet haben (n={n})"
+    print(f"OK W18: Refresh-Timer nachgesendet ({n}×) + sauberes disconnect()")
