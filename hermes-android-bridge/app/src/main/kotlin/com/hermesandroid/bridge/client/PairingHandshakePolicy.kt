@@ -43,8 +43,8 @@ object PairingHandshakePolicy {
     const val PASSWORD_MIN_LEN = 8
     const val PASSWORD_MAX_LEN = 256
 
-    /** Nur bekannte Codes durchlassen — Müll-Header wird NICHT zum Signal. */
-    fun handshakeError(headerValue: String?): String? = when (headerValue?.trim()) {
+    /** Nur bekannte Codes exakt durchlassen — Müll-Header wird NICHT zum Signal. */
+    fun handshakeError(headerValue: String?): String? = when (headerValue) {
         ERROR_CODE_IN_USE -> ERROR_CODE_IN_USE
         ERROR_PASSWORD_REQUIRED -> ERROR_PASSWORD_REQUIRED
         ERROR_PASSWORD_INVALID -> ERROR_PASSWORD_INVALID
@@ -57,8 +57,9 @@ object PairingHandshakePolicy {
     fun isPasswordGate(error: String?): Boolean =
         error == ERROR_PASSWORD_REQUIRED || error == ERROR_PASSWORD_INVALID
 
-    /** Der Passwort-Tor ist NICHT ein Auth-Fehlversuch (Autobewertung stoppen). */
-    fun shouldBumpAuthStreak(error: String?): Boolean = !isPasswordGate(error)
+    /** Nur echte Auth-Fehlversuche zählen: kein code-in-use, kein Passwort-Tor. */
+    fun shouldBumpAuthStreak(error: String?): Boolean =
+        error == null || (!isCodeInUse(error) && !isPasswordGate(error))
 
     /** Race-Slot-Antwort des Relays (WS-Close-Code) = code-in-use-Semantik. */
     fun closeCodeMeansCodeInUse(closeCode: Int): Boolean = closeCode == CLOSE_CODE_IN_USE
