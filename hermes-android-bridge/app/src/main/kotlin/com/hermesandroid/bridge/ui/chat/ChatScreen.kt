@@ -1374,15 +1374,18 @@ private fun ConversationBody(
     // WELLE-13 P9: Speaking-Chips je Bubble — zustandsgesteuert vom TTS-Singleton
     // (IDs der gerade/nächst vorgelesenen Antworten; Tap auf den Chip stoppt).
     val speakingIds by ChatSpeechSpeaker.speakingIds.collectAsState()
-    // ── W16 (Fixliste 35): LIVE-Modell-Quellen am Composer-Chip —
-    // bestehender Composer-Modell-State (explizite Auswahl reist mit jeder
-    // chat.send) ODER session_meta/agentMeta (B4-Welle) für die LIVE-Anzeige
-    // des tatsächlich verwendeten Modells; Auto = „Auto · <Modell>“.
-    val agentMetaLive by RelayClient.agentMeta.collectAsState()
+    // ── W16 (Fixliste 35): LIVE-Modell-Quelle am Composer-Chip —
     val agentModelsLive by RelayClient.agentModels.collectAsState()
-    val modelChipLabel = composerModel ?: agentMetaLive[agent.agentId]?.model?.let { m ->
-        stringResource(R.string.composer_auto) + " · " + m
-    } ?: stringResource(R.string.composer_auto)
+    // W18 (17.11.26, Sir): Composer-Chip als KURZEL — "A" = Auto (Agenten-
+    // Standard-Modell aus der Konfiguration), "M" = Manuel (ein anderes
+    // Modell wurde für diesen Chat gewählt). Das lange 'Auto · <Modell>'
+    // blähte die Pill auf und die Nachrichten-Zeile schrumpfte (Sir-Befund).
+    // Das Modell selbst zeigt das Modell & Denken-Sheet (Auswahl-Status);
+    // TalkBack kriegt die volle Erklärung über die *_a11y-Strings unten.
+    val modelChipLabel = if (composerModel != null)
+        stringResource(R.string.composer_chip_manual)
+    else
+        stringResource(R.string.composer_chip_auto)
     // ── W16 (Fixliste 32): Chat-Menü-Verband — ⋮-Menü am Kopf (ChatScreen-
     // Header), Mediathek als Overlay über dem Chat (Tab-Zeile entfällt),
     // Agenten-/Chatdesign-Sheets + Lösch-Bestätigung. Zustand JE Agent

@@ -1228,10 +1228,10 @@ fun ChatInputBar(
     onVoiceHoldStart: (() -> Boolean)? = null,
     onVoiceHoldEnd: ((VoiceHoldOutcome, holdMs: Long) -> Unit)? = null,
     onVoiceHoldCancelState: ((cancelling: Boolean) -> Unit)? = null,
-    // W16 (Fixliste 35): Modell-Chip im Composer — LIVE-Anzeige des aktiven
-    // Modells („Auto · <session_meta-Modell>“ o. der expliziten Auswahl) und
-    // direkter Ins-Sheet-Sprung (dasselbe Modell & Denken-Sheet wie der ⋮-
-    // Punkt). null = Chip nicht verdrahtet (kein Dead-Verband).
+    // W16 (Fixliste 35) + W18 (Sir): Modell-Chip im Composer — KURZEL-Verband:
+    // "A" = Auto (Agenten-Standard aus der Konfiguration), "M" = Manuel (für
+    // diesen Chat explizit gewählt); direkter Ins-Sheet-Sprung (dasselbe
+    // Modell & Denken-Sheet wie der ⋮-Punkt). null = Chip nicht verdrahtet.
     modelChipLabel: String? = null,
     onModelChip: (() -> Unit)? = null,
 ) {
@@ -1313,10 +1313,10 @@ fun ChatInputBar(
                 )
             }
             Spacer(Modifier.width(8.dp))
-            // W16 (Fixliste 35): kompakter Modell-Chip ZWISCHEN Pill und dem
-            // runden Knopf — zeigt live das aktuell verwendete Modell („Auto ·
-            // <Modell>“ bzw. die explizite Auswahl) und öffnet DIREKT das
-            // Modell & Denken-Sheet (dasselbe wie der ⋮-Punkt — kein Umweg).
+            // W16 (Fixliste 35) + W18: kompakter Modell-Chip ZWISCHEN Pill und
+            // dem runden Knopf — Kürzel A (Auto/Konfiguration) bzw. M (manuell
+            // für diesen Chat gewählt), öffnet DIREKT das Modell & Denken-Sheet
+            // (dasselbe wie der ⋮-Punkt — kein Umweg).
             val chipA11y = stringResource(R.string.composer_chip_a11y)
             if (modelChipLabel != null && onModelChip != null) {
                 Row(

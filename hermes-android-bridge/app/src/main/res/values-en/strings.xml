@@ -440,6 +440,10 @@
     <string name="composer_auto_sub">Agent default</string>
     <string name="composer_add_placeholder">Add your own model…</string>
     <string name="composer_add">Add</string>
+    <string name="composer_chip_auto_a11y">A = Auto: agent default model from config is in use — tap to open model &amp; thinking</string>
+    <string name="composer_chip_manual_a11y">M = Manual: a different model was chosen for this chat — tap to open model &amp; thinking</string>
+    <string name="composer_chip_auto">A</string>
+    <string name="composer_chip_manual">M</string>
     <string name="composer_chip_a11y">Open model &amp; thinking — shows the active model</string>
     <string name="composer_custom_add">Custom model…</string>
     <string name="composer_no_list">No model list has arrived from the server — Auto stays active. Add a custom model below as an advanced option.</string>
