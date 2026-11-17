@@ -24,7 +24,9 @@ venv/
 *.iml
 
 # OS
-.DS_Store
+artifacts/
+*.aab
+*.apk
 Thumbs.db
 
 # Android build outputs
