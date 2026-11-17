@@ -125,6 +125,12 @@ class _RelayState:
         # working-Wert; nur ein WECHL erzeugt einen Phone-Frame (keine Flood).
         self.chat_activity: dict[tuple[str, str], bool] = {}
 
+        # W19 (SIRS-Neued): agent.status-Dedup — letzter working-Wert JE
+        # agent_id (Parallel-State zu chat_activity, kein Chat-Bezug). Nur
+        # working-Wechsel erzeugen einen Frame; Frames mit sub/end werden je
+        # Frame durchgereicht (die App verwaltet Sub-Slots je sub.id/end).
+        self.agent_status: dict[str, bool] = {}
+
         # PH2-T5: Konversations-Isolation — chat_id → (owner_agent_id, ts).
         # Eine Agenten-Antwort auf eine fremde chat_id wird verworfen + geloggt.
         # FIN-T1 RED-06: Einträge DAUERHAFT (Retention-Prune fasst sie nicht
@@ -759,6 +765,9 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
 _CHAT_TEXT_MAX_CHARS = 32 * 1024    # Chat-Text je Nachricht (413 darüber)
 _CHAT_QUEUE_MAX_BYTES = 8 * 1024 * 1024  # Bytes-Budget je Broker-Queue
 _CHAT_ACTIVITY_MAX = 256           # SEC-W1 D2: Dedup-Map-Cap (war unbounded)
+# W19 (SIRS-Neued): agent.status-Dedup-Map (letzter working-Wert je agent_id)
+# — FIFO-Cap Parität chat_activity.
+_AGENT_STATUS_MAX = 256
 # W4-FIX-JAG2 (S6): chat_status-Cap — die 24-h-Retention (_prune_chat_status)
 # hilft nicht gegen einen Flood FRISCHER msg_ids binnen der Retention (RAM-
 # Flood-Schwester von SEC-W1 D2, nur je msg_id statt je chat_id). FIFO-Cap
@@ -2412,6 +2421,10 @@ _AGENT_FRAME_TYPES = frozenset(
     {"keepalive", "ping", "presence", "agent.register",
      # W16 (Fixliste 35): Modell-Katalog je Agent (klar + enc) — Fail-soft.
      "agent.models", "agent.models.enc",
+     # W19 (SIRS-Neued): agent.status — Live-Arbeitszustand je Agent (klar +
+     # enc): working/started_at/label/sub/end; Status = Transition (kein
+     # Rate-Bucket, kein Spool), Sub-Slots je Frame durchgereicht.
+     "agent.status", "agent.status.enc",
      "chat.reply", "chat.read", "chat.activity",
      # PH-3-T2: E2E-Frames — der Relay ist opaker Pass-Through (kein Key-
      # Material, ct wird nie geöffnet); Validierung = Struktur + Session.
@@ -2541,6 +2554,16 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
         return
     if msg_type == "chat.activity":
         await _guard_agent_frame(_handle_agent_chat_activity, state, agent_id, data, "_handle_agent_chat_activity")
+        return
+    # W19 (SIRS-Neued): agent.status — Live-Zustand je Agent. Status ist
+    # Transition: KEIN Rate-Bucket (niemals im chat.reply-Bucket), KEIN
+    # Spool (W18: Live-Zustand, kein Verlauf); working-Dedup je agent_id,
+    # sub/end je Frame durchgereicht.
+    if msg_type == "agent.status.enc":
+        await _guard_agent_frame(_handle_agent_status_enc, state, agent_id, data, "_handle_agent_status_enc")
+        return
+    if msg_type == "agent.status":
+        await _guard_agent_frame(_handle_agent_status, state, agent_id, data, "_handle_agent_status")
         return
     # keepalive/ping/presence: nur Presence (oben bereits gepflegt).
     logger.debug("Agent %s: frame type=%r (Presence)", agent_id, msg_type)
@@ -3030,6 +3053,207 @@ async def _handle_agent_chat_session_meta(state: _RelayState, agent_id: str,
     delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
     if not delivered:
         logger.debug("Agent %s: chat.session_meta gespoolt (Phone offline)", agent_id)
+
+
+# ── W19 (SIRS-Neued): agent.status — Live-Arbeitszustand je Agent ────────────
+
+
+def _agent_status_ok(data) -> Optional[dict]:
+    """W19 Struktur-Gate für agent.status/.enc-Bodies (pure, ohne Log).
+
+    Pflichtfelder: agent_id (str ≤64), working (bool), started_at (endliche
+    ms) — Verstoß → None = Frame verwerfen (Parität chat.activity: Fail-soft
+    statt Throw, die Agent-WS bleibt offen).
+    Optionale Felder: label (str ≤64), sub ({id, name} je str ≤64), end
+    (bool) — Verstoß gegen ein OPTIONSfeld lässt nur das Feld fallen, der
+    Frame bleibt gültig (Parität _session_meta_ok: Feld-Drop, kein Frame-
+    Verlust; die Warnung loggt der Handler).
+    Rückgabe: validierte Felder oder None."""
+    if not isinstance(data, dict):
+        return None
+    body_agent_id = data.get("agent_id")
+    if (not isinstance(body_agent_id, str) or not body_agent_id.strip()
+            or len(body_agent_id.strip()) > 64):
+        return None
+    working = data.get("working")
+    if not isinstance(working, bool):
+        return None
+    started_at = data.get("started_at")
+    # SEC-W1 B F-03-Parität: nur endlich-numerische ms koerzierbar (bool
+    # zählt nicht als ms, int(inf) wirft OverflowError).
+    if not _finite_ms(started_at):
+        return None
+    fields: dict = {
+        "agent_id": body_agent_id.strip(),
+        "working": working,
+        "started_at": int(started_at),
+    }
+    label = data.get("label")
+    if (label is not None and isinstance(label, str) and label.strip()
+            and len(label) <= 64):
+        fields["label"] = label.strip()
+    sub = data.get("sub")
+    if sub is not None and isinstance(sub, dict):
+        sub_id = sub.get("id")
+        sub_name = sub.get("name")
+        if (isinstance(sub_id, str) and sub_id.strip()
+                and len(sub_id.strip()) <= 64
+                and isinstance(sub_name, str) and sub_name.strip()
+                and len(sub_name.strip()) <= 64):
+            fields["sub"] = {"id": sub_id.strip(), "name": sub_name.strip()}
+    end = data.get("end")
+    if end is not None and isinstance(end, bool):
+        fields["end"] = end
+    return fields
+
+
+def _cap_agent_status(state: _RelayState) -> None:
+    """W19: FIFO-RAM-Schutz der agent_status-Map (Parität _cap_chat_activity);
+    Aufruf NUR unter broker_lock."""
+    while len(state.agent_status) > _AGENT_STATUS_MAX:
+        state.agent_status.pop(next(iter(state.agent_status)))
+
+
+def _agent_status_dedup_allow(state: _RelayState, agent_id: str,
+                              fields: dict) -> bool:
+    """W19 Transition/Slot-Verband: working-Dedup JE agent_id — Gleicher
+    Wert wie der letzte = stilles No-Op (je Wechsel genau 1 Frame). Frames
+    des Slot-Verbands (sub/end) sind KEIN Dedup — je Frame durchreichen,
+    die App verwaltet Sub-Slots je sub.id/end. State parallel zu
+    chat_activity, KEIN Rate-Bucket (Status ist Transition); Write NUR
+    unter broker_lock."""
+    slot_verband = "sub" in fields or fields.get("end") is not None
+    if not slot_verband and state.agent_status.get(agent_id) == fields["working"]:
+        return False  # Dedup: je Wechsel genau 1 Frame
+    state.agent_status[agent_id] = fields["working"]
+    _cap_agent_status(state)
+    return True
+
+
+async def _deliver_agent_status_to_phone(state: _RelayState, frame: dict) -> bool:
+    """W18/W19: agent.status = Live-Zustand, KEIN Verlauf — Zustellung NUR
+    bei online Phone (Direct-Send unter broker_lock). Offline/tote WS =
+    False = bewusst verworfen: KEIN Outbox-Append, kein Spool (ein
+    'arbeitet…'-Zustand ist beim Reconnect längst Geschichte)."""
+    async with state.broker_lock:
+        ws = state.phone_ws
+        if ws is None or ws.closed:
+            return False
+        try:
+            await ws.send_json(frame)
+        except Exception as exc:
+            logger.warning("agent.status-Zustellung ans Phone fehlgeschlagen: %s", exc)
+            return False
+    return True
+
+
+async def _handle_agent_status_enc(state: _RelayState, agent_id: str,
+                                   data: dict) -> None:
+    """W19: agent.status.enc → Phone (Typ bleibt). Prüfkette = Klon der
+    chat.activity.enc-Kette: Struktur-Gate auf den KLAREN top-level-Feldern
+    (working/started_at/label/sub/end bleiben klar = Dedup + Phone-UI-
+    Fallback, Parität chat.activity.enc), _validate_enc_frame (Form),
+    _enc_session_active fail-closed, _relay_replay_allow (Replay-Fenster).
+    ct bleibt OPAK (nie geöffnet). KEIN Owner-Claim (kein chat_id — der
+    Status lebt je Agent), KEIN Rate-Bucket, KEIN Spool (Live-Zustand)."""
+    fields = _agent_status_ok(data)
+    if fields is None:
+        logger.warning(
+            "Agent %s: agent.status.enc ohne gültige agent_id/working/started_at — verworfen",
+            agent_id)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: agent.status.enc ungültig (%s) — verworfen",
+                       agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: agent.status.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning(
+            "Agent %s: agent.status.enc Replay/Fenster-Verletzung — verworfen",
+            agent_id)
+        return
+    async with state.broker_lock:
+        if not _agent_status_dedup_allow(state, agent_id, fields):
+            return
+    frame = {
+        "type": "agent.status.enc", "v": 1,
+        "agent_id": agent_id,
+        "working": fields["working"],       # klar: PH2-Dedup + UI-Fallback
+        "started_at": fields["started_at"],
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    if "label" in fields:
+        frame["label"] = fields["label"]
+    if "sub" in fields:
+        frame["sub"] = fields["sub"]
+    if fields.get("end") is not None:
+        frame["end"] = fields["end"]
+    delivered = await _deliver_agent_status_to_phone(state, frame)
+    if not delivered:
+        logger.debug(
+            "Agent %s: agent.status.enc verworfen — Phone offline (Live-Zustand, kein Spool)",
+            agent_id)
+
+
+async def _handle_agent_status(state: _RelayState, agent_id: str,
+                               data: dict) -> None:
+    """W19 (SIRS-Neued): agent.status (Klartext) → Live-Arbeitszustand ans
+    Phone. Body {agent_id, working, started_at, label?, sub?, end?} — die
+    WS-Identität gewinnt (Parität agent.register: eine im Frame
+    mitgeschickte agent_id wird NIE als Zustell-Identität akzeptiert,
+    Abweichung = Warning). Struktur-Gate fail-soft (Parität chat.activity),
+    Downgrade-Schutz (bei bestätigter E2E-Session verworfen — der Agent
+    muss agent.status.enc senden), working-Dedup je agent_id (State
+    parallel zu chat_activity), sub/end JE Frame durchgereicht. KEIN
+    Rate-Bucket (Status ist Transition, niemals im chat.reply-Bucket), KEIN
+    Spool (W18: Live-Zustand, kein Verlauf)."""
+    fields = _agent_status_ok(data)
+    if fields is None:
+        logger.warning(
+            "Agent %s: agent.status ohne gültige agent_id/working/started_at — verworfen",
+            agent_id)
+        return
+    if fields["agent_id"] != agent_id:
+        logger.warning(
+            "Agent %s: agent.status meldet fremde body-agent_id %s — WS-Identität gewinnt",
+            agent_id, _log_id(fields["agent_id"]))
+    if await _agent_has_e2e_session(state, agent_id):
+        logger.warning(
+            "Agent %s: Klartext-agent.status verworfen — E2E-Session aktiv (Downgrade-Schutz)",
+            agent_id)
+        return
+    async with state.broker_lock:
+        if not _agent_status_dedup_allow(state, agent_id, fields):
+            return
+    frame = {
+        "type": "agent.status", "v": 1,
+        "agent_id": agent_id,
+        "working": fields["working"],
+        "started_at": fields["started_at"],
+        "ts": int(time.time() * 1000),
+    }
+    if "label" in fields:
+        frame["label"] = fields["label"]
+    if "sub" in fields:
+        frame["sub"] = fields["sub"]
+    if fields.get("end") is not None:
+        frame["end"] = fields["end"]
+    delivered = await _deliver_agent_status_to_phone(state, frame)
+    if not delivered:
+        logger.debug(
+            "Agent %s: agent.status verworfen — Phone offline (Live-Zustand, kein Spool)",
+            agent_id)
 
 
 def _agent_models_ok(models) -> bool:

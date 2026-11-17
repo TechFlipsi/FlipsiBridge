@@ -4042,3 +4042,422 @@ class TestW4Jag2ChatStatusCap:
 
         asyncio.run(run())
         assert len(state.chat_status) == relay._CHAT_STATUS_MAX
+
+
+class TestW19AgentStatus:
+    """W19 (SIRS-Neued): agent.status/.enc — Live-Arbeitszustand je Agent.
+
+    Status = Transition: KEIN Rate-Bucket (niemals im chat.reply-Bucket),
+    KEIN Spool (W18-Regel: Live-Zustand, kein Verlauf — Phone offline =
+    bewusst verworfen). working-Dedup je agent_id (State parallel zu
+    chat_activity), sub/end je Frame durchgereicht (die App verwaltet
+    Sub-Slots je sub.id/end). enc = Klon der chat.activity.enc-Prüfkette:
+    Struktur-Gate, _validate_enc_frame, _enc_session_active fail-closed,
+    _relay_replay_allow — ct bleibt opak."""
+
+    # ── Direct-Handler-Beweise (RelayState + Mock-WS) ─────────────────────
+
+    def _fresh_state(self):
+        import asyncio
+        from tools.android_relay import _RelayState
+        state = _RelayState("code", 8799)
+        state.broker_lock = asyncio.Lock()
+        return state
+
+    def _state_with_ws(self):
+        """RelayState + Mock-Phone-WS mit ASYNC send_json — ein nacktes
+        Mock.send_json wirft beim await TypeError, was der Handler fail-soft
+        als Offline schluckt (so würden 'durchgereicht'-Tests zu
+        Spur-Gewinnern statt echter Zustell-Beweise)."""
+        import asyncio
+        from unittest import mock
+        state = self._fresh_state()
+        ws = mock.Mock()
+        ws.closed = False
+        ws.send_json = mock.AsyncMock()
+        state.phone_ws = ws
+        return state, ws
+
+    def test_clear_frame_forwarded_without_spool(self):
+        """Klarer agent.status-Frame mit vollem Feldsatz → 1 Phone-Frame
+        (agent_id/working/started_at/label/sub), TS gesetzt, KEIN Spool-
+        Eintrag (Live-Zustand, kein Verlauf) und Dedup-State gesetzt."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+
+        async def run():
+            await relay._handle_agent_status(state, "alpha", {
+                "agent_id": "alpha", "working": True,
+                "started_at": 1730515200000, "label": "Recherche",
+                "sub": {"id": "sub-1", "name": "Bauer"},
+            })
+
+        asyncio.run(run())
+        assert ws.send_json.call_count == 1
+        frame = ws.send_json.call_args[0][0]
+        assert frame["type"] == "agent.status"
+        assert frame["agent_id"] == "alpha"
+        assert frame["working"] is True
+        assert frame["started_at"] == 1730515200000
+        assert frame["label"] == "Recherche"
+        assert frame["sub"] == {"id": "sub-1", "name": "Bauer"}
+        assert frame["ts"] > 0
+        # W18-Regel: Live-Zustand, kein Verlauf — NIE in die Outbox.
+        assert len(state.phone_outbox) == 0
+        assert state.agent_status == {"alpha": True}
+
+    def test_working_dedup_per_agent_id(self):
+        """Transition-Dedup: gleicher working-Wert wie zuletzt = stilles
+        No-Op; Wechsel kommt durch. Je agent_id SEPARAT (Parität
+        chat_activity je (agent, chat_id), hier je Agent)."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+
+        body = {"agent_id": "alpha", "working": True, "started_at": 1}
+
+        async def run():
+            # True → durch; True → Dedup; False → durch; True → durch.
+            await relay._handle_agent_status(state, "alpha",
+                                             {**body, "working": True})
+            await relay._handle_agent_status(state, "alpha",
+                                             {**body, "working": True})
+            await relay._handle_agent_status(state, "alpha",
+                                             {**body, "working": False})
+            await relay._handle_agent_status(state, "alpha",
+                                             {**body, "working": True})
+            # BETA mit gleichem working=True: eigener Dedup-Schlüssel.
+            await relay._handle_agent_status(state, "beta",
+                                             {"agent_id": "beta",
+                                              "working": True,
+                                              "started_at": 2})
+
+        asyncio.run(run())
+        assert ws.send_json.call_count == 4
+        assert [c[0][0]["agent_id"] for c in ws.send_json.call_args_list] == [
+            "alpha", "alpha", "alpha", "beta"]
+        assert [c[0][0]["working"] for c in ws.send_json.call_args_list] == [
+            True, False, True, True]
+        assert len(state.phone_outbox) == 0
+        assert state.agent_status == {"alpha": True, "beta": True}
+
+    def test_label_over_64_discarded_field_frame_survives(self):
+        """label > 64 = Feld verworfen (fail-soft, Parität _session_meta_ok),
+        der Frame bleibt gültig und wird durchgereicht; label ≤ 64 bleibt;
+        nicht-String-label fällt ebenfalls nur als Feld."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+
+        body = {"agent_id": "alpha", "working": False, "started_at": 5}
+
+        async def run():
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "x" * 65})   # zu lang
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "working": True,
+                                 "label": "y" * 64})            # Grenze OK
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": 42})          # kein String
+
+        asyncio.run(run())
+        assert ws.send_json.call_count == 3
+        frames = [c[0][0] for c in ws.send_json.call_args_list]
+        assert "label" not in frames[0]
+        assert frames[1]["label"] == "y" * 64
+        assert "label" not in frames[2]
+        assert all(f["type"] == "agent.status" for f in frames)
+        # working-Verband: False → True-Wechsel kam durch, letzter Stand False.
+        assert state.agent_status == {"alpha": False}
+        assert len(state.phone_outbox) == 0
+
+    def test_slot_sub_end_frames_never_deduped(self):
+        """Slot-Verband: Frames mit sub/end werden JEDESMAL durchgereicht
+        (die App verwaltet Sub-Slots je sub.id/end); ungültiges sub fällt
+        nur als Feld (Frame bleibt)."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+
+        body = {"agent_id": "alpha", "working": True, "started_at": 7}
+
+        async def run():
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "sub": {"id": "s1", "name": "A"}})
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "sub": {"id": "s1", "name": "A"}})
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "end": True,
+                                 "sub": {"id": "s1", "name": "A"}})
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "end": True})          # end ohne sub
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "sub": {"id": "s1"}})  # name fehlt
+
+        asyncio.run(run())
+        # Frames 1–4 alle durchgereicht (sub/end = KEIN Dedup); Frame 5
+        # (nur working, bereits True) = Dedup.
+        assert ws.send_json.call_count == 4
+        frames = [c[0][0] for c in ws.send_json.call_args_list]
+        assert [f["end"] for f in frames[2:4]] == [True, True]
+        assert frames[0]["sub"] == {"id": "s1", "name": "A"}
+        assert len(state.phone_outbox) == 0
+        assert state.agent_status == {"alpha": True}
+
+    def test_invalid_required_field_discarded_fail_soft(self):
+        """Struktur-Gate am Pflichtfeld (Parität chat.activity: Fail-soft
+        statt Throw) — working-nicht-bool / started_at fehlt oder inf /
+        agent_id fehlt oder >64 → Frame verworfen, WS unberührt, kein
+        Spool-Eintrag."""
+        import asyncio
+        import math
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+        good = {"agent_id": "alpha", "working": True, "started_at": 9}
+
+        async def run():
+            valid_count = 0
+            for bad_body in (
+                {**good, "working": "true"},            # kein bool
+                {**good, "started_at": math.inf},       # nicht endlich
+                {**good, "started_at": True},           # bool ist kein ms
+                {k: v for k, v in good.items()
+                 if k != "started_at"},                 # Pflichtfeld fehlt
+                {k: v for k, v in good.items()
+                 if k != "agent_id"},                   # Pflichtfeld fehlt
+                {**good, "agent_id": "a" * 65},         # über Cap
+                "kein-dict",                            # Struktur
+            ):
+                await relay._handle_agent_status(state, "alpha", bad_body)
+                assert ws.send_json.call_count == valid_count, bad_body
+            # Positive control: gültiger Frame kommt durch.
+            await relay._handle_agent_status(state, "alpha", good)
+            assert ws.send_json.call_count == 1
+
+        asyncio.run(run())
+        assert state.agent_status == {"alpha": True}
+        assert len(state.phone_outbox) == 0
+
+    def test_phone_offline_no_spool_mock_proof(self):
+        """W18-Regel beweisbar: Phone offline (ws=None ODER ws.closed)
+        → KEIN send, KEIN Outbox-Eintrag — agent.status wird bewusst
+        verworfen (Live-Zustand, kein Verlauf). Dedup-State pflegt der
+        Handler trotzdem (letzter bekannter Zustand)."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        body = {"agent_id": "alpha", "working": True, "started_at": 11}
+
+        # Fall 1: kein Phone-WS.
+        state = self._fresh_state()
+        state.phone_ws = None
+        asyncio.run(relay._handle_agent_status(state, "alpha", dict(body)))
+        assert len(state.phone_outbox) == 0
+        assert state.agent_status == {"alpha": True}
+
+        # Fall 2: Mock-WS mit closed=True (Offline-Marker).
+        state2 = self._fresh_state()
+        ws2 = mock.Mock()
+        ws2.closed = True
+        state2.phone_ws = ws2
+        asyncio.run(relay._handle_agent_status(state2, "alpha", dict(body)))
+        ws2.send_json.assert_not_called()
+        assert len(state2.phone_outbox) == 0
+
+        # Fall 3: send schmeißt (tote WS) — Fail-soft, ebenfalls kein Spool.
+        state3 = self._fresh_state()
+        ws3 = mock.Mock()
+        ws3.closed = False
+        ws3.send_json = mock.AsyncMock(side_effect=ConnectionResetError("tot"))
+        state3.phone_ws = ws3
+        asyncio.run(relay._handle_agent_status(state3, "alpha", dict(body)))
+        assert len(state3.phone_outbox) == 0
+
+    def _enc_body(self, ts_ms, working=True):
+        """Gültiger agent.status.enc-Body (klare Felder + opake Hülle)."""
+        import base64
+        nonce = base64.b64encode(bytes(12)).decode()
+        ct = base64.b64encode(b"opak").decode()
+        return {
+            "type": "agent.status.enc",
+            "agent_id": "alpha", "working": working,
+            "started_at": 1730515200000, "label": "Recherche",
+            "session_id": "sess-w19-01",
+            "hdr": {"rk": "a" * 64, "n": 0, "pn": 1},
+            "nonce": nonce, "ct": ct, "ts": ts_ms,
+        }
+
+    def test_enc_rejected_without_ack_session_fail_closed(self):
+        """enc ohne bestätigte E2E-Session → fail-closed verworfen (Klon
+        chat.activity.enc: _enc_session_active liefert None = kein Delivery,
+        kein State-Write, kein Spool)."""
+        import asyncio
+        import time
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+
+        async def run():
+            await relay._handle_agent_status_enc(
+                state, "alpha", self._enc_body(int(time.time() * 1000)))
+
+        asyncio.run(run())
+        ws.send_json.assert_not_called()
+        assert state.agent_status == {}
+        assert len(state.phone_outbox) == 0
+
+    def test_enc_delivered_with_session_kette_and_shared_dedup(self, monkeypatch):
+        """enc MIT bestätigter Session (gepatcht) → Delivery: session_id/
+        hdr/nonce/ct 1:1 opak durchgereicht, klare Felder im Top-Level;
+        replay-verletzte n (10**20) verwirft; Dedup-State ist GEMEINSAM mit
+        dem Klartext-Pfad (enc-Spiegel nach gleichem working = kein
+        zweiter Frame)."""
+        import asyncio
+        import time
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+        now_ms = int(time.time() * 1000)
+
+        async def fake_session(state_, agent_id_, data_):
+            return {"agent_id": agent_id_, "acked": True}
+
+        monkeypatch.setattr(relay, "_enc_session_active", fake_session)
+
+        async def run():
+            await relay._handle_agent_status_enc(state, "alpha",
+                                                 self._enc_body(now_ms))
+            body = self._enc_body(now_ms + 1)
+            body["hdr"]["n"] = 10 ** 20        # Zähler-Gift (B F-06)
+            await relay._handle_agent_status_enc(state, "alpha", body)
+            body2 = self._enc_body(now_ms + 2)
+            body2["hdr"]["n"] = 1              # Legitimer Ratchet-Schritt
+            body2["working"] = False           # echter Wechsel → durch
+            await relay._handle_agent_status_enc(state, "alpha", body2)
+
+        asyncio.run(run())
+        frames = [c[0][0] for c in ws.send_json.call_args_list]
+        assert len(frames) == 2
+        first = frames[0]
+        assert first["type"] == "agent.status.enc"
+        assert first["agent_id"] == "alpha"
+        assert first["working"] is True
+        assert first["started_at"] == 1730515200000
+        assert first["label"] == "Recherche"
+        assert first["session_id"] == "sess-w19-01"
+        assert first["hdr"] == {"rk": "a" * 64, "n": 0, "pn": 1}
+        assert first["nonce"] == self._enc_body(now_ms)["nonce"]
+        assert first["ct"] == "b3Bhaw=="
+        assert frames[1]["working"] is False
+        # Gemeinsamer Dedup-State mit dem Klartext-Pfad: gleicher working-
+        # Wert nach dem enc-Spiegel erzeugt KEINEN zweiten Frame.
+        assert state.agent_status == {"alpha": False}
+        assert len(state.phone_outbox) == 0
+
+        # Cross-Pfad: klarer agent.status nach enc-Spiegel working=False
+        # = Dedup (kein Zustell-Frame), Wechsel True = Zustellung.
+        async def run2():
+            await relay._handle_agent_status(
+                state, "alpha", {"agent_id": "alpha", "working": False,
+                                 "started_at": 1})
+            await relay._handle_agent_status(
+                state, "alpha", {"agent_id": "alpha", "working": True,
+                                 "started_at": 1})
+
+        asyncio.run(run2())
+        assert ws.send_json.call_count == 3
+        assert ws.send_json.call_args_list[-1][0][0]["type"] == "agent.status"
+
+    # ── Live-Relay-Beweis (Dispatch + Allowlist + Zustellung) ─────────────
+
+    def test_agent_status_live_relay_frame_flow(self, tmp_path, monkeypatch):
+        """Live am Relay: agent.status wandert über die Agent-WS
+        (Allowlist + Dispatch + _guard_agent_frame) ans Phone-WS —
+        working-Dedup je agent_id, sub/end je Frame. Zustellungserfolg
+        erreicht die Phone-WS live (Outbox-Anteil im Erfolgspfad leer)."""
+        import asyncio
+        import aiohttp
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT)
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"},
+                )
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"},
+                )
+                await _drain_phone_state_frame(phone, expected=2)
+
+                await agent.send_json({
+                    "type": "agent.status", "agent_id": "alpha",
+                    "working": True, "started_at": 1730515200000,
+                    "label": "Recherche",
+                    "sub": {"id": "sub-1", "name": "Bauer"},
+                })
+                f1 = await phone.receive_json(timeout=2)
+                assert f1["type"] == "agent.status"
+                assert f1["agent_id"] == "alpha"
+                assert f1["working"] is True
+                assert f1["label"] == "Recherche"
+                assert f1["sub"] == {"id": "sub-1", "name": "Bauer"}
+
+                # Gleicher working-Wert = Dedup (kein zweiter Frame).
+                await agent.send_json({
+                    "type": "agent.status", "agent_id": "alpha",
+                    "working": True, "started_at": 1730515200000,
+                })
+                with pytest.raises(asyncio.TimeoutError):
+                    await phone.receive_json(timeout=0.4)
+
+                # Slot-Verband: sub/end je Frame durchgereicht.
+                await agent.send_json({
+                    "type": "agent.status", "agent_id": "alpha",
+                    "working": True, "started_at": 1730515200000,
+                    "end": True, "sub": {"id": "sub-1", "name": "Bauer"},
+                })
+                f2 = await phone.receive_json(timeout=2)
+                assert f2["end"] is True
+                assert f2["sub"] == {"id": "sub-1", "name": "Bauer"}
+
+                await agent.close()
+                await phone.close()
+
+        asyncio.run(scenario())
+
+    # ── Test-Harness ──────────────────────────────────────────────────────
+
+    PORT = 19887
+    CODE = "W19CD01"
+    TOKEN = "agent-w19-status-token"
+
+    @staticmethod
+    def _write_config(tmp_path):
+        import json
+        cfg = tmp_path / "relay-config.json"
+        cfg.write_text(
+            json.dumps({
+                "ANDROID_AGENT_TOKEN_ALPHA": "agent-w19-status-token",
+                "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
+            }),
+            encoding="utf-8",
+        )
+        return str(cfg)
