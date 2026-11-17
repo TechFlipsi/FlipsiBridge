@@ -2789,7 +2789,11 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         lernen (Scope-Schlüssel für pre_tool_call/Subagent-Hooks). Fremde
         Plattform: weder lernen noch falten."""
         session_id = str(kwargs.get("session_id") or "").strip()
-        platform = str(kwargs.get("platform") or "").strip()
+        # B2 (Flagship-Review 17.11.): Normalisierung SYMMETRISCH zum ON-Gate
+        # (_status_event_fields lower()-t) — kapitalisierte Plattformwerte
+        # (z.B. 'Discord') lernten sonst nie die Session und die Pill blieb
+        # dauerhaft ON (Stuck-ON). Beide Gates nutzen dieselbe Kleinschreibung.
+        platform = str(kwargs.get("platform") or "").strip().lower()
         if not session_id:
             return None
         now = self._status_now_ms()

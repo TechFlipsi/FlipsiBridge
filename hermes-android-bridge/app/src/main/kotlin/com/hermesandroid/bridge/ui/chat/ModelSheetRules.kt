@@ -29,14 +29,35 @@ val THINK_STAGES = listOf(
 )
 
 /**
- * Slider-Raste: App-Auswahl GEWINNT; ohne App-Pref ist der Gateway-Stand
- * (agent.models 'effort') die Vorschlags-Raste. Unbekannte Wörter (weder
- * App- noch Gateway-Grammatik) fallen fail-soft auf Raste 0 — kein Crash,
- * keine geratenen Stufen.
+ * Explizites „aus“ (Tri-State, B1-Flagship-Review 17.11.): Der Pref speichert
+ * für Raste 0 ab sofort dieses Sentinel — „aus“ (bewusst gewählt) und
+ * „nie gewählt“ (null) sind damit unterscheidbar. Nur bei „nie gewählt“
+ * greift die Gateway-Suggestion; ein explizites „aus“ bleibt STABIL auf
+ * Raste 0 (kein Springback auf die Gateway-Raste).
+ */
+const val EFFORT_OFF = "off"
+
+/**
+ * Slider-Raste: App-Auswahl GEWINNT — inkl. explizitem „aus“ (EFFORT_OFF
+ * = stabil Raste 0, auch wenn der Gateway einen effort liefert). Ohne App-Pref
+ * (null) ist der Gateway-Stand (agent.models 'effort') die Vorschlags-Raste.
+ * Unbekannte Wörter (weder App- noch Gateway-Grammatik) fallen fail-soft auf
+ * Raste 0 — kein Crash, keine geratenen Stufen.
  */
 fun effortStageIndex(appEffort: String?, gatewayEffort: String?): Int {
+    if (appEffort == EFFORT_OFF) return 0
     val effective = appEffort ?: gatewayEffort ?: return 0
     return THINK_STAGES.indexOfFirst { it.second == effective }.takeIf { it >= 0 } ?: 0
+}
+
+/**
+ * Draht-Wert des Denken-Levels: null = kein effort-Feld (Auto — der Agent
+ * entscheidet), EFFORT_OFF = bewusst „aus“ = auch KEIN effort-Feld (der
+ * Gateway-Standard bleibt), low/high/max = App-Wunsch.
+ */
+fun sendableEffort(appEffort: String?): String? = when (appEffort) {
+    null, EFFORT_OFF -> null
+    else -> appEffort
 }
 
 /**

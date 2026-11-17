@@ -68,4 +68,21 @@ class ModelSheetRulesTest {
         assertEquals(listOf("aus", "leicht", "hoch", "max"), THINK_STAGES.map { it.first })
         assertEquals(listOf(null, "low", "high", "max"), THINK_STAGES.map { it.second })
     }
+
+    // ── B1 (Flagship-Review 17.11.): Tri-State „aus“ ≠ „nie gewählt“ ──────
+    @org.junit.Test
+    fun testB1ExplicitOffStaysOffEvenWithGatewayEffort() {
+        org.junit.Assert.assertEquals(
+            "explizites 'off' bleibt Raste 0 trotz Gateway-effort max",
+            0, effortStageIndex(EFFORT_OFF, "max"))
+        org.junit.Assert.assertEquals(
+            "ohne App-Pref greift die Gateway-Suggestion",
+            3, effortStageIndex(null, "max"))
+        org.junit.Assert.assertNull(
+            "EFFORT_OFF geht als KEIN effort-Feld auf den Draht",
+            sendableEffort(EFFORT_OFF))
+        org.junit.Assert.assertNull("null bleibt null", sendableEffort(null))
+        org.junit.Assert.assertEquals(
+            "low ist ein App-Wunsch", "low", sendableEffort("low"))
+    }
 }

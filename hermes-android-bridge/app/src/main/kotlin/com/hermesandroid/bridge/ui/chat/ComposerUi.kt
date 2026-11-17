@@ -252,8 +252,14 @@ fun ChatModelSheet(
                 },
                 onValueChange = { idx ->
                     val stage = THINK_STAGES[idx.toInt().coerceIn(0, THINK_STAGES.size - 1)]
-                    ChatComposerPrefs.setEffort(context, agentId, stage.second)
-                    onPickEffort(stage.second)
+                    // B1 (Flagship-Review 17.11.): Raste 0 = bewusstes „aus“ wird
+                    // als EFFORT_OFF persistiert (NICHT Key löschen) — sonst war
+                    // „aus“ von „nie gewählt“ ununterscheidbar und der Daumen
+                    // sprang bei vorhandenem Gateway-effort auf dessen Raste
+                    // zurück (Springback-Regression). „aus“ ist jetzt stabil.
+                    val level = stage.second ?: EFFORT_OFF
+                    ChatComposerPrefs.setEffort(context, agentId, level)
+                    onPickEffort(level)
                 },
                 valueRange = 0f..(THINK_STAGES.size - 1).toFloat(),
                 steps = THINK_STAGES.size - 2,

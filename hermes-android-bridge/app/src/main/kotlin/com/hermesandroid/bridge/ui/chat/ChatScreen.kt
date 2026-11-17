@@ -529,7 +529,10 @@ fun ChatScreen(
                 // Gateway entscheidet. Kein Modell-Name hat den Draht ohne
                 // Server-Vertrag (Sir-Generik-Regel: alles dynamisch).
                 model = sendableModel(composerModel, agentModelsForSend[agent.agentId]),
-                effort = composerEffort,
+                // B1 (Flagship-Review 17.11.): EFFORT_OFF (bewusstes „aus“) geht
+                // als KEIN effort-Feld auf den Draht — der Gateway-Standard
+                // bleibt; nur low/high/max sind App-Wünsche.
+                effort = sendableEffort(composerEffort),
             ) { ok, error, msgId ->
                 if (!ok) {
                     failedLocalIds = failedLocalIds + nextId
