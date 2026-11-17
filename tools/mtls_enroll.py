@@ -67,8 +67,20 @@ _INIT_STATE: dict = {"ready": False, "error": ""}
 _CHALLENGES: dict[str, Tuple[float, str]] = {}  # device_id → (expires, nonce)
 _STATE_LOCK = threading.Lock()
 # Security-Fix-Welle 17.11. (TOCTOU): Registry-load→code-used-check→save atomar
-# im Enroll-Pfad (reset_epoch bleibt beim State-Lock).
+# im Enroll-Pfad. P43 (17.11.): reset_epoch (Code-Wechsel-Pfad) teilt denselben
+# Lock — der Epoch-Bump ist damit atomar ggü. einem LAUFENDEN Enrollment
+# (sonst überwarfen sich Enroll- und Rotations-Save gegenseitig: Enroll-Eintrag
+# verloren bzw. Epoch auf den Stand vor dem Bump zurückgesetzt).
 _ENROLL_LOCK = threading.Lock()
+
+
+class RegistryUnavailable(RuntimeError):
+    """P43 (17.11.): Registry-Datei VORHANDEN, aber unlesbar/schema-beschädigt.
+
+    Strikte Leser (enroll, reset_epoch) verweigern dann, statt still mit einem
+    LEEREN enrolled-View weiterzuarbeiten — ein Save aus so einem View würde
+    alle Geräte-Einträge STILL löschen (exakt der P43-Schaden). Eine FEHLENDE
+    Datei ist keine Beschädigung: frische Registry, kein Fehler."""
 
 
 # ── OpenSSL-Helfer (subprocess, timeout, fail-soft) ──────────────────────────
@@ -140,7 +152,12 @@ def _registry_default() -> dict:
     return {"epoch": epoch, "enrolled": {}}
 
 
-def _registry_load() -> dict:
+def _registry_load(strict: bool = False) -> dict:
+    """Registry laden. FEHLENDE Datei = frische Registry (kein Fehler, legacy-
+    konform). P43: strict=True (Enroll-Pfad, reset_epoch) behandelt eine
+    VORHANDENE, aber unlesbare/schema-beschädigte Datei als
+    RegistryUnavailable statt stille mit einem leeren View weiterzuschreiben
+    — nur der Nicht-strict-Weg (init-Reparatur, Gate) bleibt bei Default."""
     tls_dir, _ck, _cc, registry, _ds = _tls_paths()
     try:
         data = json.loads(registry.read_text(encoding="utf-8"))
@@ -148,6 +165,9 @@ def _registry_load() -> dict:
             raise ValueError("schema")
         return data
     except Exception:
+        if strict and registry.exists():
+            raise RegistryUnavailable(
+                f"mtls_devices.json vorhanden, aber unlesbar/schema-beschädigt: {registry}")
         return _registry_default()
 
 
@@ -158,20 +178,41 @@ def _registry_save(data: dict) -> None:
     os.replace(tmp, registry)
 
 
-def reset_epoch(new_epoch: Optional[int] = None) -> dict:
-    """Epoch umstellen (set_pairing_code ruft das — Code-Neuerzeugung öffnet
-    das Einmal-Fenster wieder). Erhöhung um 1 = sicherer Default."""
-    with _STATE_LOCK:
-        data = _registry_load()
-        before = int(data.get("epoch", 1))
-        data["epoch"] = int(new_epoch) if new_epoch else before + 1
-        try:
-            _registry_save(data)
-        except Exception as exc:  # pragma: no cover
-            logger.warning("mtls_enroll: epoch-Persist fehlgeschlagen: %s", exc)
-        logger.info(
-            "mtls_enroll: Epoch %s → %s (Code-Fenster neu)", before, data["epoch"])
-        return data
+def reset_epoch(new_epoch: Optional[int] = None) -> Optional[dict]:
+    """Epoch umstellen (set_pairing_code ruft das nach einem Code-Wechsel —
+    der Code öffnet das Einmal-Fenster wieder). Erhöhung um 1 = Default.
+
+    P43 (17.11.): Die Rotation fasst NUR die Epoch an — 'enrolled' bleibt
+    byte-stabil wie geladen: Alt-Code-Geräte behalten Eintrag + Zertifikat
+    (die Blockierung läuft allein über den Epoch-Check am Gate, siehe
+    _mtls_gate/android_relay.py). Zwei Schutzebenen, damit der Code-Wechsel
+    die Registry NICHT leeräumen kann:
+      * atomar ggü. Enrollment (_ENROLL_LOCK) — der Bump des Rotation-Threads
+        kann nicht mehr mit dem Enroll-Save um einen veralteten View konkurrieren;
+      * striktes Lesen: ist die Datei beschädigt, wird ABBRUCH geschrieben
+        (kein Save aus einem leeren View → kein stiller Gesamtwipe); der
+        Epoch-Bump holt nach, sobald die Registry wieder lesbar ist.
+    Rückgabe: Registry bei Erfolg, None bei unlesbarer Registry (fail-soft)."""
+    with _ENROLL_LOCK:
+        with _STATE_LOCK:
+            try:
+                data = _registry_load(strict=True)
+            except RegistryUnavailable as exc:
+                logger.warning(
+                    "mtls_enroll: Registry unlesbar — Epoch-Rotation abgebrochen "
+                    "(KEIN Save aus leerem View, enrolled bleibt unberührt): %s", exc)
+                return None
+            before = int(data.get("epoch", 1))
+            data["epoch"] = int(new_epoch) if new_epoch else before + 1
+            # P43-SCHUTZ: bewusst KEINE Berührung von data["enrolled"].
+            try:
+                _registry_save(data)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("mtls_enroll: epoch-Persist fehlgeschlagen: %s", exc)
+            logger.info(
+                "mtls_enroll: Epoch %s → %s (Code-Fenster neu; enrolled unverändert: %d Gerät(e))",
+                before, data["epoch"], len(data.get("enrolled") or {}))
+            return data
 
 
 # ── Proof-of-Possession (Nonce) ─────────────────────────────────────────────
@@ -383,7 +424,16 @@ async def enroll_handler(request):
     # Enroll ist ein Einmal-pro-Epoch-Ereignis, die Serialisierung IST der
     # Schutz.
     with _ENROLL_LOCK:
-        reg = _registry_load()
+        # P43: striktes Lesen — beschädigte Registry → 503 statt stiller
+        # Wipe (der Enroll-Save aus einem Leer-View würde ALTE Einträge
+        # löschen); der Admin repariert (registry_reset.py), kein Datenverlust.
+        try:
+            reg = _registry_load(strict=True)
+        except RegistryUnavailable as exc:
+            logger.error(
+                "mtls_enroll: Registry unlesbar — Enrollment verweigert "
+                "(kein stiller Wipe durch Leer-View-Save): %s", exc)
+            return JSON_RESPONSE({"error": "registry-unavailable"}, status=503)
         enrolled = reg.setdefault("enrolled", {})
         is_new_device = device_id not in enrolled
         if is_new_device and enrolled:

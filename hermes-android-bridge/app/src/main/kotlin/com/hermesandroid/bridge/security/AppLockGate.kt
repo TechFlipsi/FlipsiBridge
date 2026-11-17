@@ -202,7 +202,10 @@ private fun AppLockScreen(manager: AppLockManager) {
                 // = „0“ wieder exakt zentriert.
                 modifier = Modifier.size(72.dp),
                 colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
-            ) { Text("OK") }
+            ) {
+                // i18n-Rest: OK-Label als Ressource (DE/EN-Parität).
+                Text(stringResource(R.string.app_lock_ok))
+            }
         }
 
         // Geräte-Sperre (Plattform-Builtin statt androidx.biometric — siehe

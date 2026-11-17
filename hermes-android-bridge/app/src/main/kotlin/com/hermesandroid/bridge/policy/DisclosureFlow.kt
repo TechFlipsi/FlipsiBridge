@@ -13,7 +13,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.R
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 
@@ -161,7 +163,8 @@ fun DisclosureDialogHost() {
             ) {
                 Text(pending.body, style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    "Deine Einwilligung wird mit Datum protokolliert — jederzeit widerrufbar in den Systemeinstellungen.",
+                    // i18n-Rest: Einwilligungs-Hinweis als Ressource (DE/EN).
+                    stringResource(R.string.disclosure_consent_note),
                     style = MaterialTheme.typography.labelSmall,
                     color = com.hermesandroid.bridge.ui.FlipsiColors.TextSecondary,
                     modifier = Modifier.padding(top = 10.dp),
@@ -176,11 +179,13 @@ fun DisclosureDialogHost() {
                     DisclosureState.pending = null
                     proceed()
                 },
-            ) { Text("Verstanden — aktivieren") }
+            ) { Text(stringResource(R.string.disclosure_confirm)) }
         },
         dismissButton = {
             // Kein Zwang: Verweigern = ohne Aktion zuwerfen (Richtlinientreu).
-            TextButton(onClick = { DisclosureState.pending = null }) { Text("Nicht jetzt") }
+            TextButton(onClick = { DisclosureState.pending = null }) {
+                Text(stringResource(R.string.disclosure_dismiss))
+            }
         },
     )
 }

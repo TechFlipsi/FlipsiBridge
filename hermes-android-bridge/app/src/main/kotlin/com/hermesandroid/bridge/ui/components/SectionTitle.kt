@@ -25,7 +25,6 @@ fun SectionTitle(
     Column(
         modifier.semantics { heading() },
     ) {
-        androidx.compose.foundation.layout.PaddingValues(top = 0.dp)
         androidx.compose.material3.Text(
             title,
             style = MaterialTheme.typography.titleMedium,

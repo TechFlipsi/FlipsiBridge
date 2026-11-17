@@ -4517,3 +4517,78 @@ class TestSecfix17MtlsGatePeerCheckAndBodyRedaction:
         assert data["authorization"] == "<redacted>"
         assert data["code"] == "<redacted>"
         assert data["note"] == "sichtbar"
+
+
+class TestP43MtlsGateEpochCheck:
+    """P43 (17.11.): Einträge zählen am Gate nur in ihrer Zert-Epoche.
+
+    set_pairing_code rotiert die Epoch BESONDERS NICHT mit einem Wipe — der
+    Registry-Eintrag (und das Zert) des Alt-Code-Geräts bleibt erhalten, aber
+    das Gate lehnt es ab (403 mtls-stale-epoch), bis es mit dem NEUEN Code
+    neu enrollt ("renewal") und damit auf die aktuelle Epoche gehoben wird.
+    Legacy-Einträge OHNE epoch_of_enroll (Bestand vor P43) zählen weiter
+    (fail-open, Bestandsschutz)."""
+
+    DEVICE = "a1b2c3d4-e5f6-4a7b-8c9d-0a1b2c3d4e5f"
+
+    def _setup(self, monkeypatch, tmp_path, enrolled, epoch=1):
+        import tools.mtls_enroll as menroll
+        monkeypatch.setenv("ANDROID_MTLS_ENFORCE", "1")
+        monkeypatch.setenv("ANDROID_RELAY_TRUSTED_PROXY_IP", "192.168.178.76")
+        monkeypatch.setenv("ANDROID_RELAY_TLS_DIR", str(tmp_path))
+        menroll._registry_save({"epoch": epoch, "enrolled": enrolled})
+
+    def _request(self):
+        from types import SimpleNamespace
+        hdrs = {
+            "X-SSL-Verify": "SUCCESS",
+            "X-SSL-Device-DN": f"CN=flipsibridge-{self.DEVICE}/O=FlipsiBridge Devices",
+        }
+        return SimpleNamespace(path="/ws", headers=hdrs, remote="192.168.178.76")
+
+    def test_stale_epoch_entry_rejected_but_not_deleted(self, monkeypatch, tmp_path):
+        import json
+        import tools.mtls_enroll as menroll
+
+        entry = {"cn": f"flipsibridge-{self.DEVICE}", "ts": 1, "epoch_of_enroll": 1}
+        self._setup(monkeypatch, tmp_path, {self.DEVICE: entry}, epoch=9)
+        resp = _mtls_gate(self._request())
+        assert resp is not None and resp.status == 403
+        assert json.loads(resp.text)["error"] == "mtls-stale-epoch"
+        # P43-Kern: kein stiller Wipe — Eintrag bleibt in der Registry:
+        after = menroll._registry_load()
+        assert after["enrolled"][self.DEVICE]["epoch_of_enroll"] == 1
+
+    def test_current_epoch_entry_passes(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path,
+                    {self.DEVICE: {"cn": "c", "epoch_of_enroll": 9}}, epoch=9)
+        assert _mtls_gate(self._request()) is None
+
+    def test_legacy_entry_without_epoch_field_still_passes(self, monkeypatch, tmp_path):
+        self._setup(monkeypatch, tmp_path, {self.DEVICE: {"cn": "c"}}, epoch=3)
+        assert _mtls_gate(self._request()) is None
+
+    def test_rotation_preserves_entry_and_flips_gate_renewal_reopens(self, monkeypatch, tmp_path):
+        """P43 End-zu-Ende an der Gate-Ebene: reset_epoch (= set_pairing_code-
+        Pfad) rotiert die Epoch → Eintrag bleibt erhalten, Gate kippt auf
+        403 mtls-stale-epoch; der Renewal-Save (so schreibt es enroll_handler:
+        epoch_of_enroll = aktuelle Epoche) stellt die Geltung wieder her."""
+        import json
+        import tools.mtls_enroll as menroll
+
+        entry = {"cn": f"flipsibridge-{self.DEVICE}", "ts": 5, "epoch_of_enroll": 4}
+        self._setup(monkeypatch, tmp_path, {self.DEVICE: entry}, epoch=4)
+        assert _mtls_gate(self._request()) is None  # Zert-Epoche aktuell
+
+        menroll.reset_epoch()  # Code-Wechsel: Epoch 4 → 5
+        reg = menroll._registry_load()
+        assert reg["epoch"] == 5
+        assert reg["enrolled"] == {self.DEVICE: entry}, "kein Wipe bei Rotation"
+        resp = _mtls_gate(self._request())
+        assert resp is not None and resp.status == 403
+        assert json.loads(resp.text)["error"] == "mtls-stale-epoch"
+
+        # Renewal mit dem NEUEN Code (App enrollt dasselbe device_id erneut):
+        reg["enrolled"][self.DEVICE]["epoch_of_enroll"] = reg["epoch"]
+        menroll._registry_save(reg)
+        assert _mtls_gate(self._request()) is None

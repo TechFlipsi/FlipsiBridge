@@ -314,6 +314,10 @@
     <string name="health_rationale_usage">Die Daten gehen in die Tagesübersicht (z. B. Puls-Mitteilen, Schritte im Tagesverlauf, Schlaf-Fenster). Es wird nichts in Health Connect GESCHRIEBEN, nichts ohne Freigabe gelöscht, kein Datenabgleich mit Dritten — der Server steht im eigenen Heimnetz.</string>
     <string name="health_rationale_change">Änderbar jederzeit: Health Connect → Daten und Zugriff → FlipsiBridge → Rechte einzeln an/aus.</string>
     <string name="health_rationale_ok">Verstanden</string>
+    <!-- W18-Rest i18n: Disclosure-Dialog (PH-7/PS-G-2) — Literale → Ressourcen -->
+    <string name="disclosure_consent_note">Deine Einwilligung wird mit Datum protokolliert — jederzeit widerrufbar in den Systemeinstellungen.</string>
+    <string name="disclosure_confirm">Verstanden — aktivieren</string>
+    <string name="disclosure_dismiss">Nicht jetzt</string>
     <string name="health_update_title">Health Connect veraltet</string>
     <string name="health_update_text">Die Health-Connect-Komponente braucht ein Update (Play Store). Danach erneut versuchen.</string>
     <string name="health_denied_title">Keine Health-Berechtigungen erteilt</string>
@@ -386,11 +390,15 @@
     <string name="chat_list_no_messages">Noch keine Nachrichten</string>
     <string name="chat_list_back_a11y">Zurück zur Agenten-Liste</string>
     <string name="chat_error_close_a11y">Fehlermeldung schließen</string>
-    <string name="chat_send_failed">Chat: Senden fehlgeschlagen — %1$s</string>
+    <string name="chat_send_failed">Chat: Senden fehlgeschlagen — %1$s. Verbindung prüfen und erneut senden.</string>
     <string name="chat_send_failed_unknown">unbekannter Fehler</string>
-    <string name="chat_media_unreadable">Media: Datei nicht lesbar</string>
+    <string name="chat_media_unreadable">Media: Datei nicht lesbar — in der Mediathek erneut holen.</string>
     <string name="chat_media_too_large">Media: zu groß (max %1$s)</string>
     <string name="chat_e2e_missing">Chat: keine aktive E2E-Sitzung — Fingerprint-Abgleich erst nach dem Verbinden möglich</string>
+    <!-- W18-1a: verdeckter chat.fp_check-Kontrollframe — Ergebnis-Zeile
+         (ChatScreen FpCheckNotice), NIE eine Chat-Bubble -->
+    <string name="chat_fp_check_ok">Fingerprint-Abgleich bestanden — die Fingerprint stimmen überein.</string>
+    <string name="chat_fp_check_failed">Fingerprint-Abgleich NICHT bestanden — Fingerprint weichen ab (Banner oben).</string>
     <string name="chat_status_queued">⏱ Wartet</string>
     <string name="chat_status_queued_desc">Nachricht wartet im Relay-Spool</string>
     <string name="chat_status_delivered">✓✓ Zugestellt</string>
@@ -432,7 +440,7 @@
     <string name="chat_voice_recording_cancel_active">Loslassen = Abbrechen</string>
     <string name="chat_voice_recording_cancel_a11y">Aufnahme abbrechen</string>
     <string name="chat_voice_recording_holding_a11y">Aufnahme läuft, %1$s — Loslassen sendet die Sprachnachricht</string>
-    <string name="media_image_load_failed">Bild konnte nicht geladen werden.</string>
+    <string name="media_image_load_failed">Bild konnte nicht geladen werden — Datei nicht abrufbar (in der Mediathek erneut holen).</string>
     <string name="composer_title">Modell</string>
     <string name="composer_demo_hint">Demo-Eintrag (nicht gekoppelt) — Auswahl wirkt nur lokal, bis der Agent gekoppelt ist.</string>
     <string name="composer_auto">Auto</string>
@@ -447,6 +455,7 @@
     <string name="composer_no_list">Vom Server liegt keine Modell-Liste vor — Auto bleibt aktiv.</string>
     <string name="composer_read_aloud">Agenten-Antworten vom Gerät vorlesen</string>
     <string name="lock_title">FlipsiBridge ist gesperrt</string>
+    <string name="app_lock_ok">OK</string>
     <string name="lock_subtitle">PIN eingeben, um Chat und Einstellungen zu öffnen</string>
     <string name="lock_locked">Gesperrt — noch %1$d s</string>
     <string name="lock_error_locked">Zu viele Fehlversuche — für %1$d s gesperrt</string>
@@ -534,7 +543,7 @@
     <string name="agent_avatar_a11y">Profilbild des Agenten</string>
     <string name="agent_avatar_change">Profilbild ändern</string>
     <string name="agent_avatar_remove">Profilbild entfernen</string>
-    <string name="agent_avatar_failed">Foto konnte nicht übernommen werden.</string>
+    <string name="agent_avatar_failed">Foto konnte nicht übernommen werden — Foto erneut wählen.</string>
     <string name="agent_sheet_name_label">Name</string>
     <string name="agent_sheet_hint">Name kommt aus der Brücke (gespeicherte Session) — lesend hier.</string>
     <string name="design_sheet_title">Chatdesign</string>
@@ -574,7 +583,7 @@
     <string name="mtls_enrolling">Wird angefordert …</string>
     <string name="mtls_enroll_ok">Zertifikat installiert (%1$s) — wird dem Relay beim mTLS-Handshake vorgelegt.</string>
     <string name="mtls_no_profile">Kein Serverprofil — bitte zuerst Server verbinden.</string>
-    <string name="mtls_no_code">Kein Kopplungscode im Profil vorhanden.</string>
+    <string name="mtls_no_code">Kein Kopplungscode im Profil vorhanden — am Server erzeugen und Profil aktualisieren.</string>
     <string name="mtls_code_used">Code bereits verwendet — bitte am Server einen neuen Kopplungscode erzeugen.</string>
-    <string name="mtls_enroll_error">Zertifikat-Anforderung fehlgeschlagen (%1$s).</string>
+    <string name="mtls_enroll_error">Zertifikat-Anforderung fehlgeschlagen (%1$s) — Kopplungscode prüfen und erneut anfordern.</string>
 </resources>

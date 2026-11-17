@@ -593,6 +593,27 @@ object RelayClient {
     val e2eBanner: StateFlow<String?> = _e2eBanner.asStateFlow()
 
     /**
+     * W18-1a: verdecktes FP-Abgleich-Ergebnis je agent_id — der chat.fp_check
+     * (=enc)-Kontrollframe wird hier VERARBEITET (FP-Status), aber NIE als
+     * Chat-Bubble persistiert/angezeigt (kein chatEvents-Eintrag, kein
+     * Disk-Store, keine Notification). UI bindet die dismissbare Statuszeile
+     * unter dem Chat-Kopf (ChatScreen FpCheckNotice) — keine Chat-Zeile.
+     */
+    data class FpCheckResult(
+        val agentId: String,
+        val ok: Boolean,
+        val ts: Long,
+    )
+
+    private val _fpCheckResults = MutableStateFlow<Map<String, FpCheckResult>>(emptyMap())
+    val fpCheckResults: StateFlow<Map<String, FpCheckResult>> = _fpCheckResults.asStateFlow()
+
+    /** UI räumt das dismissbare Abgleich-Ergebnis ab (kein Dauerzustand). */
+    fun clearFpCheckResult(agentId: String) {
+        _fpCheckResults.update { it - agentId }
+    }
+
+    /**
      * W13-P2: sichtbarer Prekey-Fehler (null = keiner) — der Onboarding-
      * Fingerprint-Schritt zeigt diese Zeile STATT der stillen Warte-Box,
      * wenn das Relay dem Agenten nach allen Retries keinen spk_pub liefert.
@@ -1556,6 +1577,11 @@ object RelayClient {
                 // MEDIA-T1: chunked Media (E2E-only) + Chunk-Acks (Progress).
                 "chat.media.enc" -> { handleChatMediaEnc(json); return }
                 "chat.media.chunk_ack" -> { handleMediaChunkAck(json); return }
+                // W18-1a: verdeckter FP-Abgleich-Kontrollframe — wird VERARBEITET
+                // (FP-Status: Banner bei Abweichung + Ergebnis-Zeile), aber NIE
+                // als Chat-Bubble persistiert/angezeigt (FpCheckRules-Doku).
+                "chat.fp_check" -> { handleChatFpCheckFrame(json); return }
+                "chat.fp_check.enc" -> { handleChatFpCheckEnc(json); return }
                 "crypto.hello_ack" -> { handleCryptoHelloAck(json); return }
                 "crypto.session_reset" -> { handleCryptoSessionReset(json); return }
             }
@@ -1680,9 +1706,19 @@ object RelayClient {
                         "inaktiv — verschlucktes crypto.session_reset nachgeholt",
                 )
                 cryptoSessions.remove(agentId)
+                // W18-B (Sir-Fund, Volltest 17.11.): AUTOMATISCHER Neuaufbau —
+                // der WebSocket steht, nur die Session ist serverseitig weg
+                // (Relay-Restart). Derselbe Verband wie beim benignen
+                // crypto.session_reset (SIRS-01): sofort frischer crypto.hello-
+                // Handshake; der User verbindet NICHT manuell für einen
+                // Relay-Restart. Scheitert der Aufbau dauerhaft, übernimmt
+                // der HelloAckFailurePolicy-Banner die ehrliche Meldung.
+                startHandshake(agentId)
+                // (C) Meldung nach der AKTIONEN-MIT-ERGEBNIS-Regel: WAS kaputt
+                // ist + WAS passiert (Auto-Neuaufbau, kein manuelles Neuverbinden).
                 publishE2eSessions()
                 _e2eBanner.value =
-                    "E2E-Sitzung wurde serverseitig zurückgesetzt — bitte neu verbinden."
+                    "E2E-Sitzung wurde serverseitig zurückgesetzt — Sitzung wird automatisch neu aufgebaut."
             }
             // PH-FIX-BACKEND-B (Bug-1-Spiegel-Branch): Relay hält eine aktive
             // E2E-Session (vom Agent geackt), das Phone hat LOKAL KEINE →
@@ -1747,6 +1783,13 @@ object RelayClient {
         val elapsedMs = runCatching {
             json.get("elapsed_ms")?.takeIf { it.isJsonPrimitive }?.asLong
         }.getOrNull()
+        // W18-1a: FP-Ergebnis als LEGACY-Klartext-Antwort ('Fingerprint-Abgleich:'
+        // Präfix) — dieser Draht läuft auf den VERDECKTEN Kontrollframe-Weg
+        // (Banner/Ergebnis-Zeile), KEINE Chat-Bubble.
+        if (FpCheckRules.isFpResultText(body)) {
+            handleChatFpCheckResult(agentId, chatId, ts, ok = null, text = body)
+            return
+        }
         val event = ChatMessageEvent(chatId, agentId, body, ts, elapsedMs)
         // SEC-W1 W1C-4: Per-Frame IO-Coroutinen liefen parallel auf dem
         // Read-Modify-Write → StateFlow-Lost-Update = stiller Nachrichten-
@@ -2225,9 +2268,12 @@ object RelayClient {
         json.get(field)?.takeIf { it.isJsonPrimitive }?.asLong
     }.getOrNull()
 
-    /** E2eSessionInfo-Flow neu veröffentlichen (Session kam/weg). */
+    /** Vorher-sichtbare Session-Menge (W18-B: Gain-Erkennung fürs Banner-Clear). */
+    private var e2eSessionAgentsPreviouslyVisible: Set<String> = emptySet()
+
+    /** E2eSessionInfo-Flow neu veröffentlichen (Session kam/weg + Banner-Livenness). */
     private fun publishE2eSessions() {
-        _e2eSessions.value = cryptoSessions.entries.mapNotNull { (agentId, peer) ->
+        val live = cryptoSessions.entries.mapNotNull { (agentId, peer) ->
             val fp = peer.fingerprint ?: return@mapNotNull null
             E2eSessionInfo(
                 agentId = agentId,
@@ -2238,6 +2284,27 @@ object RelayClient {
                 agentFingerprintDisplay = CryptoEngine.fingerprintDisplay(peer.agentFingerprint),
             )
         }.associateBy { it.agentId }
+        _e2eSessions.value = live
+        // W18-B (Banner-LIVENESS, Sir-Fund 17.11.): das rot-Banner hängt am
+        // LIVEN Zustand, nicht an einem einmaligen Event-Flag — eine frisch
+        // VERIFIZIERTE Session (hello_ack-Erfolg, Session kam hier zurück)
+        // ist der Beweis, dass E2E wieder steht: Banner weg. Vorher blieb
+        // ein einmal gesetztes Banner (serverseitiger Session-Reset,
+        // Abweichung) permanent kleben, obwohl die Sitzung längst wieder
+        // aktiv war. Real-Abwägung: der hello_ack-Verify bindet die GESAMTE
+        // Kette (X3DH + Ratchet + SPK-Verify) — eine wieder hochgekommene
+        // Session ist das Heilungs-Ereignis, ältere Banner-Texte sind damit
+        // veraltet (auch sicherheitsartige aus einem älteren Zustand).
+        val gained = live.keys - e2eSessionAgentsPreviouslyVisible
+        e2eSessionAgentsPreviouslyVisible = live.keys
+        if (gained.isNotEmpty() && _e2eBanner.value != null) {
+            Log.i(
+                TAG,
+                "W18-B: E2E-Session wieder aktiv ${gained.first().take(24)}" +
+                    "+${gained.size - 1} — Banner geräumt (Liveness-Verband)",
+            )
+            _e2eBanner.value = null
+        }
     }
 
     /** Session-Rotate-Hinweis (hdr.rot = 1): frische crypto.hello (§5.4). */
@@ -2397,6 +2464,14 @@ object RelayClient {
         val chatId = stringOf(json, "chat_id") ?: return
         val ts = longOf(json, "ts") ?: System.currentTimeMillis()
         val elapsedMs = longOf(json, "elapsed_ms")
+        // W18-1a: FP-Ergebnis verdeckt — der enc-Antworttext mit dem
+        // 'Fingerprint-Abgleich:'-Präfix ist KEINE Chat-Anzeige: er läuft
+        // verdeckt (FP-Status) und erzeugt KEINE Chat-Bubble (siehe auch den
+        // Legacy-Klartext-Zweig in handleChatEventFrame).
+        if (FpCheckRules.isFpResultText(text)) {
+            handleChatFpCheckResult(agentId, chatId, ts, ok = null, text = text)
+            return
+        }
         // SEC-W1 W1C-4: atomares update{} (CAS) — kein Lost-Update mehr.
         _chatEvents.update { (it + ChatMessageEvent(chatId, agentId, text, ts, elapsedMs))
             .takeLast(MAX_CHAT_EVENTS) }
@@ -2409,9 +2484,91 @@ object RelayClient {
         notifyIncomingChat(agentId, text, ts)
         if (BuildConfig.DEBUG) Log.d(TAG, "chat.event.enc von Agent ${agentId.take(24)} entschlüsselt")
         // Sirs Revision (iii): Abweichungs-Antwort → rot-Banner in Chat + Settings.
-        if (text.startsWith("Fingerprint-Abgleich: FEHLGESCHLAGEN")) {
-            _e2eBanner.value = text
+        // W18-1a: der Banner-Setz-Anteil lebt im verdeckten FP-Weg
+        // (handleChatFpCheckResult) — der enc-Text läuft oben dorthin um,
+        // BEVOR er eine Chat-Bubble werden könnte.
+    }
+
+    /**
+     * W18-1a: verdeckter FP-Abgleich-Kontrollframe (chat.fp_check, klar) —
+     * der Agent antwortet auf den 'FP-ABGLEICH'-Versand als Kontrollframe
+     * (NICHT als Chat-Antwort): FP-Status aktualisieren (ok = Ergebnis-Zeile,
+     * Abweichung = rot-Banner wie am alten Bubble-Pfad), NIE Chat-Bubble
+     * (kein chatEvents/persist/notify — Beweis: dieser Verband hat KEINEN
+     * dieser drei Aufrufe). Fail-soft: agent_id fehlt = Frame verwerfen.
+     */
+    private fun handleChatFpCheckFrame(json: JsonObject) {
+        val parsed = FpCheckRules.parse(json) ?: run {
+            Log.w(TAG, "W18-1a: chat.fp_check ohne agent_id verworfen")
+            return
         }
+        handleChatFpCheckResult(
+            parsed.agentId ?: return,
+            parsed.chatId ?: "",
+            parsed.ts ?: System.currentTimeMillis(),
+            ok = parsed.ok,
+            text = parsed.text,
+        )
+    }
+
+    /**
+     * W18-1a: enc-Spiegel des Kontrollframes — Entschlüsselung PFLICHT
+     * (Kettensync, Same-Verband wie chat.activity.enc), danach derselbe
+     * verdeckte Auswertungspfad mit dem KLARTEXT-Feldern (ok/text).
+     */
+    private fun handleChatFpCheckEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: run {
+            Log.w(TAG, "W18-1a: chat.fp_check.enc ohne aktive E2E-Session verworfen")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "W18-1a: chat.fp_check.enc-Entschlüsselung fehlgeschlagen — Frame verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val parsed = FpCheckRules.parsePayload(payload)
+        handleChatFpCheckResult(
+            agentId,
+            stringOf(json, "chat_id") ?: "",
+            longOf(json, "ts") ?: System.currentTimeMillis(),
+            ok = parsed?.second,
+            text = parsed?.first,
+        )
+    }
+
+    /**
+     * W18-1a: EIN Auswertungspunkt für Klar-Frame, enc-Frame und Legacy-
+     * Klartext-Antwort — FP-STATUS (Banner bei Abweichung + Ergebnis je
+     * Agent), NIE Chat-Bubble (kein chatEvents/persistChatBubble/notify
+     * hier: die einzige Zeile ist die dismissbare UI-Statuszeile).
+     */
+    private fun handleChatFpCheckResult(
+        agentId: String,
+        chatId: String,
+        ts: Long,
+        ok: Boolean?,
+        text: String?,
+    ) {
+        val verdict = FpCheckRules.verdict(ok, text) ?: run {
+            Log.w(TAG, "W18-1a: FP-Ergebnis für ${agentId.take(24)} nicht auswertbar — verworfen")
+            return
+        }
+        if (!verdict) {
+            // FP-STATUS: Abweichung = rot-Banner (Mitarbeiter-Warnung wie am
+            // bisherigen Bubble-Pfad, Sirs Revision (iii)).
+            _e2eBanner.value = text ?: FpCheckRules.FALLBACK_FAILED_TEXT
+        }
+        _fpCheckResults.update {
+            it + (agentId to FpCheckResult(agentId, ok = verdict, ts = ts))
+        }
+        Log.i(
+            TAG,
+            "W18-1a: chat.fp_check für ${agentId.take(24)} verarbeitet " +
+                "(ok=$verdict, chat=$chatId) — verdeckt, KEINE Chat-Bubble",
+        )
     }
 
     /**
@@ -2956,6 +3113,31 @@ object RelayClient {
     }
 
     /**
+     * W18-1a: FP-Abgleich-Senden — derselbe Draht wie chat.send (Agent-seitig
+     * unverändert: 'FP-ABGLEICH: <hex>' als Klartext/chat.send.enc), aber
+     * PERSIST=FALSE: der Sendeweg persistiert KEINE Verlaufs-Bubble, und die
+     * Chat-UI hängt KEINE lokale Bubble an — der Abgleich taucht NUR als
+     * verdecktes Ergebnis auf (chat.fp_check(.enc) → fpCheckResults), nie
+     * als Chat-Zeile (W18-1a).
+     */
+    fun sendFpCheck(
+        agentId: String,
+        onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit,
+    ) {
+        val fpHex = cryptoSessions[agentId]?.fingerprint
+        if (fpHex.isNullOrBlank()) {
+            deliverChatResult(onResult, false, "keine E2E-Session (kein session_fp)", null)
+            return
+        }
+        sendChat(
+            agentId,
+            "${PhoneCryptoPeer.FP_PREFIX} $fpHex",
+            persist = false,
+            onResult = onResult,
+        )
+    }
+
+    /**
      * PH2-MERGE: Nachricht an einen Agenten via POST /chat (gleiche Route wie
      * die Tools; Bearer = Kopplungs-Code, gleiche Gegenstelle wie der WS).
      * onResult läuft IMMER auf dem Main-Thread (UI darf direkt binden) —
@@ -2976,26 +3158,32 @@ object RelayClient {
      * backward-kompatibel (unbekannte Felder = kein Fehler); die Anwendung
      * auf Agent-Seite folgt in der Server-Welle.
      */
+
     fun sendChat(
         agentId: String,
         text: String,
         sentAtMs: Long = System.currentTimeMillis(),
         model: String? = null,
         effort: String? = null,
+        // W18-1a: FALSE = verdeckter Versand (FP-Abgleich) — keine Verlaufs-
+        // Bubble im Disk-Store; die UI hängt ohnehin keine Bubble an.
+        persist: Boolean = true,
         onResult: (ok: Boolean, error: String?, msgId: String?) -> Unit,
     ) {
         val activeScope = scope
         if (activeScope == null || !isConnected) {
             // SIRS-02: auch der gescheiterte Versand bleibt im Verlauf (Chip
             // '✕ Fehlgeschlagen' überlebt den Restart statt zu verhungern).
-            persistChatBubble(agentId, chatId = "", fromAgent = false, text,
+            // W18-1a: persist=false (FP-Abgleich) — KEINE Verlaufs-Bubble.
+            if (persist) persistChatBubble(agentId, chatId = "", fromAgent = false, text,
                 sentAtMs, status = "failed")
             deliverChatResult(onResult, false, "Keine Verbindung zum Relay", null)
             return
         }
         val base = serverUrl?.trim()?.trimEnd('/')
         if (base.isNullOrBlank()) {
-            persistChatBubble(agentId, chatId = "", fromAgent = false, text,
+            // W18-1a: persist=false — kein Verlaufseintrag (verdeckter Versand).
+            if (persist) persistChatBubble(agentId, chatId = "", fromAgent = false, text,
                 sentAtMs, status = "failed")
             deliverChatResult(onResult, false, "Kein Relay-Server konfiguriert", null)
             return
@@ -3073,7 +3261,8 @@ object RelayClient {
             outcome.onSuccess { (code, msgId) ->
                 // SIRS-02: eigener Versand persistieren (status-Snapshot:
                 // null = gesendet, failed = endgültig gescheitert).
-                persistChatBubble(agentId, historyChatId, fromAgent = false, text,
+                // W18-1a: persist=false (verdeckter FP-Versand) — kein Eintrag.
+                if (persist) persistChatBubble(agentId, historyChatId, fromAgent = false, text,
                     sentAtMs,
                     if (code in 200..299) null else "failed")
                 if (code in 200..299) {
@@ -3082,7 +3271,9 @@ object RelayClient {
                     deliverChatResult(onResult, false, "Relay lehnte ab (HTTP $code)", null)
                 }
             }.onFailure { e ->
-                persistChatBubble(agentId, historyChatId, fromAgent = false, text,
+                // W18-1a: persist=false — auch der Fehler-Pfad persistiert im
+                // verdeckten Versand NICHT (keine Chat-Zeile, W18-1a).
+                if (persist) persistChatBubble(agentId, historyChatId, fromAgent = false, text,
                     sentAtMs, status = "failed")
                 deliverChatResult(onResult, false, e.message?.take(80) ?: "Senden fehlgeschlagen", null)
             }
@@ -3366,6 +3557,102 @@ object RelayClient {
             }
         } catch (_: Exception) {}
     }
+}
+
+/**
+ * W18-1a: verdeckter chat.fp_check-Kontrollframe — Auswertungsregeln (REIN,
+ * ohne Android-Abhängigkeiten, JVM-getestet: FpCheckRulesTest).
+ *
+ * Vertrage: Der FP-Abgleich (⋮-Menü) darf in der App NIEMALS als Chat-Bubble
+ * erscheinen. Der Agent antwortet als Kontrollframe — chat.fp_check (klar)
+ * oder chat.fp_check.enc (E2E-Spiegel); die App VERARBEITET den Frame nur
+ * (FP-Status: rot-Banner bei Abweichung + dismissbare Ergebnis-Zeile je
+ * Agent) und persistiert/zeigt ihn NIE (kein chatEvents, kein Disk-Store,
+ * keine Notification). Ältere Agenten antworten noch als Chat-Text mit dem
+ * RESULT_PREFIX — isFpResultText() lenkt auch DIESER Weg auf den verdeckten
+ * Pfad. Das Senden läuft unverändert als chat.send(.enc) mit dem Text
+ * 'FP-ABGLEICH: <hex>' (PhoneCryptoPeer.FP_PREFIX) — Agent-seitig bleibt die
+ * Erkennung identisch, nur die APP-seitige Anzeige bleibt stumm.
+ */
+object FpCheckRules {
+    /** Frame-Typ des verdeckten Kontrollframes (klar + enc-Spiegel). */
+    const val TYPE_CLEAR = "chat.fp_check"
+    const val TYPE_ENC = "chat.fp_check.enc"
+
+    /** Ergebnis-Prefix der Legacy-Klartext-Antwort (Sirs Revision (iii)). */
+    const val RESULT_PREFIX = "Fingerprint-Abgleich:"
+
+    /** Abweichungs-Markierung im Ergebnis-Text (→ rot-Banner). */
+    const val FAILED_MARK = "FEHLGESCHLAGEN"
+
+    /** Fehlertext, wenn ein FAILED-Frame ohne Text eintrudelt (fail-soft). */
+    const val FALLBACK_FAILED_TEXT = "$RESULT_PREFIX $FAILED_MARK"
+
+    data class Parsed(
+        val agentId: String?,
+        val chatId: String?,
+        val ts: Long?,
+        val ok: Boolean?,
+        val text: String?,
+    )
+
+    /** Legacy-Antworttext = FP-Ergebnis? (nicht-leer + bekannter Präfix). */
+    fun isFpResultText(text: String?): Boolean =
+        !text.isNullOrBlank() && text.startsWith(RESULT_PREFIX)
+
+    /**
+     * Klar-Frame parsen (fail-soft): agent_id ist PFLICHT (null = Frame
+     * verwerfen); ok/text/ts/chat_id sind optional — Legacy-Antworten
+     * übertragen nur einen text, enc-Antworten tragen ok und/oder text.
+     */
+    fun parse(json: JsonObject): Parsed? {
+        val agentId = json.string("agent_id")
+            ?: return null
+        return Parsed(
+            agentId = agentId,
+            chatId = json.string("chat_id"),
+            ts = json.long("ts"),
+            ok = json.bool("ok"),
+            text = json.string("text"),
+        )
+    }
+
+    /**
+     * Enc-Nutzlast parsen (entschlüsselte innere Map): text (optional) + ok
+     * (optional) — Rückgabe (text, ok) nur wenn mindestens eines gesetzt.
+     */
+    fun parsePayload(payload: JsonObject): Pair<String?, Boolean?>? {
+        val text = payload.string("text")
+        val ok = payload.bool("ok")
+        return if (text == null && ok == null) null else text to ok
+    }
+
+    /**
+     * FP-Verdict: das explizite ok-Feld GEWINNT (enc-Kontrollframe);
+     * ohne ok entscheidet der Text — FEHLGESCHLAGEN direkt NACH dem Ergebnis-
+     * Präfix = Abweichung (präzise Prefix-Prüfung wie am alten Bubble-Pfad,
+     * kein contains-Fehlschlag bei anderen Textteilen), sonst bestanden;
+     * beides ohne Aussagekraft = null (Frame verwerfen).
+     */
+    fun verdict(ok: Boolean?, text: String?): Boolean? = when {
+        ok != null -> ok
+        isFpResultText(text) ->
+            !text!!.removePrefix(RESULT_PREFIX).trim().startsWith(FAILED_MARK)
+        else -> null
+    }
+
+    // ── Fail-soft-Getter ─────────────────────────────────────────────────────
+    private fun JsonObject.string(field: String): String? = runCatching {
+        get(field)?.takeIf { it.isJsonPrimitive }?.asString
+    }.getOrNull()
+
+    private fun JsonObject.long(field: String): Long? = runCatching {
+        get(field)?.takeIf { it.isJsonPrimitive }?.asLong
+    }.getOrNull()
+
+    private fun JsonObject.bool(field: String): Boolean? = runCatching {
+        get(field)?.takeIf { it.isJsonPrimitive }?.asBoolean
+    }.getOrNull()
 }
 
 /**

@@ -69,6 +69,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -208,34 +209,6 @@ fun ChatScreen(
     // gesendete Nachricht aus der Anzeige, während ihr Persist-Versand noch
     // läuft; s. Restore-Merge im LaunchedEffect(historyRestored) unten).
     var liveMessagesPresent by remember { mutableStateOf(false) }
-
-    // SIRS-03 (Volltest 03.11.2026): Der FP-Abgleich wird vom Agenten
-    // beantwortet, aber ohne chat.read blieb der Chip der eigenen Nachricht
-    // bei „✓✓ Zugestellt“ — semantisch irreführend (eine erhaltene Antwort
-    // BEWEIST, dass die Nachricht gelesen wurde). Merke je Agent die wartende
-    // FP-Nachricht (local_id + Sende-Zeit); kommt danach eine Antwort des
-    // Agenten, nimmt der Chip den Antwort-Zustand („read“) an. Transient
-    // (kein saveable): nach einer Rotation greift der Agenten-seitige
-    // Read-Receipt (gleicher Fix-Cluster, adapter.py) über den Broker-Status.
-    var fpCheckPending by remember { mutableStateOf<Map<String, Pair<Long, Long>>>(emptyMap()) }
-    var fpAnsweredLocalIds by remember { mutableStateOf(setOf<Long>()) }
-
-    // SIRS-03: Kommt nach dem FP-Abgleich eine Antwort des Agenten (ts ≥
-    // Sende-Zeit), nimmt der Chip der FP-Nachricht den Antwort-Zustand an.
-    LaunchedEffect(chatEvents) {
-        if (fpCheckPending.isEmpty()) return@LaunchedEffect
-        val answeredAgents = mutableListOf<String>()
-        for ((agentId, pending) in fpCheckPending) {
-            val (localId, sentAtMs) = pending
-            if (chatEvents.any { it.agentId == agentId && it.ts >= sentAtMs }) {
-                fpAnsweredLocalIds = fpAnsweredLocalIds + localId
-                answeredAgents.add(agentId)
-            }
-        }
-        if (answeredAgents.isNotEmpty()) {
-            fpCheckPending = fpCheckPending - answeredAgents
-        }
-    }
 
     // SIRS-02 (P2, Volltest 03.11.2026): Verlauf vom Disk-Store laden — der
     // Chat-Verlauf überlebt App-Restart/force-stop (vorher: „Noch keine
@@ -436,6 +409,9 @@ fun ChatScreen(
 
     // PH-3 Welle 2: rot-Banner (Fingerprint-ABWEICHUNG / Session-Reset).
     val e2eBanner by RelayClient.e2eBanner.collectAsState()
+    // W18-1a: verdecktes FP-Abgleich-Ergebnis je Agent — Statuszeile unter
+    // dem Chat-Kopf (keine Chat-Bubble; Verarbeitung + Status im RelayClient).
+    val fpCheckResults by RelayClient.fpCheckResults.collectAsState()
 
     // ── W4-B (Zitieren): Zitieren-Verband ────────────────────────────────────
 
@@ -550,15 +526,6 @@ fun ChatScreen(
         }
         return nextId
     }
-
-    /**
-     * Lokale Nachricht anhängen + Relay-Versand (von Eingabe und FP-Abgleich
-     * gemeinsam genutzt — identischer Sendeweg, identische Fehlerbehandlung).
-     * Gibt die local_id der angehängten Nachricht zurück (SIRS-03: die App
-     * merkt sich die FP-Abgleich-Nachricht, um ihren Chip mit der Antwort zu
-     * heilen).
-     */
-    fun submitText(agent: ChatAgent, text: String): Long = submitQuoted(agent, text, quote = null)
 
     // ── MEDIA-T1: Medien-/Datei-Versand (Picker, Voice, Upload) ───────────
 
@@ -1010,11 +977,6 @@ fun ChatScreen(
                 // 'failed'-Status (✕-Chip) statt des gelogenen '✓ Gesendet'.
                 if (message.id in failedLocalIds) {
                     "failed"
-                } else if (message.id in fpAnsweredLocalIds) {
-                    // SIRS-03: Antwort auf den FP-Abgleich ist der Beweis, dass
-                    // die Nachricht gelesen wurde → Chip nimmt den Antwort-
-                    // Zustand an (statt bei „✓✓ Zugestellt“ zu lügen).
-                    "read"
                 } else {
                     // PH2-T10: eigene Nachricht → msg_id → Broker-Status.
                     // SIRS-02: restaurierte Nachrichten haben KEINE msg_id-
@@ -1050,10 +1012,14 @@ fun ChatScreen(
                     replyQuote = null
                 }
             },
-            // PH-3 Welle 2 (Sirs Revision (iii)): FP-Abgleich-Button — sendet
-            // EXAKT 'FP-ABGLEICH: <64 Hex des session_fp>' als normale Chat-
-            // Nachricht (verschlüsselt wie jede andere); der Agent vergleicht
-            // gegen SEINEN session_fp und antwortet automatisch ✓/✗.
+            // PH-3 Welle 2 (Sirs Revision (iii)) / W18-1a (Fixliste 18): der
+            // FP-Abgleich lebt als ⋮-Menü-Eintrag und versendet 'FP-ABGLEICH:
+            // <64 Hex des session_fp>' VERDECKT (RelayClient.sendFpCheck,
+            // persist=false) — in der App erscheint er NICHT als Chat-Bubble.
+            // Die Antwort kommt als chat.fp_check(-enc)-Kontrollframe bzw.
+            // (Legacy-Agent) als 'Fingerprint-Abgleich'-Text; BEIDES verarbeitet
+            // der RelayClient verdeckt (Banner/Ergebnis-Zeile, nie Chat-Zeile).
+            // Fehler beim Senden = SendErrorBanner wie bei jeder anderen Zeile.
             onFpCheck = {
                 val fp = RelayClient.sessionFingerprint(agent.agentId)
                 if (fp == null) {
@@ -1062,11 +1028,16 @@ fun ChatScreen(
                             context.getString(R.string.chat_e2e_missing)
                         )
                 } else {
-                    val fpLocalId = submitText(agent, "FP-ABGLEICH: $fp")
-                    // SIRS-03: FP-Nachricht als wartend merken — ihre Antwort
-                    // heilt den Chip auf „✓✓ Gelesen“.
-                    fpCheckPending = fpCheckPending +
-                        (agent.agentId to (fpLocalId to System.currentTimeMillis()))
+                    RelayClient.sendFpCheck(agent.agentId) { ok, error, _ ->
+                        if (!ok) {
+                            sendErrors = sendErrors + (
+                                agent.agentId to context.getString(
+                                    R.string.chat_send_failed,
+                                    error ?: context.getString(R.string.chat_send_failed_unknown),
+                                )
+                                )
+                        }
+                    }
                 }
             },
             // MEDIA-T1: Anhang-Button (Picker/Datei/Voice) + Upload-Fortschritt
@@ -1130,6 +1101,11 @@ fun ChatScreen(
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
+            // W18-1a: das verdeckte FP-Ergebnis DIESES Agenten (Demo-Eintrag
+            // ohne eigene agentId hat niemals eines) + Abmelden der Zeile.
+            fpCheckResult = agent.agentId.takeIf { it.isNotBlank() }
+                ?.let { id -> fpCheckResults[id] },
+            onDismissFpCheck = { RelayClient.clearFpCheckResult(agent.agentId) },
             // W4-B (Zitieren): Antwort-Overlay (Strip über der Eingabe-Leiste)
             // + Zitat-Block über der gesendeten Bubble; onReply = Longpress.
             replyQuote = replyQuote,
@@ -1330,6 +1306,10 @@ private fun ConversationBody(
     onFpCheck: () -> Unit,
     e2eBanner: String?,
     onDismissE2eBanner: () -> Unit,
+    // W18-1a: verdecktes FP-Abgleich-Ergebnis (Statuszeile statt Chat-Bubble,
+    // FpCheckNotice) + Abmelden der dismissbaren Zeile.
+    fpCheckResult: RelayClient.FpCheckResult?,
+    onDismissFpCheck: () -> Unit,
     onBack: () -> Unit,
     // MEDIA-T1: Anhang/Voice + Upload-Fortschritt (Progress-Chips je media_id).
     onAttach: (() -> Unit)? = null,
@@ -1393,6 +1373,15 @@ private fun ConversationBody(
     // DIREKT dieses Sheet (mit der play-Billing-SupporterCard) statt Umweg
     // Einstellungen. GitHub-Edition: Herz nicht gerendert (Header-Gate).
     var supporterSheetOpen by remember(agent.id) { mutableStateOf(false) }
+    // W18-4 (Composer-Eingabe kaputt nach Klicks im Auto-Modell-Menü): beim
+    // Sheet-Schluss Fokus EXPLIZIT räumen — der Auswahl-/Dismiss-Klick durfte
+    // den Fokus im Sheet hängen lassen und die Eingabeleiste war danach tot.
+    // Das Sheet trägt seit dem 0.16.9-Freitext-Weg KEIN Textfeld mehr (Beweis
+    // im ComposerUi), der IME-Grund ist strukturell zu; die clearFocus-Schiene
+    // bleibt als Backstop, damit der Speichern-Pfad (Auswahlklick) und der
+    // Abbruch-Pfad (onDismissRequest) beide sauber räumen (onDismissRequest
+    // feuert beim Programm-Schluss NICHT, siehe ComposerUi-Verband).
+    val focusManager = LocalFocusManager.current
     // WELLE-13 P9 (Vorlesen): je Agent (Prefs vorlesen_<agentId>) — der Spiegel
     // füttert den Regler im ChatModelSheet; das Enqueue in ChatScreen liest
     // den Prefs-Stand zur Laufzeit, der Regler wirkt also sofort.
@@ -1591,6 +1580,10 @@ private fun ConversationBody(
         // PH-3 Welle 2: rot-Banner bei Fingerprint-ABWEICHUNG / Session-Reset
         // (möglicher Man-in-the-Middle) — gleiche rot-Sprache wie der Send-Fehler.
         SendErrorBanner(message = e2eBanner, onDismiss = onDismissE2eBanner)
+        // W18-1a: verdecktes FP-Abgleich-Ergebnis — dismissbare Statuszeile
+        // unter dem Kopf (grün = bestanden, rot = Abweichung). NIE eine Chat-
+        // Bubble: das Ergebnis lebt im Kontrollframe-Verband (RelayClient).
+        FpCheckNotice(result = fpCheckResult, onDismiss = onDismissFpCheck)
         // ── W16 (Fixliste 32-Nachtrag): die Tab-Zeile [Chat | Mediathek] ist
         // ENTFERNT — das Chat-Fenster ist pur (nur der Chat selbst). Die
         // Mediathek lebt als Overlay (Menü „Mediathek öffnen"), Zurück per ‹-
@@ -1826,13 +1819,21 @@ private fun ConversationBody(
                 currentModel = composerModel,
                 currentEffort = composerEffort,
                 onPickModel = { picked ->
+                    // W18-4: Speichern-Pfad — Fokus VOR dem Schließen räumen
+                    // (der Klick schließt das Sheet selbst, onDismissRequest
+                    // feuert in diesem Weg nicht).
+                    focusManager.clearFocus()
                     composerModel = picked
                     composerPickerOpen = false
                 },
                 onPickEffort = { level ->
                     composerEffort = level
                 },
-                onDismiss = { composerPickerOpen = false },
+                // W18-4: Abbruch-Pfad — Fokus ebenfalls explizit räumen.
+                onDismiss = {
+                    focusManager.clearFocus()
+                    composerPickerOpen = false
+                },
                 // WELLE-13 P9: Vorlesen-Regler — Persistenz passiert im Sheet
                 // (ChatSpeechPrefs), der Spiegel hält die Antwort des Chats.
                 currentReadAloud = composerReadAloud,
@@ -2304,6 +2305,45 @@ private fun SendErrorBanner(message: String?, onDismiss: () -> Unit) {
                 Icons.Filled.Close,
                 contentDescription = stringResource(R.string.chat_error_close_a11y),
                 tint = FlipsiColors.SignalRedText,
+            )
+        }
+    }
+}
+
+/**
+ * W18-1a: Statuszeile des VERDECKTEN FP-Abgleichs unter dem Chat-Kopf —
+ * bestanden (grün) oder Abweichung (rot, zusätzlich zum e2eBanner). Das
+ * Abgleich-Ergebnis lebt im Kontrollframe-Verband (chat.fp_check(.enc)) und
+ * erscheint bewusst NIEMALS als Chat-Bubble (keine Persist, kein Verlauf, keine
+ * Notification — RelayClient.handleChatFpCheckResult). null = keine Zeile.
+ */
+@Composable
+private fun FpCheckNotice(result: RelayClient.FpCheckResult?, onDismiss: () -> Unit) {
+    if (result == null) {
+        return
+    }
+    val tint = if (result.ok) FlipsiColors.SignalGreen else FlipsiColors.SignalRed
+    val text = stringResource(
+        if (result.ok) R.string.chat_fp_check_ok else R.string.chat_fp_check_failed,
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(color = tint.copy(alpha = 0.16f))
+            .padding(start = 16.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (result.ok) FlipsiColors.TextPrimary else FlipsiColors.SignalRedText,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onDismiss) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = stringResource(R.string.chat_error_close_a11y),
+                tint = if (result.ok) tint else FlipsiColors.SignalRedText,
             )
         }
     }

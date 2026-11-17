@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.ui.chat
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -49,20 +52,12 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  * (NUR Server-Liste, Freitext-Pfad AUS).
  */
 
-/** Chip-Beschriftung für die Denken-Stufe (null = 'aus' → kein Chip). */
-fun effortGermanLabel(level: String?): String? = when (level) {
-    null -> null
-    "low" -> "leicht"
-    "high" -> "hoch"
-    "max" -> "max"
-    else -> null
-}
-
 /**
  * W15 (I18n): Denken-Stufen-Label als RESSOURCE statt deutschem Literal —
  * auflöst unter dem AppLanguageGate live in DE/EN. null → composer_effort_off
- * („Aus“/„Off“). [effortGermanLabel] bleibt als interne Kennung unberührt
- * (Tests/Gate-Werte), nur die ANZEIGE läuft über den Resource-Umweg.
+ * („Aus“/„Off“). Die ANZEIGE läuft rein über den Resource-Umweg; ein deutsches
+ * Literal-Paar (effortGermanLabel) gab es ohne Aufrufer und wurde 17.11.
+ * entfernt.
  */
 fun effortLabelRes(level: String?): Int = when (level) {
     "low" -> R.string.composer_effort_light
@@ -78,28 +73,40 @@ fun effortLabelRes(level: String?): Int = when (level) {
 object ChatComposerPrefs {
     private const val FILE = "composer_prefs"
 
+    // 17.11.26-Räumung: Alt-Geräte halten noch den entfernten Pref-Key
+    // 'chat_models_csv' (Nutzer-Modell-Liste). Beim Prefs-Zugriff einmal
+    // entfernt — KEINE Migration des Inhalts (die Liste lebt nur noch
+    // serverseitig in agent.models).
+    private const val LEGACY_MODELS_CSV = "chat_models_csv"
+
+    private fun prefs(context: Context): SharedPreferences {
+        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        if (p.contains(LEGACY_MODELS_CSV)) p.edit().remove(LEGACY_MODELS_CSV).apply()
+        return p
+    }
+
     fun model(context: Context, agentId: String): String? {
         if (agentId.isBlank()) return null
-        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val p = prefs(context)
         return p.getString("model_$agentId", null)
     }
 
     fun setModel(context: Context, agentId: String, model: String?) {
         if (agentId.isBlank()) return
-        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val p = prefs(context)
         if (model.isNullOrBlank() || model == "Auto") p.edit().remove("model_$agentId").apply()
         else p.edit().putString("model_$agentId", model).apply()
     }
 
     fun effort(context: Context, agentId: String): String? {
         if (agentId.isBlank()) return null
-        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val p = prefs(context)
         return p.getString("effort_$agentId", null)
     }
 
     fun setEffort(context: Context, agentId: String, level: String?) {
         if (agentId.isBlank()) return
-        val p = context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+        val p = prefs(context)
         if (level.isNullOrBlank()) p.edit().remove("effort_$agentId").apply()
         else p.edit().putString("effort_$agentId", level).apply()
     }
@@ -160,7 +167,32 @@ fun ChatModelSheet(
     // WELLE-13 P9: Engine-Zustand für den ehrlichen Fail-Hinweis (Checkliste K).
     val speechState by ChatSpeechSpeaker.state.collectAsState()
 
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = FlipsiColors.Panel) {
+    // W18-4 („Composer-Eingabe kaputt nach Klicks im Auto-Modell-Menü“, Fix):
+    // BEIM SHEET-SCHLUSS FOKUS + TASTATUR EXPLIZIT RÄUMEN. Der Abbruch-Pfad
+    // (Outside-Tap/Back → onDismissRequest) und der Speichern-Pfad (Auswahl-
+    // klick, schließt programmatisch im Caller) enden beide in closeSheet —
+    // ein hängender Fokus (Sheet-Clickables) darf die Komposer-Eingabe nicht
+    // mehr blockieren. Beweis, dass der 0.16.9-Freitext-Weg den HALBEN Bug
+    // (IME über dem Sheet) strukturell ENTFERNT hat: dieses Sheet trägt KEIN
+    // Textfeld mehr (kein TextField/BasicTextField/KeyboardOptions im File —
+    // Auswahl nur ChipRow/Slider/Switch, 0.16.9 „nur Dropdown“) — die
+    // clearFocus/hideKeyboard-Schiene ist der Backstop für die Fokus-Rück-
+    // fälligkeit (Sheet schließt, Tastatur blieb, Fokus fiel zurück).
+    // LocalFocusManager.clearFocus lebt DOPPELT: hier (onDismissRequest-Weg)
+    // und im Caller (ChatScreen.onPickModel/onDismiss — der programmatische
+    // Schluss feuert onDismissRequest nicht).
+    val focusManager = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
+    fun closeSheet() {
+        keyboard?.hide()
+        focusManager.clearFocus()
+        onDismiss()
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = ::closeSheet,
+        containerColor = FlipsiColors.Panel,
+    ) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 24.dp)) {
             // WELLE-13 P6: Demo-Eintrag — Sheet öffnet trotzdem (kein stiller
             // No-op), sagt aber ehrlich, dass die Auswahl nicht persistiert.
@@ -357,7 +389,9 @@ private fun ChipRow(
         Text(
             label,
             style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
-            color = if (selected) FlipsiColors.TextPrimary else FlipsiColors.TextPrimary,
+            // selected/ungelesen teilen dieselbe Textfarbe (Kontrast trägt das
+            // EmberDim-Background + SemiBold) — die if/else-Zweige waren identisch.
+            color = FlipsiColors.TextPrimary,
             fontWeight = if (selected) FontWeight.SemiBold else null,
         )
         if (sub != null) {

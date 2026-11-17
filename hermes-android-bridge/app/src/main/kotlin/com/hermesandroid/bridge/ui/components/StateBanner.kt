@@ -72,6 +72,10 @@ fun StateBanner(
                     color = tint,
                     modifier = Modifier.weight(1f),
                 )
+                // Sir-Design-Befund 17.11. (Screenshot img_2f233f93): bei langem
+                // Titel („Verbunden – Brücke steht“) klebte der letzte Buchstabe
+                // direkt am AKTIV-Badge — ein fester Atem-Abstand gehört dazwischen.
+                Spacer(Modifier.width(8.dp))
                 if (busy) {
                     CircularProgressIndicator(
                         color = tint,

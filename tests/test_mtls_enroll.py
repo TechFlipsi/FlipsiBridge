@@ -277,3 +277,119 @@ def test_secfix17_challenge_store_cap_fifo(tls_env, monkeypatch):
     m._CHALLENGES["capB"] = (exp_b - m._CHALLENGE_TTL_S - 10.0, nonce_b)
     assert m._open_challenge("capE")
     assert "capB" not in m._CHALLENGES and len(m._CHALLENGES) == 3
+
+
+# ── P43 (17.11.): Code-Rotation leeräumt die mTLS-Registry NICHT ─────────────
+
+def test_p43_code_rotation_keeps_enrolled_devices(tls_env):
+    """P43: reset_epoch (der Pfad, den set_pairing_code beim Code-Wechsel
+    anstößt) fasst NUR die Epoch an: Geräte-Einträge (inkl. Zert-Datei)
+    bleiben byte-stabil über Code-Rotationen hinweg — die Blockierung
+    Alt-Code-Geräte läuft allein über den Epoch-Check am Gate, nicht über
+    stille Löschung."""
+    devices = {
+        "devOld1": {"cn": "flipsibridge-devOld1", "ts": 1, "epoch_of_enroll": 1,
+                    "cert_path": "devices/devOld1.pem"},
+        "devOld2": {"cn": "flipsibridge-devOld2", "ts": 2, "epoch_of_enroll": 1,
+                    "is_new_device_epoch": True},
+    }
+    _registry_save({"epoch": 1, "enrolled": dict(devices)})
+    d = _tls_dir() / "devices"
+    d.mkdir(exist_ok=True)
+    cert_file = d / "devOld1.pem"
+    cert_file.write_bytes(b"-----BEGIN CERTIFICATE-----old-----END CERTIFICATE-----")
+
+    data = reset_epoch()  # Rotation 1 (den set_pairing_code anstößt)
+    assert data["epoch"] == 2
+    assert data["enrolled"] == devices, "Rotation 1: Einträge unverändert"
+    reg = _registry_load()
+    assert reg["epoch"] == 2 and reg["enrolled"] == devices
+
+    data2 = reset_epoch()  # Rotation 2 (erneuter Code-Wechsel)
+    assert data2["epoch"] == 3
+    assert _registry_load()["enrolled"] == devices, "Rotation 2: Einträge unverändert"
+    assert cert_file.read_bytes().startswith(b"-----BEGIN CERTIFICATE"), \
+        "Alt-Code-Gerät verliert sein Zert NICHT"
+
+
+def test_p43_reset_epoch_refuses_corrupt_registry(tls_env):
+    """P43 (stiller-Wipe-Weg 1): beschädigte Registry-Datei — die Rotation
+    darf NICHT mit einem stillen LEER-View speichern (sonst wären alle
+    alt-Einträge weg). Erwartung: fail-soft Abbruch (None), Datei byte-
+    identisch unangetastet, Epoch wird NICHT auf einen leeren Stand gesetzt."""
+    path = _tls_dir() / "mtls_devices.json"
+    broken = b'{"epoch": 5, "enrolled": {"devOld1": {"cn": "flipsibridge-devOld1"'
+    path.write_bytes(broken)
+    result = reset_epoch()
+    assert result is None, "Rotation mit beschädigter Registry bricht ab"
+    assert path.read_bytes() == broken, "Kein Overwrite — kein stiller Wipe"
+
+
+def test_p43_corrupt_registry_blocks_enroll_no_silent_wipe(tls_env, monkeypatch):
+    """P43 (stiller-Wipe-Weg 2, Enroll-Pfad): Registry defekt → Handler 503
+    registry-unavailable; der Enroll-Save darf die alten Einträge NICHT mit
+    einem Leer-View überschreiben, kein Zert wird geschrieben."""
+    import asyncio
+
+    m = _patch_relay_auth(monkeypatch)
+    path = _tls_dir() / "mtls_devices.json"
+    broken = b'{"epoch": 5, "enrolled": {"devOld1": {"cn": "flipsibridge-devOld1"'
+    path.write_bytes(broken)
+    k, csr = _device_key_and_csr(str(_tls_dir()), "devNew1")
+    nonce = _open_challenge("devNew1")
+    assert nonce
+    req = _FakeRequest({"device_id": "devNew1",
+                        "csr": base64.b64encode(csr).decode(),
+                        "sig": _sign(k, nonce.encode()), "nonce": nonce},
+                       headers=_AUTH_HDR)
+    resp = asyncio.run(m.enroll_handler(req))
+    assert resp.status == 503 and "registry-unavailable" in resp.text
+    assert path.read_bytes() == broken, "Registry unangetastet (kein Wipe)"
+    assert not any((_tls_dir() / "devices").glob("devNew1*")), "kein Zert geschrieben"
+
+
+def test_p43_rotation_serialized_with_running_enroll(tls_env, monkeypatch):
+    """P43 (stiller-Wipe-Weg 3, Rennen): set_pairing_code stößt reset_epoch in
+    einem Hintergrund-Thread an — fällt der Bump mitten in ein laufendes
+    Enrollment (hier: während der Zert-Signierung), dürfen sich die beiden
+    Saves gegenseitig NICHT mit veralteten Views überwischen. Mit dem FIX
+    (reset_epoch teilt _ENROLL_LOCK) serialisiert der Bump NACH den Enroll-Save:
+    Enroll-Eintrag bleibt UND Epoch endet auf dem Bump."""
+    import asyncio
+    import threading
+
+    m = _patch_relay_auth(monkeypatch)
+    m._registry_save({"epoch": 1, "enrolled": {}})
+    d = str(_tls_dir())
+    k, csr = _device_key_and_csr(d, "devRace")
+    nonce = _open_challenge("devRace")
+    assert nonce
+    req = _FakeRequest({"device_id": "devRace",
+                        "csr": base64.b64encode(csr).decode(),
+                        "sig": _sign(k, nonce.encode()), "nonce": nonce},
+                       headers=_AUTH_HDR)
+    bumps: list = []
+    threads: list = []
+    real_sign = m._sign_csr
+
+    def _sign_during_rotation(csr_pem, device_id):
+        # Rotation "fällt mitten ins Enrollment" (so läuft es am Relay:
+        # set_pairing_code → Thread → reset_epoch). Ohne geteilten Lock läuft
+        # der Bump HIER innerhalb der Enroll-Sektion und die Saves überwischen
+        # sich gegenseitig mit veralteten Views; mit FIX wartet der Bump auf
+        # _ENROLL_LOCK — hier nur anstoßen, das Joinen bewusst NACH dem
+        # Handler ausführen (sonst Deadlock im Test selbst).
+        t = threading.Thread(target=lambda: bumps.append(m.reset_epoch()))
+        t.start()
+        threads.append(t)
+        return real_sign(csr_pem, device_id)
+
+    monkeypatch.setattr(m, "_sign_csr", _sign_during_rotation)
+    resp = asyncio.run(m.enroll_handler(req))
+    assert resp.status == 200
+    threads[0].join(15)
+    assert bumps and bumps[0]["epoch"] == 2, "Bump war in den Enroll eingehängt"
+    reg = _registry_load()
+    assert reg["epoch"] == 2, "Bump darf vom Enroll-Save nicht zurückgesetzt werden"
+    assert "devRace" in reg["enrolled"], \
+        "Enroll-Eintrag darf vom Bump-Save nicht verloren gehen"

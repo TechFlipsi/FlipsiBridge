@@ -1398,12 +1398,43 @@ def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
     if verify == "SUCCESS" and m:
         try:
             try:
-                from tools.mtls_enroll import _registry_load as _rg
+                from tools.mtls_enroll import _registry_load as _rg, \
+                        _registry_default as _rdef
             except Exception:
-                from mtls_enroll import _registry_load as _rg
-            enrolled = (_rg() or {}).get("enrolled") or {}
-            if m.group(1).lower() in {str(k).lower() for k in enrolled}:
-                return None
+                from mtls_enroll import _registry_load as _rg, \
+                        _registry_default as _rdef
+            reg = _rg() or {}
+            enrolled = reg.get("enrolled") or {}
+            try:
+                reg_epoch = int(reg.get("epoch", 1))
+            except (TypeError, ValueError):
+                reg_epoch = int((_rdef() or {}).get("epoch", 1))
+            lowered = {str(k).lower(): v for k, v in enrolled.items()}
+            info = lowered.get(m.group(1).lower())
+            if info is not None:
+                # P43 (17.11.): Epoch-Check — der Eintrag trägt die Epoche
+                # seiner Zert-Ausstellung (epoch_of_enroll). Nach einem
+                # Code-Wechsel (Epoch-Rotation via set_pairing_code) zählt ein
+                # ALT-Epochen-Eintrag NICHT mehr als bekannt (fail-closed wie
+                # ein Unbekannter) — ABER: Eintrag und Zertifikat bleiben
+                # UNBERÜHRT in der Registry (kein stiller Wipe); ein Renewal
+                # mit dem neuen Code stellt die Geltung ohne Datenverlust her.
+                # Legacy-Einträge OHNE epoch_of_enroll (Bestand vor P43) zählen
+                # als aktuelle Epoche (fail-open, kein Brutalisieren).
+                en_epoch = (info.get("epoch_of_enroll", reg_epoch)
+                            if isinstance(info, dict) else reg_epoch)
+                try:
+                    en_epoch = int(en_epoch)
+                except (TypeError, ValueError):
+                    en_epoch = reg_epoch  # defekte Angabe → wie Legacy behandeln
+                if en_epoch == reg_epoch:
+                    return None
+                logger.warning(
+                    "mtls-gate: Ablehnung %s (CN=%r bekannt, aber Alt-Code-Epoche: "
+                    "Zert-Epoche %s ≠ Registry-Epoche %s — Eintrag/Zert bleiben "
+                    "erhalten, Renewal mit dem neuen Code stellt die Geltung her)",
+                    request.path, m.group(1), en_epoch, reg_epoch)
+                return web.json_response({"error": "mtls-stale-epoch"}, status=403)
         except Exception as exc:
             logger.warning("mtls-gate: Registry-Fehler — fail-closed: %s", exc)
     else:

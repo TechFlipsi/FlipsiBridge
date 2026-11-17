@@ -1692,9 +1692,11 @@ async def test_w19_agent_status_caps_and_fail_soft() -> None:
 
 @pytest.mark.asyncio
 async def test_w19_hook_pre_gateway_on_dedup_and_none_return() -> None:
-    """pre_gateway_dispatch: Policy-Hook gibt IMMER None; eigenes Text-Event
-    → parent ON-Frame; bereits working → kein Reset (kein 2. ON); ohne Text/
-    fremde Plattform/Event=None → still. Objekt-Events (MessageEvent-Form mit
+    """pre_gateway_dispatch: Policy-Hook gibt IMMER None; Whitelist-Text-Event
+    (flipsibridge/discord/telegram) → parent ON-Frame; bereits working → kein
+    Reset (kein 2. ON, auch beim Telegram-Call — der feuert hier nur wegen
+    Dedup stumm, nicht weil »fremd«); ohne Text/nicht-whitelisted Plattform/
+    Event=None → still. Objekt-Events (MessageEvent-Form mit
     source.platform.value) landen genauso wie dict-Events."""
     class _P:
         value = "flipsibridge"
@@ -1722,13 +1724,42 @@ async def test_w19_hook_pre_gateway_on_dedup_and_none_return() -> None:
         event=_w19_event(platform="telegram")) is None
     assert await a.hook_pre_gateway_dispatch(event=None) is None
     await a._drain_status_pending()
-    assert len(_w19_status_frames(ws)) == n, "kein Text/fremd/None → still"
+    assert len(_w19_status_frames(ws)) == n, "ohne Text/None/Dedup → still (kein ON)"
     assert await a.hook_pre_gateway_dispatch(event=_Ev()) is None
     await a._drain_status_pending()
     assert len(_w19_status_frames(ws)) == n, "Objekt-Event: bereits working → still"
     assert a._status["working"] is True and a._status["web_count"] == 0
     await a.disconnect()
     print("OK W19: pre_gateway ON/None-Return/Dedup + dict- und Objekt-Events")
+
+
+@pytest.mark.asyncio
+async def test_w19_hook_pre_gateway_whitelist_discord_telegram_on() -> None:
+    """W19-Whitelist (17.11.): Discord-/Telegram-Text-Events setzen den Verband
+    von IDLE auf working=ON — gleicher Vertrag wie flipsibridge (ON-Frame mit
+    started_at, ohne label/end); 2. Event bei bereits working → kein Reset
+    (Dedup); leerer Text bleibt nach wie vor still."""
+    for platform in ("discord", "telegram"):
+        a, ws = make_adapter({})
+        await a.connect()
+        assert _w19_status_frames(ws) == [], f"{platform}: Start ohne Status-Frames"
+        assert await a.hook_pre_gateway_dispatch(
+            event=_w19_event(platform=platform)) is None
+        await a._drain_status_pending()
+        f = _w19_status_frames(ws)[-1]
+        assert f["working"] is True, f"{platform}: ON über die Whitelist"
+        assert "label" not in f and "end" not in f
+        assert a._status["working"] is True
+        n = len(_w19_status_frames(ws))
+        assert await a.hook_pre_gateway_dispatch(
+            event=_w19_event(platform=platform)) is None
+        assert await a.hook_pre_gateway_dispatch(
+            event=_w19_event("", platform=platform)) is None
+        await a._drain_status_pending()
+        assert len(_w19_status_frames(ws)) == n, \
+            f"{platform}: Dedup + Leertext ohne Zusatz-Frame"
+        await a.disconnect()
+    print("OK W19: Whitelist-ON von discord+telegram (IDLE→working), Dedup + Leertext still")
 
 
 @pytest.mark.asyncio
@@ -2137,3 +2168,33 @@ async def test_secfix17_slot_open_close_log_escapes_newlines(caplog) -> None:
             "child_status muss über _log_id im Log escaped sein"
     await a.disconnect()
     print("OK SecFix17: Slot-OPEN/CLOSE-Log escaped (Log-Forging zu)")
+
+
+@pytest.mark.asyncio
+async def test_w20_status_snapshot_after_connect() -> None:
+    """W20 (Sir-Befund 17.11., Slot-Leichen): Nach (Re)Connect schiebt der
+    Adapter den IST-STAND nach — 1 Haupt-Status-Frame + je offenem Sub-Slot
+    ein OPEN-Frame. Ein offline verlorenes end=true (Relay-Restart-Fenster)
+    ist im Adapter-Dict bereits geräumt → Leichen tauchen im Snapshot NICHT
+    auf (Beweis: geschlossener Slot fehlt im Frame-Strom)."""
+    a, ws = make_adapter({})
+    # Ist-Stand VOR connect: working + 2 offene Slots + 1 geschlossener
+    # (Leiche im Dict bereits entfernt — Snapshot darf ihn NICHT bringen).
+    with a._status_lock:
+        a._status["working"] = True
+        a._status["label"] = "Test läuft"
+        a._status["sub_slots"]["sa-open-1"] = {"name": "Alpha-Aufgabe", "started_at": 1}
+        a._status["sub_slots"]["sa-open-2"] = {"name": "Beta-Aufgabe", "started_at": 2}
+    await a.connect()
+    await a._emit_status_snapshot()
+    await a._drain_status_pending()
+    frames = _w19_status_frames(ws)
+    subs = [f for f in frames if isinstance(f.get("sub"), dict) and not f.get("end")]
+    names = {f["sub"].get("name") for f in subs}
+    assert "Alpha-Aufgabe" in names and "Beta-Aufgabe" in names, \
+        "Snapshot bringt beide offenen Slots"
+    assert not any(f.get("end") for f in frames), "Snapshot sendet keine end-Frames"
+    assert any(f.get("working") is True and not f.get("sub") for f in frames), \
+        "Snapshot bringt den Haupt-Working-Stand"
+    await a.disconnect()
+    print("OK W20: Status-Snapshot nach Connect (Haupt + offene Slots, keine Leichen)")

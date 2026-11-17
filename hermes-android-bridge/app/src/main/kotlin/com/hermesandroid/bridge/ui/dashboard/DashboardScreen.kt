@@ -448,9 +448,15 @@ private fun SubAgentSlotsSection(
             stringResource(R.string.dashboard_sub_agents_empty),
             style = MaterialTheme.typography.bodySmall,
             color = FlipsiColors.TextSecondary,
+            modifier = Modifier.padding(top = 4.dp),
         )
         return
     }
+    // Sir-Design-Befund 17.11. (Screenshot img_2f233f93): der Sub-Agenten-
+    // Titel klebte am ersten laufenden Slot — paddingFromBaseline wirkt nur
+    // NACH OBEN, unter dem Titel fehlte der Rhythmus-Abstand. Einheitlich
+    // wie über den Agenten-Karten: 8dp Luft.
+    Spacer(Modifier.height(8.dp))
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         slots.forEach { slot -> SubAgentSlotRow(slot, nowMs) }
     }
@@ -462,7 +468,12 @@ private fun SubAgentSlotRow(
     slot: AgentStatusRules.SubAgentSlot,
     nowMs: Long,
 ) {
-    val busy = slot.working && !DashboardRules.workingTimedOut(slot.startedAt, nowMs)
+    // Sir-Befund 17.11. (Screenshot img_a039d5aa): der 10-Min-Deckel ist eine
+    // HAUPT-Slot-Absicherung (verlorenes OFF) — am SUB-Slot kippte er laufende
+    // Subs nach 10 Min auf „arbeitet nicht mehr", obwohl der Slot lebt. Ein
+    // Sub-Slot existiert nur bis end=true (natürliche Begrenzung, der Adapter
+    // feuert subagent_stop): busy folgt slot.working OHNE Zeit-Deckel.
+    val busy = slot.working
     val tint = if (busy) FlipsiColors.Ember else FlipsiColors.TextSecondary
     Card(
         colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),

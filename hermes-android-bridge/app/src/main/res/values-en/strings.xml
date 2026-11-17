@@ -324,6 +324,10 @@
     <string name="health_rationale_usage">The data feeds the daily overview (e.g. report pulse, steps over the day, sleep window). Nothing is WRITTEN to Health Connect, nothing is deleted without permission, no data sharing with third parties — the server runs in the home network.</string>
     <string name="health_rationale_change">Change anytime: Health Connect → Data and access → FlipsiBridge → toggle each permission on/off.</string>
     <string name="health_rationale_ok">Got it</string>
+    <!-- W18 rest i18n: disclosure dialog (PH-7/PS-G-2) — literals → resources -->
+    <string name="disclosure_consent_note">Your consent is logged with a date — revocable at any time in the system settings.</string>
+    <string name="disclosure_confirm">Understood — enable</string>
+    <string name="disclosure_dismiss">Not now</string>
     <string name="health_update_title">Health Connect outdated</string>
     <string name="health_update_text">The Health Connect component needs an update (Play Store). Then try again.</string>
     <string name="health_denied_title">No health permissions granted</string>
@@ -391,11 +395,15 @@
     <string name="chat_list_no_messages">No messages yet</string>
     <string name="chat_list_back_a11y">Back to agent list</string>
     <string name="chat_error_close_a11y">Close error message</string>
-    <string name="chat_send_failed">Chat: send failed — %1$s</string>
+    <string name="chat_send_failed">Chat: send failed — %1$s. Check the connection and send again.</string>
     <string name="chat_send_failed_unknown">unknown error</string>
-    <string name="chat_media_unreadable">Media: file not readable</string>
+    <string name="chat_media_unreadable">Media: file not readable — fetch again in the gallery view.</string>
     <string name="chat_media_too_large">Media: too large (max %1$s)</string>
     <string name="chat_e2e_missing">Chat: no active E2E session — fingerprint check only possible once connected</string>
+    <!-- W18-1a: hidden chat.fp_check control frame — result line (ChatScreen
+         FpCheckNotice), NEVER a chat bubble -->
+    <string name="chat_fp_check_ok">Fingerprint check passed — the fingerprints match.</string>
+    <string name="chat_fp_check_failed">Fingerprint check FAILED — fingerprints diverge (banner above).</string>
     <string name="chat_status_queued">⏱ Queued</string>
     <string name="chat_status_queued_desc">Message waiting in the relay spool</string>
     <string name="chat_status_delivered">✓✓ Delivered</string>
@@ -437,7 +445,7 @@
     <string name="chat_voice_recording_cancel_active">Release = cancel</string>
     <string name="chat_voice_recording_cancel_a11y">Cancel recording</string>
     <string name="chat_voice_recording_holding_a11y">Recording, %1$s — release to send the voice message</string>
-    <string name="media_image_load_failed">Image could not be loaded.</string>
+    <string name="media_image_load_failed">Image could not be loaded — file not available (fetch again in the gallery view).</string>
     <string name="composer_title">Model</string>
     <string name="composer_demo_hint">Demo entry (not paired) — the selection only applies locally until the agent is paired.</string>
     <string name="composer_auto">Auto</string>
@@ -452,6 +460,7 @@
     <string name="composer_no_list">No model list has arrived from the server — Auto stays active.</string>
     <string name="composer_read_aloud">Read agent replies aloud on the device</string>
     <string name="lock_title">FlipsiBridge is locked</string>
+    <string name="app_lock_ok">OK</string>
     <string name="lock_subtitle">Enter the PIN to open chat and settings</string>
     <string name="lock_locked">Locked — %1$d s remaining</string>
     <string name="lock_error_locked">Too many attempts — locked for %1$d s</string>
@@ -539,7 +548,7 @@
     <string name="agent_avatar_a11y">Agent profile picture</string>
     <string name="agent_avatar_change">Change profile picture</string>
     <string name="agent_avatar_remove">Remove profile picture</string>
-    <string name="agent_avatar_failed">Couldn\'t add this photo.</string>
+    <string name="agent_avatar_failed">Couldn\'t add this photo — pick the photo again.</string>
     <string name="agent_sheet_name_label">Name</string>
     <string name="agent_sheet_hint">The name comes from the bridge (stored session) — read-only here.</string>
     <string name="design_sheet_title">Chat design</string>
@@ -579,7 +588,7 @@
     <string name="mtls_enrolling">Requesting …</string>
     <string name="mtls_enroll_ok">Certificate installed (%1$s) — presented to the relay on the mTLS handshake.</string>
     <string name="mtls_no_profile">No server profile — connect a server first.</string>
-    <string name="mtls_no_code">No pairing code in the profile.</string>
+    <string name="mtls_no_code">No pairing code in the profile — create one on the server and refresh the profile.</string>
     <string name="mtls_code_used">Code already used — please generate a new pairing code on the server.</string>
-    <string name="mtls_enroll_error">Certificate request failed (%1$s).</string>
+    <string name="mtls_enroll_error">Certificate request failed (%1$s) — check the pairing code and try again.</string>
 </resources>

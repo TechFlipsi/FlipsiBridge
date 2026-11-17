@@ -177,10 +177,10 @@ AGENT_MODELS_DEFAULT_CATALOG: tuple[str, ...] = (
 # Session Klartext (Relay-Downgrade-Schutz verwirft den sonst).
 AGENT_STATUS_FRAME = "agent.status"
 AGENT_STATUS_ENC_FRAME = "agent.status.enc"
-_STATUS_PLATFORM_ID = "flipsibridge"   # Scope: eigene Events ≠ fremde Plattformen
+_STATUS_PLATFORM_ID = "flipsibridge"   # Plattform-ID dieses Adapters (Whitelist-Kopf)
 # W19-Verband (17.11., Sir-Befund: Pill zeigte Discord/Telegram-Turns nie): Agentarbeit ist
 # plattformübergreifend sichtbar — Events dieser Plattformen zählen als eigener Agent-Status.
-_STATUS_PLATFORM_WHITELIST = frozenset({"flipsibridge", "discord", "telegram"})
+_STATUS_PLATFORM_WHITELIST = frozenset({_STATUS_PLATFORM_ID, "discord", "telegram"})
 _STATUS_LABEL_CAP = 64                 # Relay-Gate-Parität: label/sub je str ≤ 64
 _STATUS_SUB_SLOTS_CAP = 16             # FIFO-RAM-Schutz der Sub-Slot-Map
 _STATUS_SEND_TIMEOUT_S = 0.5           # Status-Send-Gate (fail-soft, nie Chat-kritisch)
@@ -1855,6 +1855,47 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("FlipsiBridge: agent.models-Handshake-Send fehlgeschlagen",
                            exc_info=True)
+        # W20 (Sir-Befund 17.11., Slot-Leichen nach Reconnect): Nach jedem
+        # (Re)Connect den ECHTEN Ist-Stand nachschieben — der Adapter hält
+        # die Wahrheit (working + offene Sub-Slots) im Prozess-Dict, aber
+        # Frames während einer getrennten Verbindung (z.B. Relay-Restart)
+        # sind fail-soft VERLOREN; das Phone blieb auf Alt-Ständen sitzen
+        # (fertige Subs als Leichen, working-Stand veraltet). Der Snapshot
+        # gleicht das mit EINEM Status-Frame + je offenem Slot EINEM OPEN-
+        # Frame ab — verwaiste Leichen (end kam offline) sind im Dict
+        # bereits geräumt und tauchen im Snapshot nicht mehr auf.
+        try:
+            await self._emit_status_snapshot()
+        except Exception:
+            logger.warning("FlipsiBridge: Status-Snapshot-Send fehlgeschlagen",
+                           exc_info=True)
+
+    async def _emit_status_snapshot(self) -> None:
+        """W20: Ist-Stand (working/label + offene Sub-Slots) nach (Re)Connect.
+
+        Ein Frame je Zustand, enc-first wie die Hook-Frames — NUR-lesen vom
+        _status-Dict (unter Lock kopiert), keine Zustandsänderung, kein
+        Coalesce-Bypass (nutzt denselben Send-Weg wie emit_agent_status).
+        """
+        now = self._status_now_ms()
+        with self._status_lock:
+            working = bool(self._status.get("working"))
+            label = self._status.get("label")
+            slots = [
+                {
+                    "id": slot_id,
+                    "name": str(slot.get("name") or "")[:64],
+                }
+                for slot_id, slot in (self._status.get("sub_slots") or {}).items()
+                if isinstance(slot, dict)
+            ]
+        await self.emit_agent_status(working=working, label=label, started_at=now)
+        for slot in slots:
+            if not slot["name"]:
+                continue
+            await self.emit_agent_status(
+                working=working, label=None, started_at=now,
+                sub=slot, end=False)
 
     def _read_phone_pin(self) -> Optional[dict]:
         """FIX-WELLE-2 B2: Phone-Pin-Datei lesen (dict) — None = unlesbar.
@@ -2622,9 +2663,9 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
     # Rückgabe IMMER None.
 
     async def hook_pre_gateway_dispatch(self, **kwargs: Any) -> None:
-        """W19: parent ON beim EIGENEN Text-Event (platform=flipsibridge mit
-        Text); bereits working → KEIN Reset (Label/Herzschlag bleiben). Policy-
-        Hook: Rückgabe IMMER None (nichts skippen/rewriten)."""
+        """W19: parent ON bei Whitelist-Text-Event (flipsibridge/discord/
+        telegram); bereits working → KEIN Reset (Label/Herzschlag bleiben).
+        Policy-Hook: Rückgabe IMMER None (nichts skippen/rewriten)."""
         platform, text = self._status_event_fields(kwargs.get("event"))
         if platform not in _STATUS_PLATFORM_WHITELIST or not text.strip():
             return None

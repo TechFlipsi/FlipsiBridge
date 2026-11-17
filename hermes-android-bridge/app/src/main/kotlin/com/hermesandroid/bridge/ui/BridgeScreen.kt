@@ -590,7 +590,9 @@ fun BridgeScreen(initialRoute: Int = 0) {
                     // Device-Leg + Enrollment-Button (Server stellt das
                     // Zertifikat aus). Der tote KeyChain-Systemdialog ist rauf —
                     // KeyChain bleibt nur als Fallback in MtlsSupport.decorate().
-                    MtlsCard(configVersion = configVersion)
+                    // P42: Ausgänge kommen als Snack am Bildschirm (Einstellungen
+                    // rendert die Bridge-Statuszeile nie — s. MtlsResultRules-Doku).
+                    MtlsCard(configVersion = configVersion, onResult = { message -> snack(message) })
                 }
 
 
@@ -1476,13 +1478,37 @@ private fun AccordionCard(
 }
 
 /**
+ * P42 (AKTIONEN-MIT-ERGEBNIS): Ausgang der Zertifikat-Einschreibung →
+ * Anzeige-Ressource. Rein — JVM-getestet (MtlsResultRulesTest). Die Rück-
+ * meldung hing vorher an der BRIDGE-Statuszeile (BridgeStatus.showText),
+ * die auf der Einstellungen-Route NIE rendert (unsichtbar); jetzt kommt die
+ * Antwort als Snack mit klarem Text je Ausgang (Erfolg/Mißerfolg) NACH dem
+ * Aktionsende (MtlsCard → onResult → BridgeScreen.snack → SnackbarHost).
+ */
+internal object MtlsResultRules {
+    /** Profil ohne Kopplungscode (ServerProfil-Wert). */
+    const val ERR_NO_CODE = "no-code"
+
+    /** Codes, die der Server schon einmal ausgestellt hat (403-Präfix). */
+    const val ERR_CODE_USED_PREFIX = "enroll:403"
+
+    /** Ausgang → Anzeige-Ressource (Snack-Text-Ressource je Ausgang). */
+    fun resultRes(ok: Boolean, error: String?): Int = when {
+        ok -> R.string.mtls_enroll_ok
+        error == ERR_NO_CODE -> R.string.mtls_no_code
+        error != null && error.startsWith(ERR_CODE_USED_PREFIX) -> R.string.mtls_code_used
+        else -> R.string.mtls_enroll_error
+    }
+}
+
+/**
  * mTLS-Zertifikats-Bereich (W16.3, Fixliste 41): Statuszeile + EIN Button, der
  * wirklich etwas tut — Enrollment am Relay (app-verwalteter AndroidKeystore-
  * Leg, Server stellt das Kette via Device-CA aus). Der KeyChain-Systemdialog
  * ist raus (Sackgasse: ohne installiertes Zertifikat schließt er still).
  */
 @Composable
-private fun MtlsCard(configVersion: Int) {
+private fun MtlsCard(configVersion: Int, onResult: (String) -> Unit) {
     val context = LocalContext.current
     var cn by remember(configVersion) { mutableStateOf(MtlsSupport.Enrollment.deviceCn(context)) }
     var running by remember { mutableStateOf(false) }
@@ -1509,7 +1535,9 @@ private fun MtlsCard(configVersion: Int) {
                     if (running) return@OutlinedButton
                     val profile = ServerProfiles.activeProfile()
                     if (profile == null) {
-                        BridgeStatus.showText(context.getString(R.string.mtls_no_profile))
+                        // P42: erkennbares Feedback (Snack am Bildschirm statt
+                        // der unsichtbaren Bridge-Statuszeile).
+                        onResult(context.getString(R.string.mtls_no_profile))
                         return@OutlinedButton
                     }
                     running = true
@@ -1525,18 +1553,32 @@ private fun MtlsCard(configVersion: Int) {
                             }
                         }
                         running = false
+                        // P42 (AKTIONEN-MIT-ERGEBNIS): die Rückmeldung kommt
+                        // NACH dem Aktionsende als Snack mit klarem Text je
+                        // Ausgang (Erfolg/Mißerfolg) — Ausgang → Ressource via
+                        // MtlsResultRules (JVM-getestet). Die alte Bridge-
+                        // Statuszeile rendert hier nicht (unsichtbar → raus).
                         when {
                             res.ok -> {
                                 cn = res.cn
-                                BridgeStatus.showText(
-                                    context.getString(R.string.mtls_enroll_ok, res.cn ?: "?"))
+                                onResult(
+                                    context.getString(
+                                        MtlsResultRules.resultRes(true, null),
+                                        res.cn ?: "?",
+                                    )
+                                )
                             }
-                            res.error == "no-code" ->
-                                BridgeStatus.showText(context.getString(R.string.mtls_no_code))
-                            res.error != null && res.error!!.startsWith("enroll:403") ->
-                                BridgeStatus.showText(context.getString(R.string.mtls_code_used))
-                            else -> BridgeStatus.showText(
-                                context.getString(R.string.mtls_enroll_error, res.error ?: "?"))
+                            res.error == MtlsResultRules.ERR_NO_CODE ->
+                                onResult(context.getString(R.string.mtls_no_code))
+                            res.error != null &&
+                                res.error!!.startsWith(MtlsResultRules.ERR_CODE_USED_PREFIX) ->
+                                onResult(context.getString(R.string.mtls_code_used))
+                            else -> onResult(
+                                context.getString(
+                                    MtlsResultRules.resultRes(false, res.error),
+                                    res.error ?: "?",
+                                )
+                            )
                         }
                     }
                 },
