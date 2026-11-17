@@ -1,3 +1,8 @@
+## [0.16.8] - 2026-11-17
+### Hinzugefügt
+- **Agent-Betreiber-Status (W19):** die Startseite zeigt die Sub-Agenten-Slots live an (grün = frei, Ember = beschäftigt) und was der Agent gerade macht (Label „Sucht im Web“ u. a.) — W19-Verband `agent.status` (working/label/sub/end) am RelayClient (`agentStatus`/`agentSubs`-Flows, Regeln in AgentStatusRules, Aufräumen an allen 3 Verbindungspunkten). versionCode 51 (github) / 114 (play).
+### Behoben
+- nichts App-seitig außer dem W19-Verband.
 ## [0.16.7] - 2026-11-17
 ### Behoben
 - **Composer-Chip als Kürzel A/M (W18, Schrumpf-Fix):** der Composer-Chip zeigt statt „Auto · <Modell>“ nur mehr die Kürzel **A** (kein explizites Modell = Agenten-/Config-Standard) und **M** (Manuel = abweichendes Modell für diesen Chat) — die lange Chip-Beschriftung blähte die Composer-Pill auf und ließ die Nachrichten-Zeile schrumpfen; Modell-Details bleiben im Modell- und Denken-Sheet, TalkBack-Klartext in composer_chip_*_a11y (je values/values-de/values-en). versionCode 50 (github) / 113 (play).
