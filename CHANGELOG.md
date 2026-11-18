@@ -1,3 +1,100 @@
+## [0.17.0] - 2026-11-18
+### Hinzugefügt
+- **Anrufe:** Du kannst vom Agenten angerufen werden — Vollbild-Klingeln mit Annehmen
+  und Ablehnen (auch aus dem gesperrten Zustand), im Anruf sprichst du durch Drücken
+  (Halten = sprechen, Loslassen = senden) und unterbrichst laufende Antworten mit einem
+  Tastendruck (Barge-in). Freihändiges Sprechen im Anruf: die Erkennung
+  läuft auf dem Gerät (der Ton verlässt das Handy nicht) und sendet den erkannten Text
+  automatisch; ist sie nicht verfügbar, schaltet die App sichtbar auf das bekannte
+  Drücken-Verfahren zurück.
+- **Anruf-Verlauf im Chat:** Beendete Anrufe erscheinen als Anruf-Zeile mit
+  Dauer (z. B. „Anruf (2:41)“), verpasste Anrufe als eigene Zeile — ein Tipp bereitet die
+  Rückruf-Nachricht an den Agenten vor. Ein Schalter in den Einstellungen legt fest,
+  ob der Anruf-Verlauf aufgezeichnet wird; „Chat löschen“ räumt Anruf-Zeilen mit auf.
+- **Multi-Gerät:** Eine Kopplung — mehrere Geräte. Du kannst weitere Geräte (z. B. ein
+  zweites Handy oder ein Tablet) an derselben Brücke koppeln (Freigabe durch das
+  Verwaltungs-Gerät im Zeitfenster oder Kopplungs-Passwort); eigene Nachrichten erscheinen
+  live auf allen Geräten, ein neu gekoppeltes Gerät holt den bisherigen Verlauf nach,
+  und in den Einstellungen siehst du alle Geräte mit „zuletzt verbunden“ — jedes Gerät
+  lässt sich jederzeit zweistufig entfernen (deaktivieren, dann lösen).
+- **Assistent-Paket:** Die App kann die Standard-Assistenten-Rolle am Gerät übernehmen
+  (Einrichtung mit sichtbarem Ergebnis/Fehlerweg). Danach: Fragen per Taste halten und
+  Stimme, Live-Follow-ups ohne Aufwärmen, Bildschirm-Fragen mit je-Sitzungs-Zustimmung,
+  Erinnerungen und Termine per Stimme, Apps öffnen per Stimme, Telefonate steuern.
+  Overlay-Bubble über allen Apps (verschiebbar, Tap öffnet die Stimme)
+  mit klar geführtem Berechtigungs-Weg, und „Seite fragen“-Mini-Panel — aus dem
+  Standard-Assistenten-Wisch oder per „Teilen“ aus dem Browser (Frage/Zusammenfassen/
+  Link in den Chat senden).
+- **Globale Volltextsuche:** Suche reicht jetzt über alle Agenten-Verläufe hinaus —
+  unter den Treffern der offenen Unterhaltung erscheinen Treffer aus den
+  anderen Verläufen (mit Ausschnitt des Treffers, Gruppierung je Agent, Sprung zur
+  Nachricht mit Hervorhebung). Der Suchindex wird im Hintergrund aufgebaut; vorher
+  zeigt die App ehrlich an, dass er noch bereitgestellt wird.
+- **Geplante Agenten-Aufgaben (Cron-Karte):** Im Dashboard erscheint eine Karte mit den
+  geplanten Aufgaben des Agenten — du siehst, was er sich vorgenommen hat, ohne die
+  Konfiguration zu öffnen.
+- **Verschlüsselter Verlauf am Gerät:** Der Chat-Verlauf wird verschlüsselt auf dem
+  Gerät verwahrt und gegen Veränderung gesiegelt; Anruf-Einträge sind einbezogen („Siegel“); Änderungen an der Siegel-
+  Grundlage brechen die Verwahrung sichtbar ab statt still zu verschicken. Migration
+  bestehender Verläufe läuft beim ersten Start des Updates ab; scheitert sie,
+  bleibt der Verlauf unangetastet (kein Verlust, keine beschädigten Schreib-
+  vorgänge).
+- **AGB-Erststart-Akzeptanz:** Beim ersten Start werden AGB und Datenschutz
+  einmal akzeptiert („Lesen“-Ausklapp je Text); Ablehnen beendet die App sauber mit
+  Hinweis. Bestehende Installationen werden nach dem Update nicht erneut gefragt.
+- **Open-Source-Lizenzen:** Im Info-Sheet gibt es die Übersicht der
+  verwendeten Open-Source-Bibliotheken (Name — Version — Lizenz) plus Verweis auf die
+  vollständige Lizenzdatei.
+
+### Behoben
+- **Modell-Auswahl generisch:** Das freie Modell-Eingabefeld ist vollständig entfernt —
+  im Modell- und Denken-Blatt wird nur aus der Liste gewählt, die der verbundene Server
+  liefert („Auto“ zeigt das aktive Modell, Denken-Stufe übernimmt die Server-Vorgabe).
+- **Denken-Schalter „Aus“:** „Aus“ bleibt zuverlässig aus (kein Zurückspringen beim
+  Neuaufbau der Oberfläche oder App-Start).
+- **Häkchen-Persistenz:** Status-Häkchen (Gesendet/Zugestellt/Gelesen) fallen nicht mehr
+  auf ältere Stufen zurück — auch nicht nach App-Neustart oder wenn viele Medien hinter-
+  einander übertragen werden.
+- **Agenten-Status über alle Kategorien hinweg:** Die Agenten-Arbeit auf der Startseite
+  ist auch sichtbar, wenn sie über einen anderen verbundenen Kanal (z. B. Discord oder
+  Telegram) läuft; Beschäftigt-Slots verschwinden pünktlich am Ende und werden beim
+  Verbinden nachgereicht statt als Leichen stehenzubleiben.
+- **Anruf-Races:** Doppel-Einladungen werden verworfen statt Anruf-Tod, Klingel-/Beendig-
+  ungs-Rennen sind abgedeckt, Restzustände einer alten Klingeln räumen sich beim Verbinden
+  selbst auf, Anruf-Übersicht bleibt ohne hängende Einladungen.
+- **Verlaufräumung/Verlaufladen:** „Chat löschen“ entfernt Verlauf samt Verwahrungs-Siegel
+  sauber mit; das Laden in einem Rutsch schützt vor Verlust-Rennen; die Siegelablage wird
+  ohne Zwischenschreibungen ersetzt (keine beschädigten Siegel bei Unterversorgung).
+- **Oberfläche (Design-Säuberung):** Kontraste auf Lesbarkeit gebracht, Abstände zwischen
+  Text und rechtsbündigen Elementen gefestigt (kein Ankleben), Touch-Ziele ≥ 48 dp,
+  einheitliche Textdichte ohne gemischte Beschreibungszeilen; neue Texte vollständig
+  Deutsch und Englisch.
+
+- **Zustands-Wiederherstellung des Chats:** Ein Zählfehler im Zustands-Speicher (bestand
+  über mehrere Versionen) zerschlug den Verlauf bei der Wiederherstellung nach
+  App-Neustart oder Gerätedrehung — behoben; alte gespeicherte Zustände bleiben lesbar.
+- **Freihändiges Sprechen, robuster:** Aussetzer der Geräte-Erkennung werden begrenzt
+  und mit sichtbarem Hinweis auf das Drücken-Verfahren zurückgeleitet (keine Endlos-
+  Wiederholung); ein diktierter Satz geht nicht mehr still verloren und wird nicht mehr
+  doppelt gesendet; zwei Anrufe in derselben Minute zählen nicht mehr als derselbe Anruf.
+
+### Serverseite
+- **Multi-Gerät im Backend:** Geräte-Verwaltung am Relay und im Agent-Adapter —
+  Freigabe-Tor für neue Geräte mit Zeitfenster, Verlaufsnachholung für frisch gekoppelte
+  Geräte, zweistufiges Entfernen; jedes Gerät führt seine eigene verschlüsselte Sitzung
+  (kein Gruppen-Schlüssel — der Verlust eines Geräts betrifft nur seine Sitzung).
+- **Härtung des Relay-Betriebs:** systemd-Vorlage mit eigenem Dienst-Benutzer
+  (deployment/, mit Migrations- und Rollback-Hinweisen), Umgebungsregeln nur verschärfbar,
+  Logs schwärzen auch verschachtelte Codes/Tokens, Debug-Ausgabe standardmäßig aus,
+  `--version`-Flag zum Ablesen der Backend-Stufe.
+- **Relay-Identität:** Jede Relay-Instanz ist mit eigenem Schlüssel
+  (Ed25519) eindeutig identifizierbar; Agenten prüfen die Identität beim Verbinden,
+  merken sich den Fingerabdruck und warnen bei Wechsel (kein stiller Identitätswechsel).
+- **Signierte Installation:** Das Einrichtungsskript (`install-relay.sh`)
+  prüft beim Installieren die Paket-Checksumme gegen die im GitHub-Release notierte
+  und bricht bei Abweichung ab (erwartet/geliefert als Hash-Vergleich).
+- versionCode 54 (github) / 117 (play).
+
 ## [0.16.8] - 2026-11-17
 ### Hinzugefügt
 - **Agent-Betreiber-Status (W19):** die Startseite zeigt die Sub-Agenten-Slots live an (grün = frei, Ember = beschäftigt) und was der Agent gerade macht (Label „Sucht im Web“ u. a.) — W19-Verband `agent.status` (working/label/sub/end) am RelayClient (`agentStatus`/`agentSubs`-Flows, Regeln in AgentStatusRules, Aufräumen an allen 3 Verbindungspunkten). versionCode 51 (github) / 114 (play).
@@ -88,9 +185,7 @@
 - **Policy-Erfüllung (PS-G-2, Sir-Order „Die App muss das erfüllen!"):** DisclosureFlow (policy/DisclosureFlow.kt) — prominente Offenlegung + ausdrückliche Einwilligung mit Consent-Zeitstempel je sensibler Freigabe (a11y, notification-listener, mikrofon, health, all-files, overlay, sensible Capability-Toggles), play-gefiltert (GitHub-UX unverändert), Dialoge mit „Nicht jetzt" = kein Zwang; Compliance-Matrix = secrets-docs/play-compliance-matrix.md (20 Klauseln aus den amtlichen Policy-Artikeln 9888379+9888170, je Zeile Zustand+Beweis+REST).
 
 
-## [Unreleased] — W-4 App-Lane C: Mediathek-Tab je Agent + In-App-Sprachwahl DE/EN (in Arbeit, Bau folgt in der Bau-Welle)
-- **In-App-Sprachwahl (W4, Lane C):** Einstellungen-Gruppe „Sprache" (Erde-Icon, 3 Optionen: Systemstandard/Deutsch/English) — AppLanguage-Store (Prefs „hermes_bridge_prefs"/„app_language"), Persistenz über Restart, KEINE appcompat-Abhängigkeit (minSdk 26). Verband: AppLanguageGate um die JEDE Activity-Komposition (setContent → FlipsiTheme → Gate → AppLockGate → Onboarding/BridgeScreen): createConfigurationContext-Wrap ersetzt LocalContext/LocalConfiguration — ein set() re-wrapped den ganzen Baum LIVE ohne Activity-Recreate, alle stringResource-Auflösungen wechseln sofort. DIE CompositionLocal AppLanguage.LocalAppActivity reicht die ORIGINAL Activity durch (der Wrapped-Context ist kein Activity-Context — ohne das wären bei DE/EN-Wahl ALLE Berechtigungs-Sprünge tot; BridgeScreen liest sie statt context-as-Activity). Konvention je Key: values/ = Deutsch-Default, values-de/ = explizite DE-Quelle, values-en/strings.xml = EN je Key (Basis-Keys + Lane-C-Keys; ANDERE Lanes führen EIGENE values-en-Dateien im selben Dir — res/values-en wird je File gemerged, je Key genau EINE Quelle, keine Doppel-Key-Falle). DE-Keys: settings_language_title, settings_language_desc, language_option_system, language_option_de, language_option_en. Icon: ic_language (haus-eigen, positive Koordinaten). Drill-Acker für die Bau-Welle (Emulator-Beweise Sprache-Wechsel + Mediathek + STALE): qa/drill-w4-lanec-sprache-mediathek.md.
-- **Mediathek-Tab am Chatscreen (W4, Lane C):** In einer geöffneten Conversation lebt neben „Chat" die Tab-Zeile [Chat | Mediathek] (Filter-Chips, Zustand je Agent; Agent-Wechsel setzt auf Chat zurück). Der Mediathek-Tab zeigt ALLE Medien des Chats mit dem Agenten: persistierte Media-Verweise aus dem ChatHistoryStore (Load je Agent auf IO) plus LIVE-Bubbles der offenen Session, Merge ohne Dubletten (media_id bevorzugt, Meta-Schlüssel zusätzlich — MediathekIndex, JVM-getestet). Abschnitte je Medientyp: Bilder/Videos als Thumbnail-Grid (adaptive Kacheln, Full-Screen-Viewer), Sprachnachrichten als Player-Zeilen (statische Dauer — Reduced-Pass, kein Fortschritts-Ticker), Dateien als Liste (Tap = In Downloads sichern, derselbe Weg wie die Media-Bubble). STALE-Regel: mediaPath kann stale sein (App-Update/Device-Wechsel) → Platzhalter-Karte „Die Datei liegt nicht mehr auf dem Gerät." statt Crash; eigene gesendete Medien ohne Pfad = „Nur Verweis"-Karte. Leere Mediathek = Titel+Hinweis. DE-Keys: chat_tab_chat, chat_tab_mediathek, mediathek_empty_title, mediathek_empty_hint, mediathek_section_media, mediathek_section_voices, mediathek_section_files, mediathek_stale_hint, mediathek_ref_hint, mediathek_view_fullscreen, mediathek_play_voice, mediathek_stop_voice, mediathek_save_file, mediathek_saved_file (values/ = Deutsch-Default, values-de/ = explizite DE-Quelle).
+## [Unreleased]
 
 ## [0.14.1] - 2026-11-03 — Medien/Datei-Versand E2E + Fix-Welle 2 (B1–B8) + TLS-nativ am Relay
 - **Medien-/Datei-Versand E2E (MEDIA-T1):** Anhang-Sheet im Agent-Chat (Foto/Video, Datei, Sprachnachricht) mit E2E-verschlüsseltem Chunk-Upload (POST /media, Double-Ratchet-verschlüsselt, Chunk-Ack je Block), Medien-Bubbles mit Übertragungs-Chip, empfangsseitige Medien-Verweise im Verlauf; Agent-Adapter assembliert und speichert md5-paritätisch. Live bewiesen im echt gepaarten Chat: Foto 10 561 B, 4-stufige MD5-Parität PC→Gerät→TLS/E2E→Agent.
