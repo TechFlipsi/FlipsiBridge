@@ -1,8 +1,11 @@
 package com.hermesandroid.bridge
 
 import android.Manifest
+import android.app.assist.AssistContent
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.LocalActivityResultRegistryOwner
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
@@ -20,6 +23,13 @@ import com.hermesandroid.bridge.security.AppLockManager
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.ui.BridgeScreen
 import com.hermesandroid.bridge.ui.FlipsiTheme
+import com.hermesandroid.bridge.ui.assistant.AssistContentRules
+import com.hermesandroid.bridge.ui.assistant.AssistantShareBus
+import com.hermesandroid.bridge.ui.assistant.AssistantShareDialog
+import com.hermesandroid.bridge.ui.assistant.PanelActionRules
+import com.hermesandroid.bridge.ui.assistant.ShareAction
+import com.hermesandroid.bridge.ui.assistant.ShareIntake
+import com.hermesandroid.bridge.ui.assistant.SharePayload
 import com.hermesandroid.bridge.ui.onboarding.OnboardingScreens
 
 /**
@@ -45,6 +55,13 @@ import com.hermesandroid.bridge.ui.onboarding.OnboardingScreens
  * („danach direkt im Chat“).
  */
 class MainActivity : ComponentActivity() {
+
+    /**
+     * W22 LANE B (G11): geparste Share-Target-Zustellung (ACTION_SEND aus
+     * JEDEM Browser-„Teilen“). null = nichts da → kein Dialog. Als Compose-
+     * Zustand an der Activity, damit der Dialog im setContent reagiert.
+     */
+    private var pendingShare by mutableStateOf<SharePayload?>(null)
 
     companion object {
         /**
@@ -73,6 +90,11 @@ class MainActivity : ComponentActivity() {
         // AppLanguageGate-Leser bekommt den persistierten Tag (SYSTEM/DE/EN).
         com.hermesandroid.bridge.i18n.AppLanguage.init(applicationContext)
         requestCameraIfNeeded()
+        // W22 LANE B (G11): Share-Target — ACTION_SEND (text/plain) erreicht
+        // uns aus jedem Browser („Teilen → FlipsiBridge“); onCreate deckt den
+        // Standard-LaunchMode-Pfad ab (neue Instanz), onNewIntent die
+        // erneute Zustellung an eine laufende Instanz.
+        pendingShare = parseShareIntent(intent)
         setContent {
             // Root-Cause-Fix (L8-Crash „IllegalStateException … No ActivityResult
             // RegistryOwner“ beim Sprachwechsel): activity-compose 1.9.2 resolved
@@ -141,6 +163,15 @@ class MainActivity : ComponentActivity() {
                                 initialRoute = if (onboardingJustDone) 2 else 0,
                             )
                         }
+                        // W22 LANE B (G11): Share-Target-Dialog — bewusst
+                        // INNERHALB des AppLockGate (gesperrte App zeigt KEINE
+                        // Vorschau geteilter Inhalte) und als eigener Block
+                        // NACH dem Onboarding-Zweig (Lane-E-Zeilen unberührt).
+                        AssistantShareDialog(
+                            payload = pendingShare,
+                            onAction = { action -> handleShareAction(action) },
+                            onDismiss = { pendingShare = null },
+                        )
                     }
                 }
                 }
@@ -181,5 +212,74 @@ class MainActivity : ComponentActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         // Ergebnis reicht — DeviceHardware prüft vor jedem Foto selbst.
+    }
+
+    // ── W22 LANE B (G11): AssistContent + Share-Empfang — eigene Blöcke, ────
+    // NUR Intent-Handling (Besitz lt. Lane-Brief); Onboarding-Zeilen (Lane E)
+    // bleiben unangetastet.
+
+    /**
+     * ACTION_SEND an eine LAUFENDE Instanz (Standard-LaunchMode erzeugt
+     * sonst eine zweite Instanz — onCreate deckt den Hauptpfad ab).
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        pendingShare = parseShareIntent(intent)
+    }
+
+    /**
+     * G11-Kontext-Schiene: ÜBER onProvideAssistContent liefern Chrome/
+     * Browser die aktuelle Seiten-URL an den als Assistenten registrierten
+     * Prozess — FlipsiBridge spielt dasselbe Protokoll für die eigenen
+     * Inhalte mit (strukturierte JSON-LD-Metadaten; ein privater Chat hat
+     * bewusst KEINE öffentliche Web-URI, deshalb ehrlich ohne setWebUri).
+     * Der Seiten-Kontext fürs Mini-Panel kommt über den Share-Target-Weg
+     * (ACTION_SEND) bzw. den AssistEntry-Hook (HOOK-BEDARF im Lane-Report).
+     */
+    override fun onProvideAssistContent(outContent: AssistContent) {
+        super.onProvideAssistContent(outContent)
+        val structured = AssistContentRules.structuredDataJson(
+            appName = "FlipsiBridge",
+            // STRING: assistant_assist_content_desc — de "Verschlüsselte
+            // Assistenten-Brücke", en "Encrypted assistant bridge"
+            description = "Verschlüsselte Assistenten-Brücke",
+        )
+        runCatching { outContent.setStructuredData(structured) }
+            .onFailure {
+                android.util.Log.w("MainActivity", "AssistContent-Setup fehlgeschlagen: ${it.message}")
+            }
+    }
+
+    /** Share-Intent → [SharePayload] (Whitelist/ Parsing in ShareIntake, JVM-getestet). */
+    private fun parseShareIntent(intent: Intent?): SharePayload? {
+        if (intent == null || intent.action != ShareIntake.ACTION_SEND) return null
+        return ShareIntake.parse(
+            action = intent.action,
+            mimeType = intent.type,
+            subject = intent.getStringExtra(Intent.EXTRA_SUBJECT),
+            text = intent.getStringExtra(Intent.EXTRA_TEXT),
+        )
+    }
+
+    /**
+     * Dialog-Aktion → Zustell-Bus + sichtbares Ergebnis (Toast). Die
+     * Übernahme in den Komposer (inputText-Vorlage/Kontext-Chip, autoSend)
+     * ist der Chat-Hook (HOOK-BEDARF, Lane A/C — ChatScreen/Composer sind
+     * fremde Zone); bis dahin bleibt die Zustellung IM Bus stehen
+     * (verlustfrei, kein stilles Wegwerfen).
+     */
+    private fun handleShareAction(action: ShareAction) {
+        val payload = pendingShare ?: return
+        val prompt = PanelActionRules.buildPrompt(action, payload) ?: return
+        AssistantShareBus.deliver(prompt)
+        pendingShare = null
+        // STRING: assistant_share_delivered_toast — de "Im Chat vorbereitet —
+        // dort prüfen und senden", en "Prepared in the chat — review and send
+        // it there"
+        Toast.makeText(
+            this,
+            "Im Chat vorbereitet — dort prüfen und senden",
+            Toast.LENGTH_SHORT,
+        ).show()
     }
 }

@@ -3,6 +3,8 @@ package com.hermesandroid.bridge.ui.assistant
 import android.app.Activity
 import android.content.Context
 import android.app.role.RoleManager
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.Row
@@ -12,13 +14,12 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -27,12 +28,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.permissions.DeviceFeature
 import com.hermesandroid.bridge.permissions.DeviceIntentResolver
@@ -48,17 +52,19 @@ import com.hermesandroid.bridge.ui.settings.SettingsCard
  * Karte (app-generisch: keine Geräte-/Modell-Namen, keine Literale). Regeln
  * in [AssistantRules] (JVM-getestet, AssistantRulesTest).
  *
- * Verdrahtung (Koordinator-Welle — hier bewusst NICHT angefasst):
- *  - Einstellungen: Karte einhängen (gleiches SettingsCard-Verband wie
- *    AssistantRoleCard, deren Anfrage-Weg für die Rolle bestehen bleibt).
- *  - G2/G5 brauchen NEUE Strings — strings.xml wurde in dieser Bauwelle NICHT
- *    angefasst (Bedarf notiert); die Karte nimmt die Texte daher als Parameter
- *    ([AssistantCardTexts]). Ohne Parameter zeigen G2/G5 KEINE Zeile (kein
- *    Fake-Text), G1 rendert vollständig aus BESTEHenden Assistenten-Strings.
- *  - G2: Die Bubble selbst (Overlay-Bubble, Status-Overlay-Tap = Voice-Turn)
- *    ist eine eigene Bauwelle; die Karte zeigt ehrlich die Freigabe-Lage und
- *    bietet denselben OEM-Resolver-Weg an wie der HUD (perm overlay — der
- *    Manifest-Eintrag SYSTEM_ALERT_WINDOW ist bereits gesetzt).
+ * Verdrahtung (Stand W22):
+ *  - Einstellungen: die Karte hängt (SettingsHome, gleiches SettingsCard-
+ *    Verband wie AssistantRoleCard, deren Anfrage-Weg für die Rolle bestehen
+ *    bleibt). Die G2/G5-Zeilen-Texte kommen per [AssistantCardTexts] aus den
+ *    inzwischen gemergten assistant_pkg_*-Strings (strings.xml bleibt in
+ *    Koordinator-Hand, i18n ×3 Locales); NEUE Texte dieser Welle sind
+ *    Code-Literale mit STRING-Markern (Sammel-Liste im Lane-Report).
+ *  - G2: W22 LANE B — der Bubble-Dienst ist gebaut (AssistantBubbleService:
+ *    Overlay-Blase über allen Apps, Tap = Voice-Turn); die Karte schaltet
+ *    ihn EINEM Ort: dem Toggle hier. Tap ohne Overlay-Freigabe öffnet
+ *    ACTION_MANAGE_OVERLAY_PERMISSION mit Rückweg (ON_RESUME startet die
+ *    Blase, sobald die Freigabe steht); der Fail-Weg hat eine Ergebnis-Zeile
+ *    (perm overlay — der Manifest-Eintrag SYSTEM_ALERT_WINDOW ist gesetzt).
  *  - G5: Session-Schlüssel + gespeicherte Zustimmung kommen aus der Verdrahtung;
  *    das GATE im screen-Capability-Pfad ist Anschluss-Lane (CapabilityGate/
  *    Session-Verband — die Karte entscheidet nicht über das reale Lesen).
@@ -119,6 +125,38 @@ fun AssistantPackageCard(
     val overlayOk = remember(statusTick) {
         runCatching { Settings.canDrawOverlays(context) }.getOrDefault(false)
     }
+    // Ergebnis-Zeile des G2-Freigabe-/Start-Wegs (sichtbarer Fail-Weg) —
+    // Karten-Ebene, damit der Rückweg-Effekt sie räumen kann.
+    var permFlowLine by remember { mutableStateOf<String?>(null) }
+
+    // W22 LANE B (G2-Rückweg): ON_RESUME nach ACTION_MANAGE_OVERLAY_PERMISSION —
+    // steht die Freigabe JETZT, startet die Blase sichtbar (das Ergebnis des
+    // Freigabe-Wegs wird erkennbar, statt dass der Schalter still klebt).
+    // Gleiches P12-Muster wie AssistantRoleCard (Rolle frisch lesen bei
+    // Rückkehr), hier auf die Bubble-Blase angewandt.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, expanded) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && expanded) {
+                val granted = runCatching { Settings.canDrawOverlays(context) }
+                    .getOrDefault(false)
+                if (OverlayToggleRules.shouldAutoStartOnResume(
+                        desired = AssistantBubbleService.isDesired(context),
+                        overlayGranted = granted,
+                        serviceRunning = AssistantBubbleService.isRunning(),
+                    )
+                ) {
+                    AssistantBubbleService.start(context)
+                }
+                // Rückkehr: die „Freigabe offen“-Zeile ist abgearbeitet —
+                // der neu gelesene Zustand (Badge/Beschreibung) übernimmt.
+                permFlowLine = null
+                statusTick++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // A11y-Labels einmal hoisten (stringResource lebt nicht im semantics-Lambda).
     val activeLabel = stringResource(R.string.badge_active)
@@ -158,8 +196,11 @@ fun AssistantPackageCard(
             )
         }
 
-        // ── G2: Floating Bubble über allen Apps (Bubble-Dienst = eigene
-        // Bauwelle) — ehrliche Freigabe-Lage + gleicher Setup-Weg wie der HUD. ──
+        // ── G2: Floating Bubble über allen Apps — W22 LANE B: der Dienst ist
+        // gebaut (AssistantBubbleService), die Aktivierung lebt EIN Ort: dieser
+        // Toggle. Tap ohne Freigabe öffnet ACTION_MANAGE_OVERLAY_PERMISSION
+        // MIT Rückweg (ON_RESUME oben startet die Blase, sobald die Freigabe
+        // steht) — kein stiller runCatching, der Fail-Weg hat eine Zeile. ──
         val bubbleTitle = texts.bubbleTitle
         if (bubbleTitle != null) {
             Spacer(Modifier.height(8.dp))
@@ -169,51 +210,145 @@ fun AssistantPackageCard(
                 fontWeight = FontWeight.SemiBold,
                 color = FlipsiColors.TextPrimary,
             )
-            when (AssistantBubbleRules.eligibility(
+            // Ergebnis-Zeile des Freigabe-/Start-Wegs lebt jetzt auf Karten-
+            // Ebene (permFlowLine) — der Rückweg-Effekt räumt sie bei Rückkehr.
+            val bubbleEligibility = AssistantBubbleRules.eligibility(
                 overlayPermissionGranted = overlayOk,
                 supported = true,
-            )) {
-                AssistantBubbleRules.Eligibility.NOT_SUPPORTED -> {
-                    if (texts.bubbleGrantUnavailable != null) {
-                        Text(
-                            texts.bubbleGrantUnavailable,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = FlipsiColors.TextSecondary,
+            )
+            val bubbleDesired = remember(statusTick) { AssistantBubbleService.isDesired(context) }
+            // Der sichtbare Zustand kommt aus Wunsch + Freigabe; ob der Dienst
+            // wirklich läuft, prüft der Rückweg-Effekt oben (Auto-Start).
+            val bubbleState = OverlayToggleRules.resolveUiState(bubbleDesired, overlayOk)
+            // STRING: assistant_pkg_bubble_toggle_a11y — de "Overlay-Blase über
+            // allen Apps ein- oder ausschalten", en "Turn the overlay bubble
+            // above all apps on or off"
+            val toggleA11y = "Overlay-Blase über allen Apps ein- oder ausschalten"
+
+            val handleBubbleToggle: (Boolean) -> Unit = { wantOn ->
+                when (OverlayToggleRules.onToggleTap(wantOn, overlayOk)) {
+                    OverlayToggleRules.TapDecision.START_SERVICE -> {
+                        AssistantBubbleService.setDesired(context, true)
+                        val started = AssistantBubbleService.start(context)
+                        if (!started) {
+                            // STRING: assistant_pkg_bubble_start_failed — de "Blase
+                            // konnte nicht gestartet werden — Freigabe oder System
+                            // hindern sie; erneut versuchen.", en "The bubble could
+                            // not start — permission or the system blocked it; try
+                            // again."
+                            permFlowLine =
+                                "Blase konnte nicht gestartet werden — Freigabe oder System hindern sie; erneut versuchen."
+                        }
+                    }
+                    OverlayToggleRules.TapDecision.OPEN_PERMISSION_SETTINGS -> {
+                        AssistantBubbleService.setDesired(context, true)
+                        permFlowLine = null
+                        openOverlayPermissionFlow(context, context as? Activity) { line ->
+                            permFlowLine = line
+                        }
+                    }
+                    OverlayToggleRules.TapDecision.STOP_SERVICE -> {
+                        AssistantBubbleService.setDesired(context, false)
+                        AssistantBubbleService.stop(context)
+                        permFlowLine = null
+                    }
+                }
+                statusTick++
+            }
+
+            if (bubbleEligibility == AssistantBubbleRules.Eligibility.NOT_SUPPORTED) {
+                if (texts.bubbleGrantUnavailable != null) {
+                    Text(
+                        texts.bubbleGrantUnavailable,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
+            } else {
+                when (bubbleState) {
+                    OverlayToggleRules.UiState.OFF -> {
+                        if (texts.bubbleReadyDesc != null) {
+                            Text(
+                                texts.bubbleReadyDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = FlipsiColors.TextSecondary,
+                            )
+                        }
+                    }
+                    OverlayToggleRules.UiState.ON -> {
+                        if (texts.bubbleReadyDesc != null) {
+                            Text(
+                                texts.bubbleReadyDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = FlipsiColors.TextSecondary,
+                            )
+                        }
+                        StatusBadge(
+                            text = stringResource(R.string.badge_possible),
+                            state = BadgeState.OK,
+                        )
+                    }
+                    OverlayToggleRules.UiState.WAITING_FOR_PERMISSION -> {
+                        if (texts.bubbleNeedPermDesc != null) {
+                            Text(
+                                texts.bubbleNeedPermDesc,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = FlipsiColors.TextSecondary,
+                            )
+                        }
+                        StatusBadge(
+                            text = missingLabel,
+                            state = BadgeState.OFF,
                         )
                     }
                 }
-                AssistantBubbleRules.Eligibility.READY -> {
-                    if (texts.bubbleReadyDesc != null) {
-                        Text(
-                            texts.bubbleReadyDesc,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = FlipsiColors.TextSecondary,
-                        )
-                    }
-                    StatusBadge(
-                        text = stringResource(R.string.badge_possible),
-                        state = BadgeState.OK,
+                if (permFlowLine != null) {
+                    Text(
+                        permFlowLine ?: "",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = FlipsiColors.SignalAmber,
                     )
                 }
-                AssistantBubbleRules.Eligibility.NEEDS_OVERLAY_PERMISSION -> {
-                    if (texts.bubbleNeedPermDesc != null) {
-                        Text(
-                            texts.bubbleNeedPermDesc,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = FlipsiColors.TextSecondary,
-                        )
-                    }
-                    StatusBadge(
-                        text = missingLabel,
-                        state = BadgeState.OFF,
+                // Toggle-Zeile: EIN Aktivierungs-Ort, Touch-Ziel ≥ 48 dp; die
+                // Bedeutung trägt die Zeile (contentDescription + stateDescription),
+                // nie nur die Schalter-Farbe.
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .padding(vertical = 4.dp)
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = toggleA11y
+                            stateDescription =
+                                if (bubbleState == OverlayToggleRules.UiState.ON) {
+                                    activeLabel
+                                } else {
+                                    missingLabel
+                                }
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Switch(
+                        checked = bubbleState != OverlayToggleRules.UiState.OFF,
+                        onCheckedChange = handleBubbleToggle,
+                        colors = SwitchDefaults.colors(
+                            checkedThumbColor = FlipsiColors.OnEmber,
+                            checkedTrackColor = FlipsiColors.Ember,
+                            uncheckedTrackColor = FlipsiColors.PanelElev,
+                            uncheckedThumbColor = FlipsiColors.TextSecondary,
+                        ),
                     )
-                    val grantLabel = texts.bubbleGrantAction
-                    if (grantLabel != null) {
-                        BubbleGrantButton(
-                            label = grantLabel,
-                            a11y = texts.bubbleGrantA11y,
-                            fallbackUnavailableText = texts.bubbleGrantUnavailable,
-                            context = context,
+                    Spacer(Modifier.width(12.dp))
+                    if (bubbleState == OverlayToggleRules.UiState.WAITING_FOR_PERMISSION &&
+                        texts.bubbleGrantAction != null
+                    ) {
+                        // Leit-Text des Freigabe-Wegs neben dem Schalter (der
+                        // Tap auf AN öffnet die Systemseite — dieser Text sagt,
+                        // was dort zu tun ist).
+                        Text(
+                            texts.bubbleGrantAction ?: "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.SignalAmber,
                         )
                     }
                 }
@@ -295,52 +430,54 @@ fun AssistantPackageCard(
 }
 
 /**
- * G2-Setup-Weg: OEM-Resolver-Kette des Overlays (GLEICHE Kette wie der HUD —
- * DeviceIntentResolver.launchFeature(DeviceFeature.OVERLAY)); löst nichts,
- * folgt die Leit-Zeile (kein toter Knopf).
+ * G2-Setup-Weg (W22 Lane B): Direkt-Start von ACTION_MANAGE_OVERLAY_PERMISSION
+ * mit Paket-URI — bewusst NICHT still: der Erfolg hat eine Ergebnis-Zeile
+ * („Freigabe offen — Rückkehr aktiviert die Blase“), ein Fehlstart fällt in
+ * die OEM-Resolver-Kette (GLEICHE Kette wie der HUD —
+ * DeviceIntentResolver.launchFeature(DeviceFeature.OVERLAY)), und löst auch
+ * die nichts, bleibt die Leit-Zeile (manuelle Route erklärt).
  */
-@Composable
-private fun BubbleGrantButton(
-    label: String,
-    a11y: String?,
-    fallbackUnavailableText: String?,
+private fun openOverlayPermissionFlow(
     context: Context,
+    activity: Activity?,
+    onResultLine: (String) -> Unit,
 ) {
-    val activity = context as? Activity
-    var unavailable by remember { mutableStateOf<String?>(null) }
-    Spacer(Modifier.width(4.dp))
-    Button(
-        onClick = {
-            val ok = DeviceIntentResolver.launchFeature(
-                context,
-                activity,
-                DeviceFeature.OVERLAY,
-            ) { hint -> unavailable = hint }
-            if (!ok && unavailable == null) unavailable = fallbackUnavailableText
-        },
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = 48.dp)
-            .then(
-                if (a11y != null) {
-                    Modifier.semantics { contentDescription = a11y }
-                } else {
-                    Modifier
-                },
-            ),
-        colors = ButtonDefaults.buttonColors(
-            containerColor = FlipsiColors.Ember,
-            contentColor = FlipsiColors.OnEmber,
-        ),
-    ) {
-        Text(label)
-    }
-    if (unavailable != null) {
-        Text(
-            unavailable ?: "",
-            style = MaterialTheme.typography.bodySmall,
-            color = FlipsiColors.SignalAmber,
+    val openedDirect = runCatching {
+        val intent = Intent(
+            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+            Uri.parse("package:" + context.packageName),
         )
+        if (activity == null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }.isSuccess
+    if (openedDirect) {
+        // STRING: assistant_pkg_bubble_perm_pending — de "Overlay-Freigabe ist
+        // geöffnet — nach der Rückkehr hier wird die Blase aktiviert.", en
+        // "The overlay permission screen is open — the bubble activates when
+        // you return here."
+        onResultLine(
+            "Overlay-Freigabe ist geöffnet — nach der Rückkehr hier wird die Blase aktiviert.",
+        )
+    } else {
+        // Fallback: OEM-Kette + Leit-Zeile (löst nichts → manuelle Route).
+        val launched = DeviceIntentResolver.launchFeature(
+            context,
+            activity,
+            DeviceFeature.OVERLAY,
+        ) { hint -> onResultLine(hint) }
+        if (!launched) {
+            // launchFeature ruft onUnavailable bereits mit der OEM-Leit-Zeile —
+            // dieser Zweig ist die letzte Sicherheitsnetz-Zeile (leerer Fallback
+            // darf nie still sein).
+            // STRING: assistant_pkg_bubble_perm_unreachable — de "Overlay-Freigabe
+            // nicht erreichbar — Systemeinstellungen → Apps → FlipsiBridge → Über
+            // anderen Apps einblenden.", en "Overlay permission screen not
+            // reachable — system settings → apps → FlipsiBridge → display over
+            // other apps."
+            onResultLine(
+                "Overlay-Freigabe nicht erreichbar — Systemeinstellungen → Apps → FlipsiBridge → Über anderen Apps einblenden.",
+            )
+        }
     }
 }
 

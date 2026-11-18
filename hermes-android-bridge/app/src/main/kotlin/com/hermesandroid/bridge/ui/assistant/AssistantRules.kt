@@ -12,8 +12,13 @@ package com.hermesandroid.bridge.ui.assistant
  *    — Anruf-Lane — direkt ein Gespräch (Assistent-Modus).
  *  - G2 (Floating Bubble): SYSTEM_ALERT_WINDOW-Bubble, Tap = Voice-Turn.
  *    Eligibility über dieselbe Overlay-Freigabe wie der HUD (perm overlay).
- *    Der Bubble-Dienst selbst (overlay/) ist eigene Bauwelle — hier nur die
- *    Verbands-Regeln.
+ *    Der Bubble-Dienst ist seit W22 GEBAUT (ui/assistant/
+ *    AssistantBubbleService.kt) — diese Regeln pinnen sein Routing.
+ *  - G11 (Mini-Panel „Seite fragen“): Ecken-Wisch des Standard-Assistenten
+ *    (G1-Rolle) ODER Share-Target öffnet das Mini-Panel über jedem Fenster
+ *    (AssistantMiniPanel.kt); sein Mikro-Turn ist GLEICH gepinnt wie der
+ *    Bubble-Tap — NIE ein Anruf aus dem eigenen Fenster. Mid-Screen-Edgewis
+ *    bleibt bewusst draußen (System-Gestenzuordnung, s. AssistantMiniPanel).
  *  - G5 („Was ist DAS hier?“ — Screen-Kontext): explizite Zustimmung JE
  *    SESSION (Gemini-Pattern), Nutzerklick, kein Silent — oben auf der
  *    bestehenden screen-Capability (CapabilityGate-Freischalt-Muster).
@@ -32,6 +37,9 @@ object AssistantEntryRules {
 
         /** Eigene Overlay-Bubble über allen Apps (G2) — unser Fenster, kein Trigger der Rolle. */
         OVERLAY_BUBBLE,
+
+        /** Eigenes Mini-Panel über jedem Fenster (G11) — unser Fenster, kein Trigger der Rolle. */
+        MINI_PANEL,
     }
 
     /** Aufgelöster Einstieg. NONE = ehrlich nichts tun (kein stiller Fake-Start). */
@@ -43,12 +51,12 @@ object AssistantEntryRules {
      * Zweit-Tür: Anruf direkt aus der Role-Invocation. Sonst der Bestand-Pfad:
      * Voice-Turn im Chat (AssistEntryActivity trampolint mit pendingVoice).
      *
-     * G2: Die Bubble ist UNSER eigenes Fenster — sie braucht die Rolle nicht;
-     * ihr Tap ist laut Roadmap IMMER ein Voice-Turn (auch bei aktivem
-     * Assistent-Modus, kein Anruf aus der Blase).
+     * G2/G11: Bubble UND Mini-Panel sind UNSERE eigenen Fenster — sie brauchen
+     * die Rolle nicht; ihr Tap/Mikro-Turn ist laut Roadmap IMMER ein Voice-Turn
+     * (auch bei aktivem Assistent-Modus, kein Anruf aus dem eigenen Fenster).
      */
     fun resolve(source: Source, roleHeld: Boolean, callAssistantMode: Boolean): Entry = when (source) {
-        Source.OVERLAY_BUBBLE -> Entry.CHAT_VOICE_TURN
+        Source.OVERLAY_BUBBLE, Source.MINI_PANEL -> Entry.CHAT_VOICE_TURN
         Source.ROLE_INVOCATION -> when {
             !roleHeld -> Entry.NONE
             callAssistantMode -> Entry.CALL

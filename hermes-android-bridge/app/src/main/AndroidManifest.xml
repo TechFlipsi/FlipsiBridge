@@ -99,6 +99,17 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- W22 LANE B (G11): Share-Target — „Teilen → FlipsiBridge“ aus
+                 JEDEM Browser/App (universeller Fallback, wo die Assistenten-
+                 Rolle fehlt). Browser liefern Seiten-Links als text/plain
+                 (EXTRA_TEXT); http/https-Kontext whitelisted die App-Logik
+                 (ShareIntake, JVM-getestet) — ein data-Schema-Filter wäre für
+                 ACTION_SEND unzuverlässig, deshalb text/plain + Logik-Gate. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
         </activity>
 
         <!-- WELLE 13 P10 (Sir): Standard-Assistenten-Rolle — dieser Einstieg
@@ -182,6 +193,26 @@
             android:name=".service.BridgeConnectionService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- W22 LANE B (G2): Overlay-Bubble-Dienst — hält die Assistenten-
+             Blase (SYSTEM_ALERT_WINDOW, Sonderrecht OHNE Laufzeit-Dialog;
+             die Freigabe läuft über ACTION_MANAGE_OVERLAY_PERMISSION — die
+             uses-permission SYSTEM_ALERT_WINDOW ist OBEN bereits deklariert).
+             FGS-Typ specialUse in BEIDEN Editionen (Manifest-Deklaration und
+             startForeground-Typ sind deckungsgleich, sonst wirft Android 14
+             IllegalArgumentException — J4-Lektion); FOREGROUND_SERVICE und
+             FOREGROUND_SERVICE_SPECIAL_USE sind oben deklariert und werden
+             im play-Overlay NICHT entfernt. Play-Konsolen-Deklaration des
+             Subtyps: PH-8/9 („overlay bubble for user-initiated assistant
+             access“). -->
+        <service
+            android:name=".ui.assistant.AssistantBubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="assistant_overlay_bubble" />
+        </service>
 
         <!-- v0.11.0: Boot-/Update-Restart der Brücke (Sirs "jederzeit Zugriff") -->
         <receiver
