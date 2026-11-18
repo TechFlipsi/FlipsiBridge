@@ -4108,7 +4108,9 @@ class TestW19AgentStatus:
         assert frame["ts"] > 0
         # W18-Regel: Live-Zustand, kein Verlauf — NIE in die Outbox.
         assert len(state.phone_outbox) == 0
-        assert state.agent_status == {"alpha": True}
+        # J4-Fund 3: Frame MIT sub = Slot-Verband → schreibt das Haupt-
+        # Aggregat NICHT (kein (True, „Recherche")) und kein Working-Refresh.
+        assert state.agent_status == {}
 
     def test_working_dedup_per_agent_id(self):
         """Transition-Dedup: gleicher working-Wert wie zuletzt = stilles
@@ -4145,7 +4147,9 @@ class TestW19AgentStatus:
         assert [c[0][0]["working"] for c in ws.send_json.call_args_list] == [
             True, False, True, True]
         assert len(state.phone_outbox) == 0
-        assert state.agent_status == {"alpha": True, "beta": True}
+        # J4-Fund 3: Dedup-Band = (working, label)-Paar je Agent — reine
+        # parent-Frames tragen kein Label → (True, None).
+        assert state.agent_status == {"alpha": (True, None), "beta": (True, None)}
 
     def test_label_over_64_discarded_field_frame_survives(self):
         """label > 64 = Feld verworfen (fail-soft, Parität _session_meta_ok),
@@ -4176,7 +4180,7 @@ class TestW19AgentStatus:
         assert "label" not in frames[2]
         assert all(f["type"] == "agent.status" for f in frames)
         # working-Verband: False → True-Wechsel kam durch, letzter Stand False.
-        assert state.agent_status == {"alpha": False}
+        assert state.agent_status == {"alpha": (False, None)}
         assert len(state.phone_outbox) == 0
 
     def test_slot_sub_end_frames_never_deduped(self):
@@ -4206,13 +4210,15 @@ class TestW19AgentStatus:
 
         asyncio.run(run())
         # Frames 1–4 alle durchgereicht (sub/end = KEIN Dedup); Frame 5
-        # (nur working, bereits True) = Dedup.
-        assert ws.send_json.call_count == 4
+        # (nur working, erstmals bekannter parent-Stand) = J4-Fund 3: Slot-
+        # Frames schreiben das Haupt-Aggregat nicht → der parent kommt als
+        # erster bekannter Stand durch (kein Slot-Working-Refresh davor).
+        assert ws.send_json.call_count == 5
         frames = [c[0][0] for c in ws.send_json.call_args_list]
         assert [f["end"] for f in frames[2:4]] == [True, True]
         assert frames[0]["sub"] == {"id": "s1", "name": "A"}
         assert len(state.phone_outbox) == 0
-        assert state.agent_status == {"alpha": True}
+        assert state.agent_status == {"alpha": (True, None)}
 
     def test_invalid_required_field_discarded_fail_soft(self):
         """Struktur-Gate am Pflichtfeld (Parität chat.activity: Fail-soft
@@ -4247,7 +4253,78 @@ class TestW19AgentStatus:
             assert ws.send_json.call_count == 1
 
         asyncio.run(run())
-        assert state.agent_status == {"alpha": True}
+        assert state.agent_status == {"alpha": (True, None)}
+        assert len(state.phone_outbox) == 0
+
+    def test_j4_label_change_beyond_working_dedup(self):
+        """J4-Fund 3 (Label-Dedup, rot/grün): der Dedup vergleicht working
+        UND label — ein Label-Wechsel bei working=True kommt durch (vorher:
+        stilles Verwerfen, „Sucht im Web" aktualisiert sich nie); der
+        gleiche (working, label)-Verband bleibt stilem No-Op, ein Label-
+        Reset (Feld weg) ist wieder ein Wechsel."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+        body = {"agent_id": "alpha", "working": True, "started_at": 21}
+
+        async def run():
+            # True + kein Label → durch (erster bekannter Stand).
+            await relay._handle_agent_status(state, "alpha", dict(body))
+            # True + „Sucht im Web" → Label-Wechsel → durch (VORHER: rot).
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "Sucht im Web"})
+            # True + „Schreibt Antwort" → Label-Wechsel → durch.
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "Schreibt Antwort"})
+            # GLEICHER (working, label)-Verband → Dedup (stilles No-Op).
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "Schreibt Antwort"})
+            # True ohne Label → Label-Reset = Wechsel → durch.
+            await relay._handle_agent_status(state, "alpha", dict(body))
+
+        asyncio.run(run())
+        frames = [c[0][0] for c in ws.send_json.call_args_list]
+        assert len(frames) == 4
+        assert [f.get("label", None) for f in frames] == [
+            None, "Sucht im Web", "Schreibt Antwort", None]
+        assert state.agent_status == {"alpha": (True, None)}
+        assert len(state.phone_outbox) == 0
+
+    def test_j4_sub_verband_overwrites_not_hauptaggregat(self):
+        """J4-Fund 3 (Slot-Verband): sub/end-Frames werden je Frame
+        durchgereicht (Dedup-Verband unverändert), dürfen das Haupt-
+        Aggregat state.agent_status[agent_id] aber NICHT mit dem Slot-
+        working überschreiben — sonst druckt der nächste parent-Frame
+        denselben Stand doppelt (UI-Flimmern)."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+        body = {"agent_id": "alpha", "working": True, "started_at": 31}
+        sub = {"id": "s1", "name": "Bauer"}
+
+        async def run():
+            # parent working=True + Label „A" → durch, Aggregat (True, „A").
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "A"})
+            # Slot-Verband mit Slot-working=False → JEDFALLS durch …
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "working": False, "sub": sub})
+            # … aber Aggregat bleibt (True, „A"): parent unverändert = Dedup
+            # (VORHER: falscher Wiederholdruck, Slot-working False überschrieb
+            # das Aggregat).
+            await relay._handle_agent_status(
+                state, "alpha", {**body, "label": "A"})
+
+        asyncio.run(run())
+        frames = [c[0][0] for c in ws.send_json.call_args_list]
+        assert len(frames) == 2
+        assert frames[0]["working"] is True and frames[0]["label"] == "A"
+        assert frames[1]["working"] is False and frames[1]["sub"] == sub
+        assert state.agent_status == {"alpha": (True, "A")}
         assert len(state.phone_outbox) == 0
 
     def test_phone_offline_no_spool_mock_proof(self):
@@ -4266,7 +4343,7 @@ class TestW19AgentStatus:
         state.phone_ws = None
         asyncio.run(relay._handle_agent_status(state, "alpha", dict(body)))
         assert len(state.phone_outbox) == 0
-        assert state.agent_status == {"alpha": True}
+        assert state.agent_status == {"alpha": (True, None)}
 
         # Fall 2: Mock-WS mit closed=True (Offline-Marker).
         state2 = self._fresh_state()
@@ -4364,20 +4441,21 @@ class TestW19AgentStatus:
         assert first["nonce"] == self._enc_body(now_ms)["nonce"]
         assert first["ct"] == "b3Bhaw=="
         assert frames[1]["working"] is False
-        # Gemeinsamer Dedup-State mit dem Klartext-Pfad: gleicher working-
-        # Wert nach dem enc-Spiegel erzeugt KEINEN zweiten Frame.
-        assert state.agent_status == {"alpha": False}
+        # Gemeinsamer Dedup-State mit dem Klartext-Pfad: Klar-Spiegel mit
+        # GLEICHEM (working, label)-Verband erzeugt KEINEN zweiten Frame
+        # (J4-Fund 3: Band = (working, label)-Paar).
+        assert state.agent_status == {"alpha": (False, "Recherche")}
         assert len(state.phone_outbox) == 0
 
-        # Cross-Pfad: klarer agent.status nach enc-Spiegel working=False
-        # = Dedup (kein Zustell-Frame), Wechsel True = Zustellung.
+        # Cross-Pfad: klarer agent.status nach enc-Spiegel working=False +
+        # gleichem Label = Dedup (kein Zustell-Frame), Wechsel True = Zustellung.
         async def run2():
             await relay._handle_agent_status(
                 state, "alpha", {"agent_id": "alpha", "working": False,
-                                 "started_at": 1})
+                                 "started_at": 1, "label": "Recherche"})
             await relay._handle_agent_status(
                 state, "alpha", {"agent_id": "alpha", "working": True,
-                                 "started_at": 1})
+                                 "started_at": 1, "label": "Recherche"})
 
         asyncio.run(run2())
         assert ws.send_json.call_count == 3
@@ -4408,20 +4486,19 @@ class TestW19AgentStatus:
                 )
                 await _drain_phone_state_frame(phone, expected=2)
 
+                # Erster bekannter parent-Stand (ohne Label/Sub) → durch.
                 await agent.send_json({
                     "type": "agent.status", "agent_id": "alpha",
                     "working": True, "started_at": 1730515200000,
-                    "label": "Recherche",
-                    "sub": {"id": "sub-1", "name": "Bauer"},
                 })
                 f1 = await phone.receive_json(timeout=2)
                 assert f1["type"] == "agent.status"
                 assert f1["agent_id"] == "alpha"
                 assert f1["working"] is True
-                assert f1["label"] == "Recherche"
-                assert f1["sub"] == {"id": "sub-1", "name": "Bauer"}
+                assert "label" not in f1 and "sub" not in f1
 
-                # Gleicher working-Wert = Dedup (kein zweiter Frame).
+                # Gleicher (working, label)-Verband = Dedup (kein zweiter
+                # Frame; J4-Fund 3: Vergleich um das Label erweitert).
                 await agent.send_json({
                     "type": "agent.status", "agent_id": "alpha",
                     "working": True, "started_at": 1730515200000,
@@ -4433,11 +4510,21 @@ class TestW19AgentStatus:
                 await agent.send_json({
                     "type": "agent.status", "agent_id": "alpha",
                     "working": True, "started_at": 1730515200000,
-                    "end": True, "sub": {"id": "sub-1", "name": "Bauer"},
+                    "label": "Recherche",
+                    "sub": {"id": "sub-1", "name": "Bauer"},
                 })
                 f2 = await phone.receive_json(timeout=2)
-                assert f2["end"] is True
+                assert f2["label"] == "Recherche"
                 assert f2["sub"] == {"id": "sub-1", "name": "Bauer"}
+
+                # J4-Fund 3: der Slot-Frame hat das Haupt-Aggregat NICHT
+                # überschrieben — parent unverändert = weiter Dedup.
+                await agent.send_json({
+                    "type": "agent.status", "agent_id": "alpha",
+                    "working": True, "started_at": 1730515200000,
+                })
+                with pytest.raises(asyncio.TimeoutError):
+                    await phone.receive_json(timeout=0.4)
 
                 await agent.close()
                 await phone.close()
@@ -4592,3 +4679,341 @@ class TestP43MtlsGateEpochCheck:
         reg["enrolled"][self.DEVICE]["epoch_of_enroll"] = reg["epoch"]
         menroll._registry_save(reg)
         assert _mtls_gate(self._request()) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# P0 J4-FIXE (18.11.2026): AAD-Kette agent-scoped enc-Frames (J4-Fund 1) +
+# cron-Verband in der Agent-Allowlist (J4-Fund 2). Synthetischer Handshake wie
+# T4 (key_get → crypto.hello → respond_to_hello → consume_ack): der Adapter
+# bindet die SESSION-Wire-chat_id in die AAD JEDES agent-scoped enc-Frames
+# (agent.status.enc / agent.models.enc / cron.status.enc — `_enc_fanout_frames`
+# setzt wire = sess.chat_id, sobald das Gerät gepostet hat). Der Phone-Rebuild
+# des Relays MUSS das chat_id-Klarfeld des Agent-Frames mitnehmen, sonst baut
+# Kotlin PhoneCryptoPeer die AAD 'fb-v1|session_id|chat_id|agent_id' mit
+# chat_id='' → GCM-Tag ungültig → Frame verworfen (alle 3 Verbände tot nach der
+# ersten Nutzer-Nachricht; vor dem ersten Post fällt wire auf '' und es geht).
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestP0J4AadKetteEncE2E:
+    """E2E je Frame-Typ mit echtem synthetischem Handshake — Beweis: vorher
+    rot (AAD-Mismatch bzw. Junk-Drop beim cron-Verband), nachher entschlüsselbar
+    grün mit chat_id-Parität."""
+
+    PORT = 19961
+    CODE = "J4AAD01"
+    TOKEN = "j4-aad-token"
+    SESSION_ID = "j4-aad-session-1"
+    WIRE_CHAT = "chat-j4-live-1"
+
+    # Fixe Agent-Identity (Parität TestPh3CryptoE2E: RFC-7748-Bob + Fixture-PreKey):
+    IK_A_PRIV = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
+    IK_A_PUB = "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+    SPK_A_PRIV = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    SPK_A_PUB = "52a5524b0c32e8a47f239ab6ca8e42c3b9316a54cae4854ecdb5889311cc9a7e"
+
+    @property
+    def identity(self):
+        return {"identity_priv": self.IK_A_PRIV, "identity_pub": self.IK_A_PUB,
+                "prekey_priv": self.SPK_A_PRIV, "prekey_pub": self.SPK_A_PUB}
+
+    def _write_config(self, tmp_path):
+        cfg = tmp_path / "relay-config.json"
+        cfg.write_text(json.dumps({
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
+            "CHAT_RATE_PER_SECOND": 50,
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+            "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA":
+                _ph3_adapter.fingerprint_of_pub(bytes.fromhex(self.IK_A_PUB)),
+        }), encoding="utf-8")
+        return str(cfg)
+
+    async def _handshake(self, session, phone, agent, base, session_id):
+        """key_get → crypto.hello (POST) → respond_to_hello → ack via Agent-WS
+        → consume_ack. Rückgabe (PhonePeer, AgentCryptoSession)."""
+        got = await session.get(f"{base}/key_get", params={"agent_id": "alpha"},
+                                headers={"Authorization": f"Bearer {self.CODE}"})
+        assert got.status == 200
+        keys = await got.json()
+        peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"], keys["spk_pub"])
+        hello = peer.make_hello(session_id)
+        resp = await session.post(f"{base}/crypto_hello", json=hello,
+                                  headers={"Authorization": f"Bearer {self.CODE}"})
+        assert resp.status == 200
+        assert (await resp.json())["delivered"] is True
+        hello_frame = await agent.receive_json(timeout=6)
+        assert hello_frame["type"] == "crypto.hello"
+        agent_session, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+            hello_frame, self.identity)
+        await agent.send_json(ack)
+        ack_frame = await _recv_until(phone, "crypto.hello_ack", timeout=6)
+        peer.consume_ack(ack_frame)
+        assert peer.fingerprint == agent_session.fingerprint
+        return peer, agent_session
+
+    def test_j4_agent_scoped_enc_frames_aad_kette_entdecryptbar(self, tmp_path, monkeypatch):
+        """J4-Fund 1 (AAD-Kette) über ALLE 3 Frame-Typen: top-level bleiben die
+        Klarfelder (Dedup/UI-Fallback-Parität), die Payload liegt im ct, und
+        der Phone-Rebuild MUSS chat_id = Session-Wire-chat_id tragen — sonst
+        baut Kotlin die AAD mit chat_id='' → GCM-Tag ungültig."""
+        import aiohttp
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT)
+        base = f"http://127.0.0.1:{self.PORT}"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                await _drain_phone_state_frame(phone, expected=1)
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6)
+                peer, agent_session = await self._handshake(
+                    session, phone, agent, base, self.SESSION_ID)
+
+                ts_ms = int(time.time() * 1000)
+                # Adapter-Parität: `_enc_fanout_frames` nutzt wire = sess.chat_id
+                # (Gerät hat gepostet); Status trägt zusätzlich den Klar-Spiegel.
+                mirror = {"working": True, "started_at": ts_ms,
+                          "label": "Sucht im Web"}
+                cron_payload = {"jobs": [
+                    {"name": "w22-report", "status": "planned",
+                     "next_at": ts_ms + 60_000},
+                    {"name": "backup", "status": "running"},
+                ]}
+                cases = [
+                    ("agent.status.enc",
+                     agent_session.encrypt_frame("agent.status.enc", self.WIRE_CHAT,
+                                                 dict(mirror), clear=dict(mirror)),
+                     dict(mirror)),
+                    ("agent.models.enc",
+                     agent_session.encrypt_frame("agent.models.enc", self.WIRE_CHAT,
+                                                 {"models": ["fb-gemma", "fb-nous"],
+                                                  "current": "fb-gemma",
+                                                  "effort": ""}),
+                     {"models": ["fb-gemma", "fb-nous"], "current": "fb-gemma",
+                      "effort": ""}),
+                    ("cron.status.enc",
+                     agent_session.encrypt_frame("cron.status.enc", self.WIRE_CHAT,
+                                                 cron_payload),
+                     cron_payload),
+                ]
+
+                results = {}
+                for typ, frame, expected in cases:
+                    await agent.send_json(frame)
+                    entry = {"arrived": False, "chat_id": "", "decrypt_ok": False,
+                             "err": ""}
+                    try:
+                        got = await _recv_until(phone, typ, timeout=6, parked=[])
+                        entry["arrived"] = True
+                        entry["chat_id"] = str(got.get("chat_id") or "")
+                        try:
+                            payload = peer.decrypt_frame(got)
+                            entry["decrypt_ok"] = payload == expected
+                            if not entry["decrypt_ok"]:
+                                entry["err"] = f"Payload-Divergenz: {payload!r}"
+                        except Exception as exc:
+                            entry["err"] = f"Decrypt: {type(exc).__name__}"
+                    except (AssertionError, asyncio.TimeoutError):
+                        # asyncio.TimeoutError (3.14 = TimeoutError): der
+                        # gesuchte Frame kam nicht (VORher-Fix: Junk-Drop
+                        # cron.status.enc bzw. Rebuild ohne chat_id = kein
+                        # passender Phone-Frame für den Typ).
+                        entry["err"] = "Delivery: Frame kam nicht"
+                    results[typ] = entry
+                # Teardown fail-soft: ein verpasster Frame kann den WS-Reader
+                # „vergiften" (aiohttp-Quirk) — der Beweis steht in results.
+                for ws_ in (agent, phone):
+                    try:
+                        await ws_.close()
+                    except (Exception, asyncio.CancelledError):
+                        pass
+                return results
+
+        results = asyncio.run(scenario())
+        failures = "\n".join(
+            f"  {typ}: arrived={res['arrived']} chat_id={res['chat_id']!r} "
+            f"decrypt_ok={res['decrypt_ok']} err={res['err']}"
+            for typ, res in results.items())
+        assert all(
+            res["arrived"] and res["chat_id"] == self.WIRE_CHAT
+            and res["decrypt_ok"] for res in results.values()), \
+            f"AAD-Kette verletzt (VORher-Beweis je Typ):\n{failures}"
+
+    def test_j4_cron_status_plaintext_allowlist_delivered(self, tmp_path, monkeypatch):
+        """J4-Fund 2: cron.status (Klartext, ohne E2E-Session) muss die
+        Agent-Allowlist passieren und klar ans Phone kommen — vorher Junk-Drop
+        (Allowlist-Verstoß, Handler toter Code), nachher Delivery mit jobs."""
+        import aiohttp
+
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        start_relay(pairing_code=self.CODE, port=self.PORT + 1)
+        base = f"http://127.0.0.1:{self.PORT + 1}"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 1}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                await _drain_phone_state_frame(phone, expected=1)
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 1}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await _recv_until(phone, "relay.state", timeout=6)
+                await agent.send_json({
+                    "type": "cron.status", "v": 1, "agent_id": "alpha",
+                    "jobs": [{"name": "w22-report", "status": "planned",
+                              "next_at": 1730515200000}],
+                })
+                got = await _recv_until(phone, "cron.status", timeout=6, parked=[])
+                await agent.close()
+                await phone.close()
+                return got
+        frame = asyncio.run(scenario())
+        assert frame["agent_id"] == "alpha"
+        assert frame["jobs"] == [{"name": "w22-report", "status": "planned",
+                                  "next_at": 1730515200000}]
+        assert frame["ts"] > 0
+
+    # ── Test-Harness (Parität TestW19AgentStatus) ─────────────────────────
+
+    def _fresh_state(self):
+        import asyncio as _aio
+        from tools.android_relay import _RelayState
+        state = _RelayState("code", 8799)
+        state.broker_lock = _aio.Lock()
+        return state
+
+    def _state_with_ws(self):
+        """RelayState + Mock-Phone-WS mit ASYNC send_json (so wird die
+        Zustellung ein echter Zustell-Beweis, kein Offline-Schluck)."""
+        import asyncio as _aio
+        from unittest import mock
+        state = self._fresh_state()
+        ws = mock.Mock()
+        ws.closed = False
+        ws.send_json = mock.AsyncMock()
+        state.phone_ws = ws
+        return state, ws
+
+    def test_j4_cron_gates_rate_bucket_and_downgrade_guard(self, monkeypatch):
+        """J4-Fund 2 (Guards): Struktur-Gate fail-closed (keine Liste/kaputte
+        Zeile), Downgrade-Schutz (Klartext bei E2E-Session verworfen) und
+        EIGENER Rate-Bucket 'cronstatus:*' (RELAY-FRAME-GUARDS: nie geteilt
+        mit chat.reply)."""
+        import asyncio
+        from unittest import mock
+        from tools import android_relay as relay
+        from tools.android_relay import _chat_rate_hits, _chat_rate_lock
+
+        state, ws = self._state_with_ws()
+        good_jobs = [{"name": "w22-report", "status": "planned",
+                      "next_at": 1730515200000},
+                     {"name": "backup", "status": "running"}]
+
+        async def run():
+            # 1) Struktur-Gate fail-closed: kein jobs / kaputte Zeile /
+            #    falsche status / next_at bei running.
+            for bad in (None, "keine-liste", [{"name": "", "status": "planned"}],
+                        [{"name": "a", "status": "unknown"}],
+                        [{"name": "a", "status": "running", "next_at": 5}]):
+                await relay._handle_agent_cron_status(state, "alpha",
+                                                      {"agent_id": "alpha",
+                                                       "jobs": bad})
+                assert ws.send_json.call_count == 0, bad
+            # next_at bei running → auch ohne next_at-Problem-Zeile ok,
+            # aber falscher Typ → verworfen.
+            await relay._handle_agent_cron_status(
+                state, "alpha", {"agent_id": "alpha",
+                                 "jobs": [{"name": "a", "status": "planned",
+                                           "next_at": "morgen"}]})
+            assert ws.send_json.call_count == 0
+            # 2) Downgrade-Schutz: Klartext bei bestätigter E2E-Session → weg.
+            async def has_session(state_, agent_id_):
+                return True
+            monkeypatch.setattr(relay, "_agent_has_e2e_session", has_session)
+            await relay._handle_agent_cron_status(
+                state, "alpha", {"agent_id": "alpha", "jobs": good_jobs})
+            assert ws.send_json.call_count == 0
+            # 3) Gültiger Klartext ohne Session → Delivery + Spool-Verband.
+            #    (Zuvor Rate-Bucket leeren: die Gate-Rejects oben haben den
+            #    6/s-Bucket bereits geätzt — Guards prüfen VOR der Struktur.)
+            with _chat_rate_lock:
+                _chat_rate_hits.pop("cronstatus:alpha", None)
+            async def no_session(state_, agent_id_):
+                return False
+            monkeypatch.setattr(relay, "_agent_has_e2e_session", no_session)
+            await relay._handle_agent_cron_status(
+                state, "alpha", {"agent_id": "alpha", "jobs": good_jobs})
+            assert ws.send_json.call_count == 1
+            frame = ws.send_json.call_args[0][0]
+            assert frame["type"] == "cron.status"
+            assert frame["jobs"] == good_jobs
+            assert frame["agent_id"] == "alpha"
+            # 4) EIGENER Rate-Bucket: 6/s — der 7. cron-Frame fällt, der
+            #    chat.reply-Bucket bleibt JUNGF (nie geteilt).
+            with _chat_rate_lock:
+                _chat_rate_hits.pop("cronstatus:alpha", None)
+                _chat_rate_hits.pop("chat.reply", None)
+                _chat_rate_hits.pop("chatreply:alpha", None)
+            for i in range(6):
+                got_through = await relay._handle_agent_cron_status(
+                    state, "alpha", {"agent_id": "alpha", "jobs": good_jobs})
+                assert got_through is None  # Handler gibt nie zurück
+            before = ws.send_json.call_count
+            await relay._handle_agent_cron_status(
+                state, "alpha", {"agent_id": "alpha", "jobs": good_jobs})
+            assert ws.send_json.call_count == before, "7. Frame über Cron-Cap"
+            assert "cronstatus:alpha" in _chat_rate_hits
+            assert not [k for k in _chat_rate_hits
+                        if k not in ("cronstatus:alpha",)], \
+                "cron-Verband darf nur den EIGENEN Bucket berühren"
+
+        asyncio.run(run())
+
+    def test_j4_cron_enc_guards_fail_closed(self, monkeypatch):
+        """J4-Fund 2 (enc-Verband): ohne bestätigte Session → kein Delivery,
+        kein State-Write; der chat_id-Klarfeld-Verband greift nicht als
+        Validierung (ct opak)."""
+        import asyncio
+        import base64
+        import time
+        from unittest import mock
+        from tools import android_relay as relay
+
+        state, ws = self._state_with_ws()
+        body = {
+            "type": "cron.status.enc",
+            "agent_id": "alpha",
+            "session_id": "sess-cron-1",
+            "chat_id": "chat-cron-1",
+            "hdr": {"rk": "a" * 64, "n": 0, "pn": 1},
+            "nonce": base64.b64encode(bytes(12)).decode(),
+            "ct": base64.b64encode(b"opak").decode(),
+            "ts": int(time.time() * 1000),
+        }
+
+        async def run():
+            # Ohne Session fail-closed (Klon agent.status.enc).
+            await relay._handle_agent_cron_status_enc(state, "alpha", dict(body))
+            assert ws.send_json.call_count == 0
+            # Mit gepatchter Session → Delivery MIT chat_id-Passthrough
+            # (J4-Fund 1 für den cron-Verband).
+            async def fake_session(state_, agent_id_, data_):
+                return {"agent_id": agent_id_, "acked": True}
+            monkeypatch.setattr(relay, "_enc_session_active", fake_session)
+            await relay._handle_agent_cron_status_enc(state, "alpha", dict(body))
+            assert ws.send_json.call_count == 1
+            frame = ws.send_json.call_args[0][0]
+            assert frame["type"] == "cron.status.enc"
+            assert frame["chat_id"] == "chat-cron-1"
+            assert frame["ct"] == body["ct"]  # 1:1 opak
+            assert frame["agent_id"] == "alpha"
+
+        asyncio.run(run())

@@ -85,6 +85,13 @@ cp -r hermes-android-plugin ~/.hermes/plugins/hermes-android
 
 Restart hermes — run `/plugins` to verify. Should show: `✓ hermes-android v0.5.0 (42 tools)`
 
+> **Deploy-Pfad (Chat-Adapter, live):** Der produktive Chat-Adapter lebt in
+> `contrib/hermes-chat-plugin/adapter.py` und wird nach
+> `~/.hermes/plugins/flipsibridge-chat/adapter.py` installiert (nicht nach
+> `plugins/hermes-android/`). `hermes-android-plugin/` im Repo ist eine bewusst
+> eigene Alt-Lineage (Android-Tools + Relay-Spiegel) und wird NICHT mitsyncen —
+> der Chat-Adapter-Deploy ist ein Datei-Wechsel der zwei Adapter-Kopien.
+
 ## Quick Start
 
 ### 1. Install the bridge app on your phone

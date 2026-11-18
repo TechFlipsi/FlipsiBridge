@@ -200,7 +200,7 @@ class _RelayState:
         # agent_id (Parallel-State zu chat_activity, kein Chat-Bezug). Nur
         # working-Wechsel erzeugen einen Frame; Frames mit sub/end werden je
         # Frame durchgereicht (die App verwaltet Sub-Slots je sub.id/end).
-        self.agent_status: dict[str, bool] = {}
+        self.agent_status: dict[str, tuple[bool, Optional[str]]] = {}
 
         # PH2-T5: Konversations-Isolation — chat_id → (owner_agent_id, ts).
         # Eine Agenten-Antwort auf eine fremde chat_id wird verworfen + geloggt.
@@ -1630,6 +1630,9 @@ _CHAT_QUEUE_MAX_BYTES = _env_clamped_int(
 _CHAT_ACTIVITY_MAX = 256           # SEC-W1 D2: Dedup-Map-Cap (war unbounded)
 # W19 (SIRS-Neued): agent.status-Dedup-Map (letzter working-Wert je agent_id)
 # — FIFO-Cap Parität chat_activity.
+# J4-Fund 3: der Band-Wert ist das (working, label)-Paar je agent_id — ein
+# Label-Wechsel bei gleichem working ist ein Transition („Sucht im Web" muss
+# die App erreichen); Slot-Frames (sub/end) schreiben das Band NICHT.
 _AGENT_STATUS_MAX = 256
 # W4-FIX-JAG2 (S6): chat_status-Cap — die 24-h-Retention (_prune_chat_status)
 # hilft nicht gegen einen Flood FRISCHER msg_ids binnen der Retention (RAM-
@@ -1647,6 +1650,11 @@ _AGENT_LIGHT_FRAME_MAX_PER_SECOND = 10  # SEC-W1 W1C-9: keepalive/ping/presence
 # sonst verdrängt ein session_meta/models-Push die Rate-Plätze von
 # chat.reply (gleiches chat_event-Bucket = stiller Nachrichtenverlust).
 _AGENT_META_LIGHT_MAX_PER_SECOND = 6  # ~2 Frames je Meta-Event, Puffer
+# J4-Fund 2: cron.status/.enc bekommen einen EIGENEN Light-Bucket (Parität
+# W16-J4F1 für agentmeta — NIE einen geteilten Bucket mit chat.reply: ein
+# Cron-Refresh verdrängt sonst live Chat-Nachrichten; zwei Buckets = zwei
+# Budgets je Richtung). ~1 Frame je Connect/Handshake + Refresh je Änderung.
+_CRON_STATUS_MAX_PER_SECOND = 6
 _CHAT_RATE_MAX_KEYS = 1024          # SEC-W1 W1C-7: Sweep-Schwelle der Rate-Map
 # SEC-W2 W2-2: Broker-Routen ohne eigenes Rate-Limit — /crypto_hello füllte
 # state.crypto_sessions ungedrosselt (PoC: 30 Hellos in <0.5 s = 30 Sessions,
@@ -3701,6 +3709,10 @@ _AGENT_FRAME_TYPES = frozenset(
      # enc): working/started_at/label/sub/end; Status = Transition (kein
      # Rate-Bucket, kein Spool), Sub-Slots je Frame durchgereicht.
      "agent.status", "agent.status.enc",
+     # F1/J4-Fund 2: cron.status-Live-Verband (Gateway-Cron-Jobs, Karte
+     # „Geplante Aufgaben") — klar + enc, EIGENER Rate-Bucket 'cronstatus:*'
+     # (nie geteilt mit chat.reply), enc = opaker Pass-Through.
+     "cron.status", "cron.status.enc",
      "chat.reply", "chat.read", "chat.activity",
      # PH-3-T2: E2E-Frames — der Relay ist opaker Pass-Through (kein Key-
      # Material, ct wird nie geöffnet); Validierung = Struktur + Session.
@@ -3879,6 +3891,16 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
         return
     if msg_type == "agent.status":
         await _guard_agent_frame(_handle_agent_status, state, agent_id, data, "_handle_agent_status")
+        return
+    # ── F1/J4-Fund 2: cron.status-Live-Verband (Gateway-Cron-Jobs) ──────────
+    # Karte „Geplante Aufgaben" am Phone. Klar + enc je Connect/Handshake/
+    # Refresh (Adapter emit_cron_status), EIGENER Rate-Bucket 'cronstatus:*'
+    # (nie geteilt mit chat.reply), enc = opaker Pass-Through.
+    if msg_type == "cron.status.enc":
+        await _guard_agent_frame(_handle_agent_cron_status_enc, state, agent_id, data, "_handle_agent_cron_status_enc")
+        return
+    if msg_type == "cron.status":
+        await _guard_agent_frame(_handle_agent_cron_status, state, agent_id, data, "_handle_agent_cron_status")
         return
     # keepalive/ping/presence: nur Presence (oben bereits gepflegt).
     logger.debug("Agent %s: frame type=%r (Presence)", agent_id, msg_type)
@@ -4638,16 +4660,23 @@ def _cap_agent_status(state: _RelayState) -> None:
 
 def _agent_status_dedup_allow(state: _RelayState, agent_id: str,
                               fields: dict) -> bool:
-    """W19 Transition/Slot-Verband: working-Dedup JE agent_id — Gleicher
-    Wert wie der letzte = stilles No-Op (je Wechsel genau 1 Frame). Frames
-    des Slot-Verbands (sub/end) sind KEIN Dedup — je Frame durchreichen,
-    die App verwaltet Sub-Slots je sub.id/end. State parallel zu
-    chat_activity, KEIN Rate-Bucket (Status ist Transition); Write NUR
-    unter broker_lock."""
+    """W19 Transition/Slot-Verband: Dedup JE agent_id über das (working,
+    label)-Paar — J4-Fund 3: ein Label-Wechsel bei gleichem working ist ein
+    Transition („Sucht im Web" muss die App erreichen), der gleiche Verband
+    ist stilles No-Op (je Wechsel genau 1 Frame). Frames des Slot-Verbands
+    (sub/end) sind KEIN Dedup — je Frame durchreichen, die App verwaltet
+    Sub-Slots je sub.id/end; sie dürfen das Haupt-Aggregat
+    state.agent_status[agent_id] NICHT mit dem Slot-working überschreiben
+    (sonst druckt der nächste parent-Frame denselben Stand doppelt). State
+    parallel zu chat_activity, KEIN Rate-Bucket (Status ist Transition);
+    Write NUR unter broker_lock."""
     slot_verband = "sub" in fields or fields.get("end") is not None
-    if not slot_verband and state.agent_status.get(agent_id) == fields["working"]:
+    if slot_verband:
+        return True  # Slot-Verband ohne Dedup UND ohne Aggregat-Write
+    band = (fields["working"], fields.get("label"))
+    if state.agent_status.get(agent_id) == band:
         return False  # Dedup: je Wechsel genau 1 Frame
-    state.agent_status[agent_id] = fields["working"]
+    state.agent_status[agent_id] = band
     _cap_agent_status(state)
     return True
 
@@ -4660,6 +4689,104 @@ async def _deliver_agent_status_to_phone(state: _RelayState, frame: dict) -> boo
     Reconnect längst Geschichte)."""
     async with state.broker_lock:
         return await _deliver_locked(state, frame, spool=False)
+
+
+# ── F1/J4-Fund 2: cron.status-Live-Verband (Gateway-Cron-Jobs → App) ────────
+# Karte „Geplante Aufgaben": Adapter emit_cron_status sendet je Connect/
+# Handshake + nur-je-Änderung im Refresh-Loop (Fingerprint); dieser Verband
+# lag bis hierhin KOMPLETT tot (beide Typen fehlten in _AGENT_FRAME_TYPES
+# = Junk-Drop, App-Handler toter Code). enc = opaker Pass-Through (Guards
+# wie agent.status.enc), EIGENER Rate-Bucket 'cronstatus:*' (nie geteilt
+# mit chat.reply), Klartext nur ohne E2E-Session (enc-first, Downgrade-
+# Schutz Parität agent.status). Delivery via _deliver_to_phone (Spool wie
+# agent.models — Katalog-Klasse; ein spät zugestellter enc-Frame >10 min
+# fällt ohnehin am App-ts-Fenster weg (Freshness), schadet also nicht.
+
+
+async def _handle_agent_cron_status_enc(state: _RelayState, agent_id: str,
+                                        data: dict) -> None:
+    """F1/J4-Fund 2: cron.status.enc → Phone (Typ bleibt, ct opak). Prüfkette
+    = Klon der agent.status.enc-Kette: EIGENER Rate-Bucket (cronstatus:*),
+    _validate_enc_frame (Form), _enc_session_active fail-closed,
+    _relay_replay_allow (Fenster je Kette). KEIN Owner-Claim (kein chat_id-
+    Anspruch — der Verband lebt je Agent), KEIN Dedup (der Adapter deduppt
+    über den Zeilen-Fingerprint)."""
+    if not _chat_rate_allow(f"cronstatus:{agent_id}", _CRON_STATUS_MAX_PER_SECOND):
+        logger.info("Agent %s: cron.status.enc verworfen — Cron-Rate-Limit", agent_id)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: cron.status.enc ungültig (%s) — verworfen",
+                       agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: cron.status.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning(
+            "Agent %s: cron.status.enc Replay/Fenster-Verletzung — verworfen",
+            agent_id)
+        return
+    if data.get("agent_id") not in (None, agent_id):
+        logger.warning(
+            "Agent %s: cron.status.enc meldet fremde body-agent_id %s — WS-Identität gewinnt",
+            agent_id, _log_id(data.get("agent_id")))
+    frame = {
+        "type": "cron.status.enc", "v": 1,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    # J4-Fund 1 (AAD-Kette): chat_id-Klarfeld mitnehmen — Parität zum
+    # agent.status.enc-Rebuild (Kotlin-AAD 'fb-v1|session_id|chat_id|agent_id').
+    frame["chat_id"] = data.get("chat_id") or ""
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.debug("Agent %s: cron.status.enc keine Live-Zustellung (Phone offline)",
+                     agent_id)
+
+
+async def _handle_agent_cron_status(state: _RelayState, agent_id: str,
+                                    data: dict) -> None:
+    """F1/J4-Fund 2: cron.status (Klartext-Legacy, NUR ohne E2E-Session).
+    Struktur-Gate auf der Jobs-Liste (FAIL-CLOSED: keine Liste/kaputte
+    Zeile = Verwurf, Parität agent.models-Liste), Downgrade-Schutz (bei
+    bestätigter E2E-Session verworfen — der Agent muss cron.status.enc
+    senden), WS-Identität gewinnt, EIGENER Rate-Bucket."""
+    if not _chat_rate_allow(f"cronstatus:{agent_id}", _CRON_STATUS_MAX_PER_SECOND):
+        logger.info("Agent %s: cron.status verworfen — Cron-Rate-Limit", agent_id)
+        return
+    jobs = data.get("jobs")
+    if not _agent_cron_jobs_ok(jobs):
+        logger.warning("Agent %s: cron.status ungültige Jobs-Liste — verworfen",
+                       agent_id)
+        return
+    if await _agent_has_e2e_session(state, agent_id):
+        logger.warning(
+            "Agent %s: Klartext-cron.status verworfen — E2E-Session aktiv (Downgrade-Schutz)",
+            agent_id)
+        return
+    if data.get("agent_id") not in (None, agent_id):
+        logger.warning(
+            "Agent %s: cron.status meldet fremde body-agent_id %s — WS-Identität gewinnt",
+            agent_id, _log_id(data.get("agent_id")))
+    frame = {
+        "type": "cron.status", "v": 1,
+        "agent_id": agent_id,
+        "jobs": jobs,
+        "ts": int(time.time() * 1000),
+    }
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.debug("Agent %s: cron.status keine Live-Zustellung (Phone offline)",
+                     agent_id)
 
 
 async def _handle_agent_status_enc(state: _RelayState, agent_id: str,
@@ -4708,6 +4835,14 @@ async def _handle_agent_status_enc(state: _RelayState, agent_id: str,
         "ct": data["ct"],
         "ts": int(time.time() * 1000),
     }
+    # J4-Fund 1 (AAD-Kette): das Klartext-chat_id des Agent-Frames MUSS in
+    # den Phone-Rebuild — Kotlin bindet die AAD 'fb-v1|session_id|chat_id|
+    # agent_id' an das chat_id-ENVELOPE-Feld; fehlt es, baut die App die AAD
+    # mit chat_id='' → GCM-Tag ungültig → Frame verworfen (alle agent-
+    # scoped Verbände tot NACH der ersten Nutzer-Nachricht: ab dann nutzt
+    # der Adapter wire = sess.chat_id in `_enc_fanout_frames`). Falscher/
+    # gemogelter Wert schadet nicht: die Endpunkte fangen ihn mit GCM.
+    frame["chat_id"] = data.get("chat_id") or ""
     if "label" in fields:
         frame["label"] = fields["label"]
     if "sub" in fields:
@@ -4784,6 +4919,42 @@ def _agent_models_ok(models) -> bool:
     return True
 
 
+# F1/J4-Fund 2: cron.status-Zeilen-Vertrag (Parität
+# contrib/hermes-chat-plugin/adapter.py _cron_row + App-Parser
+# DashboardRules/parseCronJobs): name ≤ 64, status ∈ {planned, running,
+# paused}, next_at NUR bei planned mit strikt positivem ms.
+_CRON_KNOWN_STATES = frozenset({"planned", "running", "paused"})
+
+
+def _agent_cron_jobs_ok(jobs) -> bool:
+    """Struktur-Gate für die cron.status-Jobs-Liste (fail-closed: keine Liste
+    oder eine kaputte Zeile = Frame verwerfen — Klartext-Pfad. Der enc-Pfad
+    liest die Liste NICHT, ct bleibt opak)."""
+    if not isinstance(jobs, list) or len(jobs) > 32:
+        return False
+    for row in jobs:
+        if not isinstance(row, dict):
+            return False
+        name = row.get("name")
+        if not isinstance(name, str) or not name.strip() or len(name) > 64:
+            return False
+        status = row.get("status")
+        if not isinstance(status, str) or status not in _CRON_KNOWN_STATES:
+            return False
+        next_at = row.get("next_at")
+        if next_at is None:
+            if status == "planned":
+                # planned OHNE next_at bleibt gültig (nächste Ausführung
+                # unbekannt — Parität App-Parser: next_at optional).
+                continue
+        elif isinstance(next_at, bool) or not isinstance(next_at, int) \
+                or next_at <= 0 or not _finite_ms(next_at):
+            return False
+        elif status != "planned":
+            return False  # next_at gibt es NUR für planned (Adapter-Vertrag)
+    return True
+
+
 async def _handle_agent_models_enc(state: _RelayState, agent_id: str,
                                    data: dict) -> None:
     """W16 (Fixliste 35): agent.models.enc → opak ans Phone (Typ bleibt,
@@ -4816,6 +4987,9 @@ async def _handle_agent_models_enc(state: _RelayState, agent_id: str,
         "ct": data["ct"],
         "ts": int(time.time() * 1000),
     }
+    # J4-Fund 1 (AAD-Kette): chat_id-Klarfeld mitnehmen — Parität zum
+    # agent.status.enc-Rebuild (Kotlin-AAD 'fb-v1|session_id|chat_id|agent_id').
+    frame["chat_id"] = data.get("chat_id") or ""
     delivered = await _deliver_to_phone(state, frame)
     if not delivered:
         logger.debug("Agent %s: agent.models.enc gespoolt (Phone offline)", agent_id)

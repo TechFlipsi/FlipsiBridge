@@ -1231,8 +1231,6 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             "working": False,         # parent_working
             "started_at": None,       # Unix-ms des letzten ON (Herzschlag-refreshed)
             "label": None,            # logischer Top-Level-Label (≤64 oder None)
-            "sent_working": None,     # zuletzt REAL gesendetes working (Dedup-Band)
-            "sent_label": None,       # zuletzt REAL gesendetes Label
             "web_count": 0,           # web-Verband-Zähler (Suche-Offen-Verband)
             "sub_slots": {},          # child_session_id → {id, name, started_at}
             "recent_closed": {},      # zuletzt geschlossene child_session_id → ts
@@ -3520,8 +3518,9 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
 
     async def _status_drain_coro(self, pending: deque) -> None:
         """W19-Drain: sendet gesammelte Status-Frames je Reihenfolge, wartet auf
-        keine weiteren; dedupgleiche Wiederholungen (working/label wie zuletzt
-        REAL gesendet) bleiben weg. Send-Gate je Frame = _STATUS_SEND_TIMEOUT_S."""
+        keine weiteren; das (working, label)-Dedup lebt am RELAY (J4-Fund-3-
+        Verband), der Drain schickt JE Frame real heraus. Send-Gate je Frame =
+        _STATUS_SEND_TIMEOUT_S."""
         try:
             while True:
                 with self._status_lock:
@@ -3531,20 +3530,14 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                         break
                     frame = pending.popleft()
                 try:
-                    sent = await self.emit_agent_status(**frame)
+                    await self.emit_agent_status(**frame)
                 except Exception:
                     logger.warning("FlipsiBridge: agent.status-Drain-Fehler",
                                    exc_info=True)
-                    sent = False
-                if sent:
-                    # sent_working/sent_label = Dedup-Band. JE Frame updaten
-                    # (auch Slot-Frames): der Relay übernimmt working aus JEDEM
-                    # Frame (auch sub/end-Verband) — sonst dropt unser nächster
-                    # parent-Frame ein legitimen Relay-Wechsel.
-                    with self._status_lock:
-                        self._status["sent_working"] = bool(frame.get("working"))
-                        self._status["sent_label"] = self._status_clip(
-                            frame.get("label"))
+                # J4-Fund 4: KEIN sent_working/sent_label-Band — die Dedup-
+                # Wahrheit über working/label lebt am RELAY (J4-Fund-3-Verband,
+                # (working, label)-Paar je agent_id); das alte Adapter-Band
+                # war ausschließlich schreibend (toter State).
         except asyncio.CancelledError:
             raise
         except Exception:
