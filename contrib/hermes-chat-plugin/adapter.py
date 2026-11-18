@@ -63,7 +63,11 @@ _INBOUND_ENVELOPE_ALLOWLIST = frozenset(
      "chat.media.enc",
      # B4 (Multi-Gerät): Backfill-Router-Frame des Relays (ids-only, Klar-
      # Steuer) + Revoke-Verband (Session/Pin-Kappung je Agent).
-     "chat.backfill_request", "device.revoked"}
+     "chat.backfill_request", "device.revoked",
+     # W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling Rückkanal je
+     # Geräte-Session (E2E enc) — KEIN Gateway-Push, nur Call-Zustandsmaschine.
+     "call_ringing.enc", "call_accepted.enc", "call_declined.enc",
+     "call_missed.enc", "call_ended.enc"}
 )
 _PROTOCOL_VERSION = 1
 
@@ -110,7 +114,10 @@ _MEDIA_MAX_BYTES = 50 * 1024 * 1024      # Deckel je Datei (Relay prüft size)
 _MEDIA_DIR_MAX_BYTES = 200 * 1024 * 1024  # Retention: Media-Dir-Gesamtbudget
 _MEDIA_ASSEMBLERS_MAX = 8                 # gleichzeitige halbfertige Uploads
 _MEDIA_ASSEMBLER_TTL_S = 30 * 60          # halbfertige Assemblies entsorgen
-_MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
+# W21 (G12, roadmap-anruf.md §7.2): "screengrab" = Agent-Screenshot aus dem
+# Bedienungshilfen-Pfad — Bild lebt beim Agent NUR für die Vision-Analyse;
+# KEIN Galerie-/MediaStore-Weg am Phone (App-Lane), Meta-Lauf hier identisch.
+_MEDIA_KINDS = frozenset({"image", "video", "file", "voice", "screengrab"})
 
 # ── W4-B2: Adapter-gesteuerte Slash-Befehle (Chat-Präfix-Parser) ──────────────
 # SCOPE-GUARD (W4-B2, verbindlich): Die Befehlsautorität lebt NUR hier, im
@@ -216,6 +223,35 @@ B3_STATUS_SNAPSHOT_CAP = 500  # Parität App ChatBackfillRules.STATUS_SNAPSHOT_C
 B3_STATUS_KNOWN = frozenset({"queued", "delivered", "read", "failed"})
 B3_DEVICE_REVOKED_FRAME = "device.revoked"  # Revoke-Verband (Relay→Adapter)
 
+# ── W21 (Sir-Schiene „Anruf", roadmap-anruf.md §1/§3.3/§3.4/§3.5): Call-Signaling ─
+# Adapter-Seite des kleinen Signaling-Satzes: der Agent INITIIERT (Tool
+# flipsi_call_user, Capability „calls" — Freigabe-Gate Parität android_call),
+# das Phone quittiert (ringing/accepted/declined/missed/ended.enc je Geräte-
+# Session enc, Relay routet session-gebunden). ALLE Inhalte (kind/reason/say/
+# TTS-Chunks) liegen IM Ratchet-ct — Klar bleiben nur IDs. KEIN WebRTC, KEIN
+# Klartext-Audio (§3.1): TTS geschieht AM PHONE — der Adapter markiert Sätze
+# im Call-Modus mit call_chunk_seq (§3.3), die App spricht sie (ChatSpeech-
+# Speaker-Pfad). Verpasste/abgewiesene Anrufe fallen auf Normal-Chat zurück
+# (§3.5 — nichts geht verloren).
+CALL_INVITE_FRAME = "call_invite.enc"     # Agent→Phone: klingeln (§3.4)
+CALL_END_FRAME = "call_end.enc"           # Agent→Phone: auflegen (Terminierung)
+CALL_SIGNAL_FRAMES = frozenset({          # Phone→Agent: Rückkanal je Session
+    "call_ringing.enc", "call_accepted.enc", "call_declined.enc",
+    "call_missed.enc", "call_ended.enc"})
+_CALL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_CALL_KIND = "voice"                      # v1: Sprachanruf (§3.4)
+_CALL_REASON_MAX_CHARS = 600              # Klingel-Grund (Vollbild-Text)
+_CALL_SAY_MAX_CHARS = 8000                # Durchsage-Cap (Parität Chat-Text-Schiene)
+_CALL_CHUNK_MAX_CHARS = 600               # TTS-Chunks satzweise (§3.3: früh raus)
+_CALL_CHUNKS_MAX = 32                     # harter Chunk-Deckel je Durchsage
+_CALLS_CAP = 16                           # FIFO-RAM-Schutz der Call-Map
+_CALL_STATE_TTL_S = 600                   # Terminal-Einträge altern (Spätsignale)
+_CALL_RING_TIMEOUT_MIN_S = 5.0
+_CALL_RING_TIMEOUT_MAX_S = 120.0
+_CALL_RING_TIMEOUT_S_DEFAULT = 45.0       # env FLIPSI_CALL_RING_TIMEOUT
+_CALL_AUTO_END_DEFAULT = True             # env FLIPSI_CALL_AUTO_END („0" = aus)
+_CALL_TOOLS = ("flipsi_call_user", "flipsi_call_end")
+
 _SYNC_ENC_FRAME = B3_SYNC_ENC_FRAME
 # Live-Adapter-Registry: Modul-Level-Hooks fannen je Callback an alle
 # verbundenen Adapter-Instanzen (WeakSet → kein Leak bei Plugin-Reload).
@@ -281,6 +317,8 @@ def _media_kind_label(kind: str) -> str:
         "video": "Video",
         "file": "Datei",
         "voice": "Sprachnachricht",
+        # W21 (G12): Agent-Screenshots werden als solche angezeigt.
+        "screengrab": "Screenshot",
     }.get(kind, "Datei")
 
 
@@ -1147,6 +1185,27 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         STATUS_ADAPTERS.add(self)
         self._models_task: Optional[asyncio.Task] = None  # W18: Refresh-Timer
 
+        # ── W21 (Anruf P2, roadmap-anruf.md §3.5): Call-Zustandsmaschine + ────
+        # generisches Bridge-Tool. Ring-Fenster + Auto-End je Agent konfigurier-
+        # bar (env FLIPSI_CALL_RING_TIMEOUT / FLIPSI_CALL_AUTO_END); die Call-
+        # Map (call_id → Zustand + Ring-Future + TTS-Zähler) lebt im Prozess,
+        # Cap/TTL räumt _call_register (FIFO, kein ungebundenes Wachstum).
+        try:
+            self.call_ring_timeout_s: float = max(
+                _CALL_RING_TIMEOUT_MIN_S,
+                min(_CALL_RING_TIMEOUT_MAX_S,
+                    float(_cfg(extra, "FLIPSI_CALL_RING_TIMEOUT",
+                               default=str(_CALL_RING_TIMEOUT_S_DEFAULT))
+                        or _CALL_RING_TIMEOUT_S_DEFAULT)))
+        except (TypeError, ValueError):
+            self.call_ring_timeout_s = _CALL_RING_TIMEOUT_S_DEFAULT
+        self.call_auto_end: bool = (_cfg(extra, "FLIPSI_CALL_AUTO_END",
+                                         default="1") != "0")
+        # call_id → {call_id, state, fut, say, wire_chat_id, gw_chat_id,
+        #            bound_session, started, tts_seq, was_accepted}
+        self._calls: dict[str, dict] = {}
+        self._calls_lock = threading.Lock()
+
     # ------------------------------------------------------------------ Pinning
     def _pin_relay_url(self) -> str:
         """Whitelist-Pinning (I3): geprüfte Relay-URL oder AdapterPinningError.
@@ -1437,6 +1496,15 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         payload = {"text": content, "msg_id": msg_id}
         if reply_to:
             payload["reply_to"] = reply_to
+        # W21 (Anruf P2, roadmap-anruf.md §3.3): Call-Modus-Marker — läuft
+        # GERADE ein angenommener Anruf in diesem Chat, wird JEDE Agent-Antwort
+        # als TTS-Chunk markiert (call_chunk_seq fortlaufend je Anruf); die App
+        # spricht sie (ChatSpeechSpeaker-Pfad). Ohne offenen Anruf: exakt das
+        # alte Verhalten (kein Marker, kein Pfad-Unterschied).
+        call_marker = self._call_marker_for(wire_chat_id)
+        if call_marker is not None:
+            payload["call_chunk_seq"] = call_marker["seq"]
+            payload["call_id"] = call_marker["call_id"]
         extra_meta = {"elapsed_ms": max(0, int(time.time() * 1000) - received_ms),
                       "metadata": metadata} if received_ms is not None else \
             ({"metadata": metadata} if metadata else {})
@@ -1834,6 +1902,14 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # Pfad (Media-Payload hat kein 'text'; ack + Reassembly innen).
         if etype == "chat.media.enc":
             self._handle_media_chunk(envelope, chat_id)
+            return
+
+        # ── W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling Phone→Agent ──
+        # E2E enc je Geräte-Session. KEIN Chat-Text, KEIN Gateway-Push (I3-
+        # Parität: Signaling ist kein Nachricht-Inhalt) — die Frames füttern
+        # ausschließlich die Call-Zustandsmaschine des call_user-Tools.
+        if etype in CALL_SIGNAL_FRAMES:
+            self._handle_call_signal(envelope, etype, chat_id)
             return
 
         # PH-3-T3: chat.*.enc — entschlüsseln (Klartext NUR intern, nie geloggt).
@@ -3604,6 +3680,373 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._schedule_status_frames(frames)
         return None
 
+    # ───────────────────────── W21: Anruf-Backend (Call-Signaling, §3.4/§3.5) ──
+
+    def _call_register(self, call_id: str, gw_chat_id: Optional[str],
+                       wire_chat_id: Optional[str]) -> dict:
+        """Call-Auftrag registrieren (Aufruf NUR am WS-Loop). FIFO-Cap + TTL-
+        Sweep (Terminal-Einträge altern — späte Signale werden damit noch
+        erkannt, aber nie ungebunden gesammelt)."""
+        now = time.time()
+        state = {"call_id": call_id, "state": "ringing", "fut": None, "say": None,
+                 "wire_chat_id": wire_chat_id, "gw_chat_id": gw_chat_id,
+                 "bound_session": None, "started": now, "tts_seq": 0,
+                 "was_accepted": False}
+        with self._calls_lock:
+            stale = [cid for cid, entry in self._calls.items()
+                     if now - float(entry.get("started") or now) > _CALL_STATE_TTL_S]
+            for cid in stale:
+                self._calls.pop(cid, None)
+            while len(self._calls) >= _CALLS_CAP:
+                self._calls.pop(next(iter(self._calls)))
+            self._calls[call_id] = state
+        return state
+
+    def _call_fanout_frames(self, frame_type: str, payload: dict,
+                            clear: Optional[dict] = None) -> Optional[list]:
+        """Je Geräte-Session EIN eigener enc-Frame — aber NUR Sessions mit
+        bekanntem Wire-chat_id (AAD bindet die Relay-chat_id; ein Anruf ohne
+        bekannten Konversations-Rahmen geht NICHT in die Luft). None = keine
+        fähige Session → fail-closed beim Aufrufer."""
+        sessions = [s for s in self._device_sessions()
+                    if getattr(s, "chat_id", None)]
+        if not sessions:
+            return None
+        return [sess.encrypt_frame(frame_type, sess.chat_id, payload, clear=clear)
+                for sess in sessions]
+
+    def _call_reserve_tts_seq(self, call_id: str) -> Optional[int]:
+        """TTS-Chunk-Sequenz für die Durchsage reservieren (Monotonie je Anruf;
+        nur in state 'accepted' — sonst None)."""
+        with self._calls_lock:
+            call = self._calls.get(call_id)
+            if call is None or call.get("state") != "accepted":
+                return None
+            seq = int(call.get("tts_seq") or 0)
+            call["tts_seq"] = seq + 1
+            return seq
+
+    def _call_marker_for(self, wire_chat_id: str) -> Optional[dict]:
+        """Call-Modus-Bindung für send() (§3.3): offener ANGENOMMENER Anruf in
+        diesem Chat? Rückgabe {"call_id", "seq"} (Sequenz fortlaufend je Anruf)
+        oder None (kein Call-Modus — exakt das Alt-Verhalten)."""
+        with self._calls_lock:
+            for call in self._calls.values():
+                if call.get("state") != "accepted":
+                    continue
+                if wire_chat_id in (call.get("wire_chat_id"), call.get("gw_chat_id")):
+                    seq = int(call.get("tts_seq") or 0)
+                    call["tts_seq"] = seq + 1
+                    return {"call_id": call["call_id"], "seq": seq}
+        return None
+
+    @staticmethod
+    def _call_split_chunks(text: str) -> list[str]:
+        """TTS-Split (§3.3): JE Satz = EIN Chunk (satztrennend erst raus, dann
+        wird der nächste verarbeitet — kein Stillschweigen über Absätze).
+        Riesensätze werden hart geteilt; harter Chunk-Deckel (RAM-Strengung)."""
+        text = (text or "").strip()
+        if not text:
+            return []
+        parts = re.split(r"(?<=[.!?…])\s+", text)
+        chunks: list[str] = []
+        for part in parts:
+            part = part.strip()
+            while len(part) > _CALL_CHUNK_MAX_CHARS:
+                hard = part[:_CALL_CHUNK_MAX_CHARS]
+                part = part[_CALL_CHUNK_MAX_CHARS:].lstrip()
+                chunks.append(hard)
+            if part:
+                chunks.append(part)
+        if len(chunks) > _CALL_CHUNKS_MAX:
+            chunks = chunks[:_CALL_CHUNKS_MAX]
+        return chunks
+
+    def _handle_call_signal(self, envelope: dict, etype: str, chat_id: str) -> None:
+        """W21 (Anruf P1/P2): call_ringing/accepted/declined/missed/ended.enc →
+        Call-Zustandsmaschine (KEIN Gateway-Push — Signaling ist kein Chat-
+        Text, I3-Parität). Fail-closed Kette Parität _decrypt_inbound
+        (Geräte-MAP + Primär-Anchor + decrypt_frame), danach NUR der lokale
+        Anruf-Auftrag: fremde/späte call_ids werden verworfen + diagnostiziert
+        (kein Spoofing in fremde Ringe)."""
+        call_id = str(envelope.get("call_id") or "").strip()
+        if not call_id or not _CALL_ID_RE.fullmatch(call_id):
+            self.rejected_frames.append({"type": etype,
+                                         "reason": "call_id fehlt/ungültig"})
+            logger.warning("FlipsiBridge: %s ohne gültiges call_id — verworfen", etype)
+            return
+        with self._calls_lock:
+            call = self._calls.get(call_id)
+        if call is None:
+            self.rejected_frames.append({
+                "type": etype,
+                "reason": "kein lokaler Anruf-Auftrag (fremd oder spät)"})
+            logger.warning(
+                "FlipsiBridge: %s für unbekannten call_id %s — verworfen "
+                "(fail-closed)", etype, _log_id(call_id, 24))
+            return
+        sess = self._session_for_frame(envelope)
+        primary = self._active_session()
+        if sess is not None and (primary is None or sess.expired()):
+            sess = None
+        if sess is None:
+            # Parität chat.media.enc-Strengung: ohne intakten Primär-Anchor
+            # autorisiert die Geräte-MAP KEINEN Call — SIRS-01-Schiene
+            # (crypto.session_reset statt stillem Verwerfen).
+            frame_session = str(envelope.get("session_id") or "").strip()
+            self.rejected_frames.append({
+                "type": etype,
+                "reason": "session dem Agenten nicht bekannt/abgelaufen — "
+                          "crypto.session_reset angestoßen"})
+            logger.warning(
+                "FlipsiBridge: %s mit unbekannter/abgelaufener session_id %s — "
+                "verworfen (fail-closed)", etype, _log_id(frame_session, 16))
+            if frame_session and not self._session_reset_pending:
+                self._session_reset_pending = True
+                self._schedule(self._send_session_reset(
+                    frame_session, "agent-session-lost"))
+            return
+        try:
+            payload = sess.decrypt_frame(envelope)
+        except CryptoFrameError as exc:
+            self.rejected_frames.append({"type": etype, "reason": str(exc)})
+            logger.warning(
+                "FlipsiBridge: %s-Entschlüsselung fehlgeschlagen (%s) — Frame verworfen",
+                etype, exc)
+            return
+        # Wire-chat_id der Session nachschärfen (Echo des Frames, Parität
+        # _decrypt_inbound — Fan-out-Kontext für Antwort-/End-Frames).
+        if chat_id and not getattr(sess, "chat_id", None):
+            sess.chat_id = chat_id
+        signal = etype.rsplit(".", 1)[0]  # call_ringing|accepted|declined|missed|ended
+        with self._calls_lock:
+            if call.get("state") != "ringing":
+                # Spät-/Doppelsignal nach Terminal-Ereignis — bewusst ohne
+                # Wirkung (Terminal-Einträge altern erst mit der TTL).
+                logger.debug(
+                    "FlipsiBridge: %s für call_id %s nach Terminal-Zustand %s — ignoriert",
+                    etype, _log_id(call_id, 24), call.get("state"))
+                return
+            if signal == "call_ringing":
+                logger.info(
+                    "FlipsiBridge: Anruf %s klingelt (device %s)",
+                    _log_id(call_id, 24),
+                    _log_id(str(getattr(sess, "device_key", "")), 24))
+                return
+            call["bound_session"] = sess
+            if signal == "call_accepted":
+                call["state"] = "accepted"
+                call["was_accepted"] = True
+            elif signal == "call_declined":
+                call["state"] = "declined"
+            elif signal == "call_missed":
+                call["state"] = "missed"
+            elif signal == "call_ended":
+                # call_ended klingelnd = Abweisung (§3.4 'verpasst'), nach
+                # Annahme = reguläres Gesprächsende (App oder Nutzer).
+                call["state"] = "ended" if call.get("was_accepted") else "declined"
+            else:
+                return  # Router-Verband macht diesen Fall unerreichbar
+            fut = call.get("fut")
+        logger.info("FlipsiBridge: Anruf %s → %s", _log_id(call_id, 24), call["state"])
+        if fut is not None and not fut.done():
+            fut.set_result(call["state"])
+
+    async def call_user(self, reason: str, say: Optional[str] = None,
+                        chat_id: Optional[str] = None,
+                        timeout_s: Optional[float] = None) -> dict:
+        """W21 (Anruf P2, roadmap-anruf.md §3.5): Agent INITIIERT einen Anruf.
+
+        Generisches Bridge-Tool (Capability „calls", Freigabe-Gate wie
+        interaction/open_app → flipsi_call_pre_tool_call). Ablauf:
+          call_invite.enc je offene Geräte-Session (Inhalt NUR im ct: kind/
+          reason) → Ring-Fenster (signals je Session enc) → Ergebnis-Dict:
+          {ok, status: accepted|declined|missed|ended|failed, call_id,
+           fallback_sent, tts_chunks, chat_id, error?}
+        - accepted: say wird satzweise als TTS-Chunks (call_chunk_seq, §3.3)
+          gesendet; AUTO-END (Cron-Rezept „Durchsage") schickt danach
+          call_end.enc. say=None = offener Gesprächsanruf (Agent terminiert
+          via flipsi_call_end).
+        - declined/missed/ended: Chat-Fallback (§3.5) — say als normale
+          Nachricht; NICHTS geht verloren.
+        Fail-closed: KEIN Anruf ohne bestätigte E2E-Session mit bekannter
+        Wire-chat_id (kein erfundenes Routing, kein Klartext-Pfad).
+        """
+        if not self._connected or self._ws is None:
+            return {"ok": False, "error": "nicht verbunden — kein Anruf (fail-closed)"}
+        reason = str(reason or "").strip()
+        if not reason:
+            return {"ok": False, "error": "reason erforderlich"}
+        if len(reason) > _CALL_REASON_MAX_CHARS:
+            reason = reason[:_CALL_REASON_MAX_CHARS]
+        say = str(say or "").strip() or None
+        if say and len(say) > _CALL_SAY_MAX_CHARS:
+            say = say[:_CALL_SAY_MAX_CHARS]
+        probe = self._call_fanout_frames("probe", {}, None)
+        if probe is None:
+            return {"ok": False,
+                    "error": "keine bestätigte E2E-Session mit bekannter "
+                             "Phone-Konversation — Anruf fail-closed verweigert"}
+        wire_chat_id = probe[0]["chat_id"]
+        gw_chat_id = self._stable_gateway_chat_id(wire_chat_id)
+        if timeout_s is not None:
+            try:
+                timeout = float(timeout_s)
+            except (TypeError, ValueError):
+                timeout = self.call_ring_timeout_s
+            timeout = max(_CALL_RING_TIMEOUT_MIN_S,
+                          min(_CALL_RING_TIMEOUT_MAX_S, timeout))
+        else:
+            timeout = self.call_ring_timeout_s
+        call_id = "call-" + uuid.uuid4().hex[:10]
+        call = self._call_register(call_id, gw_chat_id, wire_chat_id)
+        call["say"] = say
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        call["fut"] = fut
+        frames = self._call_fanout_frames(
+            CALL_INVITE_FRAME, {"kind": _CALL_KIND, "reason": reason},
+            clear={"call_id": call_id}) or []
+        send_errors = 0
+        for frame in frames:
+            try:
+                await self._send_json(frame)
+            except Exception as exc:
+                send_errors += 1
+                logger.warning("FlipsiBridge: call_invite-Send fehlgeschlagen: %s", exc)
+        if send_errors >= len(frames):
+            with self._calls_lock:
+                self._calls.pop(call_id, None)
+            return {"ok": False, "status": "failed", "call_id": call_id,
+                    "error": "call_invite konnte nicht gesendet werden (WS tot)"}
+        # ── Ring-Fenster: Signals werden von _handle_call_signal gesetzt ─────
+        result_state = "missed"
+        try:
+            result_state = await asyncio.wait_for(fut, timeout=timeout)
+        except asyncio.TimeoutError:
+            # Kein Terminal-Signal im Fenster → verpasst (§3.5): das Phone kann
+            # weiter klingeln (spätes accept landet auf dem TTL-Eintrag), der
+            # Fallback unten sichert die Durchsage als Chat-Nachricht.
+            with self._calls_lock:
+                entry = self._calls.get(call_id)
+                if entry is not None and entry.get("state") == "ringing":
+                    entry["state"] = "missed"
+        finally:
+            with self._calls_lock:
+                entry = self._calls.get(call_id)
+                if entry is not None:
+                    entry["fut"] = None
+        status = result_state if result_state in (
+            "accepted", "declined", "ended", "missed") else "missed"
+        fallback_sent = False
+        tts_chunks = 0
+        if status == "accepted":
+            for chunk in self._call_split_chunks(say or ""):
+                seq = self._call_reserve_tts_seq(call_id)
+                if seq is None:
+                    break  # Session/Zustand starb unter dem Call — ehrlich melden
+                msg_id = uuid.uuid4().hex[:16]
+                reply_frames = self._call_fanout_frames(
+                    "chat.reply.enc",
+                    {"text": chunk, "msg_id": msg_id,
+                     "call_chunk_seq": seq, "call_id": call_id},
+                    clear={"msg_id": msg_id})
+                if not reply_frames:
+                    status = "failed"
+                    break
+                sent = 0
+                for reply_frame in reply_frames:
+                    try:
+                        await self._send_json(reply_frame)
+                        sent += 1
+                    except Exception as exc:
+                        logger.warning(
+                            "FlipsiBridge: TTS-Chunk-Send fehlgeschlagen: %s", exc)
+                if sent:
+                    tts_chunks += 1
+            if (say and self.call_auto_end and status == "accepted"):
+                end_result = await self.call_end(call_id=call_id)
+                if end_result.get("ok"):
+                    status = "ended"
+        elif say:
+            # §3.5 Chat-Fallback: verpasst/abgewiesen/eend-bei-Ring — die
+            # Durchsage geht als normale Chat-Nachricht raus (nichts verloren).
+            fallback = await self.send(wire_chat_id, say)
+            fallback_sent = bool(fallback.success)
+        return {"ok": True, "status": status, "call_id": call_id,
+                "fallback_sent": fallback_sent, "tts_chunks": tts_chunks,
+                "chat_id": gw_chat_id}
+
+    async def call_end(self, call_id: Optional[str] = None,
+                       chat_id: Optional[str] = None) -> dict:
+        """W21 (Terminierung, §1 'Anrufe sind terminierbar'): offenen Anruf
+        beenden — nach call_id, sonst der angenommene Anruf im Ziel-Chat,
+        sonst (Ring) der älteste offene Ring im Ziel-Chat. Nach Annahme geht
+        call_end.enc über die GEBUNDENE Geräte-Session; im Ring als Fan-out
+        (jeder klingelnde Bildschirm bekommt das Ende). Fail-closed ohne
+        offenen Anruf."""
+        if not self._connected or self._ws is None:
+            return {"ok": False, "error": "nicht verbunden (fail-closed)"}
+        with self._calls_lock:
+            target = None
+            if call_id:
+                target = self._calls.get(str(call_id).strip())
+            elif chat_id:
+                wire_filter = self._relay_chat_id_for(chat_id)
+                for prefer in ("accepted", "ringing"):
+                    for entry in self._calls.values():
+                        if entry.get("state") != prefer:
+                            continue
+                        if wire_filter in (entry.get("wire_chat_id"),
+                                           entry.get("gw_chat_id")):
+                            target = entry
+                            break
+                    if target is not None:
+                        break
+            else:
+                for prefer in ("accepted", "ringing"):
+                    for entry in self._calls.values():
+                        if entry.get("state") == prefer:
+                            target = entry
+                            break
+                    if target is not None:
+                        break
+            if target is None:
+                return {"ok": False, "status": "none",
+                        "error": "kein offener Anruf gefunden"}
+            target_call_id = str(target["call_id"])
+            target_state = str(target.get("state") or "")
+            target["state"] = "ended"
+            fut = target.get("fut")
+            target["fut"] = None
+            bound = target.get("bound_session")
+            wire_chat_id = target.get("wire_chat_id") or ""
+        if fut is not None and not fut.done():
+            # Ring-Phase: der wartende call_user wacht mit 'ended' auf.
+            fut.set_result("ended")
+        clear = {"call_id": target_call_id}
+        if bound is not None and getattr(bound, "chat_id", None):
+            frames = [bound.encrypt_frame(CALL_END_FRAME, bound.chat_id,
+                                          {}, clear=clear)]
+        else:
+            frames = self._call_fanout_frames(CALL_END_FRAME, {}, clear=clear) or []
+        sent = 0
+        for frame in frames:
+            try:
+                await self._send_json(frame)
+                sent += 1
+            except Exception as exc:
+                logger.warning("FlipsiBridge: call_end-Send fehlgeschlagen: %s", exc)
+        if not frames or sent < 1:
+            return {"ok": False, "call_id": target_call_id,
+                    "error": "call_end konnte nicht gesendet werden (WS tot)"}
+        logger.info(
+            "FlipsiBridge: Anruf %s beendet (Zustand davor: %s, %d Frame(s))",
+            _log_id(target_call_id, 24), target_state, sent)
+        return {"ok": True, "status": "ended", "call_id": target_call_id,
+                "chat_id": (self._stable_gateway_chat_id(wire_chat_id)
+                            if wire_chat_id else None)}
+
     # ───────────────────────────────── MEDIA-T1: Medien im Chat (E2E-only)
 
     def _handle_media_chunk(self, envelope: dict, chat_id: str) -> None:
@@ -3976,6 +4419,121 @@ async def _hook_on_session_end(**kwargs: Any) -> None:
     return None
 
 
+# ── W21 (Anruf P2, roadmap-anruf.md §3.5): generisches Call-Bridge-Tool ───────
+# Route: Gateway-Tool (Sync) → run_coroutine_threadsafe auf den WS-Loop des
+# Adapters (Parität agent.status-Verband) → Adapter → Relay → App. Freigabe-
+# Gate = Capability „calls" als pre_tool_call approve-Directive — exakt die
+# Gate-Mechanik wie interaction/open_app (android_call-Muster): interaktive
+# Kontexte fragen Sir, Cron folgt approvals.cron_mode, alles andere lehnt ab.
+# NIE auto-approve. Ergebnisse sind JSON-Strings (Parität android_*-Tools).
+_FLIPSI_CALL_TOOL_TIMEOUT_S = 150.0   # Ring-Fenster + TTS-Chunks + End-Send
+
+_FLIPSI_CALL_USER_SCHEMA = {
+    "name": "flipsi_call_user",
+    "description": (
+        "Start a voice call to the paired phone via FlipsiBridge "
+        "(full-screen ringing, WhatsApp-style). reason is shown while ringing; "
+        "say is spoken by the phone's TTS after the call is accepted. If the "
+        "call is declined or missed, say falls back to a normal chat message "
+        "so nothing is lost. Returns a JSON summary."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string",
+                       "description": "Kurzer Grund des Anrufs (z. B. 'Wetter durchsagen') "
+                                      "— wird beim Klingeln angezeigt."},
+            "say": {"type": "string",
+                    "description": "Text, der nach der Annahme gesprochen wird (TTS am "
+                                   "Phone). Leer = Anruf ohne Durchsage (offenes Gespräch)."},
+            "chat_id": {"type": "string",
+                        "description": "Optionale Ziel-Konversation; leer = die "
+                                       "Standard-Phone-Konversation des Agenten."},
+        },
+        "required": ["reason"],
+    },
+}
+
+_FLIPSI_CALL_END_SCHEMA = {
+    "name": "flipsi_call_end",
+    "description": (
+        "Hang up an active (or still ringing) voice call on the paired phone "
+        "via FlipsiBridge — terminates a call started with flipsi_call_user."),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "call_id": {"type": "string",
+                        "description": "Optionale Anruf-ID (aus flipsi_call_user); "
+                                       "leer = der offene Anruf."},
+            "chat_id": {"type": "string",
+                        "description": "Optionale Ziel-Konversation (Disambiguierung)."},
+        },
+        "required": [],
+    },
+}
+
+_FLIPSI_CALL_APPROVAL_REASONS = {
+    "flipsi_call_user": "starts a real voice call that rings the paired phone",
+    "flipsi_call_end": "hangs up a voice call on the paired phone",
+}
+
+
+def flipsi_call_pre_tool_call(tool_name, args=None, **_hook_kwargs):
+    """Capability „calls" (roadmap-anruf.md §3.5): Freigabe-Gate Parität
+    android_call — approve-Directive an den Hermes-Approval-Verband; NIEMALS
+    auto-approve. Nicht-Call-Tools: None (unverändert)."""
+    reason = _FLIPSI_CALL_APPROVAL_REASONS.get(tool_name)
+    if reason is None:
+        return None
+    return {
+        "action": "approve",
+        "message": (f"flipsibridge requests approval — this tool {reason} "
+                    f"({tool_name})."),
+        "rule_key": f"flipsibridge:{tool_name}",
+    }
+
+
+def _flipsi_call_adapters() -> list:
+    """Verbundene Adapter, session-fähige zuerst (Parität Status-Verband)."""
+    adapters = [a for a in list(STATUS_ADAPTERS)
+                if getattr(a, "_connected", False)]
+    with_sessions = [a for a in adapters
+                     if getattr(a, "_active_session", lambda: None)() is not None]
+    return with_sessions or adapters
+
+
+def _flipsi_call_tool_dispatch(method: str, kwargs: dict) -> str:
+    """Sync-Brücke Gateway-Thread → Adapter-WS-Loop. Rückgabe = JSON-String
+    (Parität android_*-Tools); JEDE Ausnahme wird in ein Fehler-JSON übersetzt
+    (kein Tool-Crash im Gateway)."""
+    adapters = _flipsi_call_adapters()
+    if not adapters:
+        return json.dumps({"ok": False,
+                           "error": "kein verbundener FlipsiBridge-Adapter (Phone offline?)"})
+    adapter = adapters[0]
+    loop = (getattr(adapter, "_status", None) or {}).get("loop")
+    if loop is None or loop.is_closed():
+        return json.dumps({"ok": False, "error": "Adapter-WS-Loop nicht bereit"})
+    try:
+        fut = asyncio.run_coroutine_threadsafe(
+            getattr(adapter, method)(**kwargs), loop)
+        result = fut.result(timeout=_FLIPSI_CALL_TOOL_TIMEOUT_S)
+    except Exception as exc:
+        return json.dumps({"ok": False, "error": str(exc)})
+    return json.dumps(result)
+
+
+def flipsi_call_user(reason: str, say: str = "", chat_id: str = "") -> str:
+    """Anruf initiieren (generisch; Ergebnis = JSON)."""
+    return _flipsi_call_tool_dispatch("call_user", {
+        "reason": reason, "say": say or None, "chat_id": chat_id or None})
+
+
+def flipsi_call_end(call_id: str = "", chat_id: str = "") -> str:
+    """Offenen Anruf terminieren (generisch; Ergebnis = JSON)."""
+    return _flipsi_call_tool_dispatch("call_end", {
+        "call_id": call_id or None, "chat_id": chat_id or None})
+
+
 def register(ctx) -> None:
     """Plugin-Eintrittspunkt (Muster: plugins/platforms/mattermost/adapter.py)."""
     ctx.register_platform(
@@ -4000,6 +4558,33 @@ def register(ctx) -> None:
         ("on_session_end", _hook_on_session_end),
     ):
         ctx.register_hook(hook_name, callback)
+
+    # W21 (Anruf P2, roadmap-anruf.md §3.5): generisches Call-Bridge-Tool je
+    # Agent — Capability „calls", Freigabe-Gate (approve-Directive) wie
+    # interaction/open_app. check_fn = gleiche Abhängigkeits-Schiene wie die
+    # Plattform selbst (aiohttp); zur Call-Zeit gilt zusätzlich fail-closed
+    # (verbindet/nicht session-fähig = Fehler-JSON, nie stiller Downgrade).
+    for tool_name, schema, handler in (
+        ("flipsi_call_user", _FLIPSI_CALL_USER_SCHEMA, flipsi_call_user),
+        ("flipsi_call_end", _FLIPSI_CALL_END_SCHEMA, flipsi_call_end),
+    ):
+        try:
+            ctx.register_tool(
+                name=tool_name,
+                toolset="flipsibridge",
+                schema=schema,
+                handler=handler,
+                check_fn=check_flipsibridge_requirements)
+        except (AttributeError, TypeError):
+            logger.warning(
+                "FlipsiBridge: register_tool für %s nicht verfügbar (ältere "
+                "Plugin-API) — Anruf-Tool übersprungen", tool_name)
+    try:
+        ctx.register_hook("pre_tool_call", flipsi_call_pre_tool_call)
+    except (AttributeError, TypeError):
+        logger.warning(
+            "FlipsiBridge: Call-Freigabe-Hook nicht registrierbar (ältere "
+            "Plugin-API) — Tools bleiben approval-unabhängig sichtbar")
 
 
 def crypto_cli(argv: Optional[list] = None) -> int:

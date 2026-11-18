@@ -1439,6 +1439,25 @@ def _media_rate_per_second(config: Optional[dict] = None) -> int:
         return 20
 
 
+def _call_rate_per_second(config: Optional[dict] = None) -> int:
+    """W21 (Anruf P1): eigenes Signaling-Ratenlimit je Agent (Buckets 'callsign:*').
+
+    relay-config.json (CALL_RATE_PER_SECOND) überschreibt env
+    ANDROID_RELAY_CALL_RATE; Default 2/s — ein Anruf ist ein seltener Event,
+    der Invite darf den Chat-/Media-Buckets NICHT die Plätze wegnehmen
+    (FLIPSI-Frame-Guard-Verband: ein neuer Handler klingt NIE heiße Pfade ab).
+    """
+    value = None
+    if config is not None:
+        value = config.get("CALL_RATE_PER_SECOND")
+    if value is None:
+        value = os.getenv("ANDROID_RELAY_CALL_RATE", "2")
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 2
+
+
 def _chat_retention_seconds() -> float:
     """Spool-Retention in Sekunden (env-konfigurierbar, Default 24 h)."""
     try:
@@ -1467,6 +1486,27 @@ _FRAME_MAX_AGE_MS = 10 * 60 * 1000  # Frame-Freshness (Replay-Fenster 100 + 10 m
 # sind physikalisch unerreichbar; alles darüber = Zähler-Gift → verwerfen.
 _REPLAY_N_MAX = 1 << 32
 
+# ── W21 (Anruf-Backend P1, roadmap-anruf.md §3.4): Call-Signaling ─────────────
+# Neuer, KLEINER Frame-Satz über die BESTEHENDEN E2E-Kanäle — kein WebRTC, kein
+# Audioweg am Relay (§3.1 bewusst: Nutzeraudio wird on-device transkribiert,
+# Agentenantworten sind TTS am Phone). Signaling-Inhalte (kind/reason/duration)
+# liegen AUSSCHLIESSLICH im Ratchet-ct; Klar bleiben nur IDs (chat_id, call_id,
+# session, hdr) — Parität chat.reply.enc/chat.read.enc. Fail-closed: NUR
+# bestätigte E2E-Sessions je Richtung; EIGENE Rate-Buckets ('callsign:*', nie im
+# heißen Chat-Bucket); KEINE neue Route, KEINE Call-State-Maschine am Relay —
+# der Relay bleibt opaker Pass-Through (Verband wie chat.sync.enc B4).
+_CALL_INVITE_ENC_FRAME = "call_invite.enc"   # Agent→Phone: klingeln
+_CALL_END_ENC_FRAME = "call_end.enc"         # Agent→Phone: auflegen
+_PHONE_CALL_ENC_FRAMES = frozenset({
+    "call_ringing.enc",   # App quittiert das Klingeln (§3.4)
+    "call_accepted.enc",  # Nutzer hat angenommen
+    "call_declined.enc",  # Nutzer hat abgelehnt
+    "call_missed.enc",    # App meldet verpasst (Ring ohne Annahme)
+    "call_ended.enc",     # Gespräch beendet (App oder Nutzer)
+})
+_CALL_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+_CALL_SIGNAL_MAX_PER_SECOND = 6  # Phone→Relay Signaling je Gerät (Burst-Schild)
+
 # ── MEDIA-T1: chunked Medien-/Datei-Versand im Chat (E2E-only) ────────────────
 # Protokoll (Sir-Feature „Medien im Chat“, abgeleitet aus J4-Empfehlung):
 #   POST /media  {agent_id, chat_id, session_id, hdr, nonce, ct, ts,
@@ -1479,7 +1519,10 @@ _REPLAY_N_MAX = 1 << 32
 # - Chunk-Größe wählt das Phone (192 KiB raw → ~350 KiB Frame — J4: die
 #   2-MB-WS-Grenze wird per Chunking NIE berührt, kein Einzel-Frame-Media).
 _MEDIA_MAX_CHUNKS = 4096
-_MEDIA_KINDS = frozenset({"image", "video", "file", "voice"})
+# W21 (G12, roadmap-anruf.md §7.2): kind "screengrab" = Agent-Screenshot aus dem
+# Bedienungshilfen-Pfad (RAM → E2E-Bild-Message, NIE Galerie/MediaStore). Der
+# Relay prüft nur die Metadaten-Form — der Bild-Inhalt bleibt im ct (opak).
+_MEDIA_KINDS = frozenset({"image", "video", "file", "voice", "screengrab"})
 _MEDIA_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 _MEDIA_ID_MAX_LEN = 64
 _MEDIA_NAME_MAX_LEN = 128
@@ -1529,8 +1572,9 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
         return "seq ≥ total"
     if seq == 0:
         kind = data.get("kind")
+        # W21 (G12): "screengrab" ist ein eigener, erlaubter Meta-Kind-Wert.
         if not isinstance(kind, str) or kind not in _MEDIA_KINDS:
-            return "kind missing/invalid (image/video/file/voice)"
+            return "kind missing/invalid (image/video/file/voice/screengrab)"
         name = data.get("name")
         if not isinstance(name, str) or not name.strip() \
                 or len(name) > _MEDIA_NAME_MAX_LEN:
@@ -3098,6 +3142,18 @@ async def _on_phone_message(state: _RelayState, raw: str,
             "_handle_phone_device_revoke")
         return
 
+    # ── W21 (Anruf P1, roadmap-anruf.md §3.4): Phone→Agent Call-Signaling ─────
+    # E2E-enc je Geräte-Session (ringing/accepted/declined/missed/ended.enc).
+    # Router wie pairing/backfill/revoke — Frames ohne request_id sind hier
+    # legitim. Der Handler prüft fail-closed (bestätigte Session + Geräte-
+    # Bindung) und fächert über den Session-Broker auf den ZUGEORDNETEN Agenten
+    # (nie ein Frame-Top-Level agent_id).
+    if msg_type in _PHONE_CALL_ENC_FRAMES and device_id:
+        await _guard_phone_frame(
+            _handle_phone_call_signal, state, device_id, data,
+            "_handle_phone_call_signal")
+        return
+
     request_id = data.get("request_id")
     if not request_id:
         if _chat_rate_allow("phone:junk", _AGENT_LIGHT_FRAME_MAX_PER_SECOND):
@@ -3563,7 +3619,11 @@ _AGENT_FRAME_TYPES = frozenset(
      # / Plattform-Update MITTEN im Turn; Relay = opaker Pass-Through.
      "chat.session_meta", "chat.session_meta.enc",
      # MEDIA-T1: chunked Media (Agent→Phone, opak) + Chunk-Ack (klar, light).
-     "chat.media.enc", "chat.media.chunk_ack"}
+     "chat.media.enc", "chat.media.chunk_ack",
+     # W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling (E2E-only, eigener
+     # Rate-Bucket 'callsign:*', Owner-Claim; Inhalte NUR im ct — der Relay
+     # bleibt opaker Pass-Through, keine Call-State-Maschine am Relay).
+     "call_invite.enc", "call_end.enc"}
 )
 
 # SIRS-01 (Volltest 03.11.2026): Allowlist der session_reset-Reasons, die der
@@ -3680,6 +3740,16 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
         return
     if msg_type == "chat.media.chunk_ack":
         await _guard_agent_frame(_handle_agent_media_ack, state, agent_id, data, "_handle_agent_media_ack")
+        return
+    # ── W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling Agent→Phone ─────
+    # E2E-only (Inhalte NUR im ct), Guards wie chat.reply.enc — aber EIGENE
+    # Rate-Buckets ('callsign:*', nie im heißen Chat-Bucket) + Owner-Claim am
+    # chat_id-Namensraum (fremde Konversation = Verwurf).
+    if msg_type == "call_invite.enc":
+        await _guard_agent_frame(_handle_agent_call_invite, state, agent_id, data, "_handle_agent_call_invite")
+        return
+    if msg_type == "call_end.enc":
+        await _guard_agent_frame(_handle_agent_call_end, state, agent_id, data, "_handle_agent_call_end")
         return
     # ── B4 (Multi-Gerät): Sync-Echo / Backfill-Batch / Status-Snapshot ───────
     # Sync+Backfill = E2E-enc opak (Guards wie chat.reply.enc, EIGENE Rate-
@@ -4777,6 +4847,188 @@ async def _handle_agent_media_ack(state: _RelayState, agent_id: str,
     delivered = await _deliver_to_phone(state, frame)
     if not delivered:
         logger.debug("Agent %s: chunk_ack gespoolt (Phone offline)", agent_id)
+
+
+# ── W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling am Relay ─────────────
+
+
+def _call_frame_valid_call_id(value) -> Optional[str]:
+    """call_id-Form-Gate: 8-64 Zeichen [A-Za-z0-9_-], UTF-8 (Parität media_id).
+    Rückgabe = normalisierte call_id oder None (verwerfen)."""
+    if not isinstance(value, str):
+        return None
+    call_id = value.strip()
+    if not _CALL_ID_RE.fullmatch(call_id) or not _utf8_encodable(call_id):
+        return None
+    return call_id
+
+
+async def _call_frame_guards(state: _RelayState, agent_id: str, data: dict,
+                             label: str) -> Optional[tuple[str, str]]:
+    """Gemeinsame fail-closed Guard-Kette der Agent→Phone-Call-Frames:
+
+    EIGENER Rate-Bucket ('callsign:<agent>' — verdrängt NIE chat.reply),
+    chat_id-/call_id-Form, enc-Struktur [_validate_enc_frame — ct bleibt
+    OPAK], bestätigte E2E-Session [_enc_session_active — NUR bekannte
+    Sessions] und Replay-Fenster [_relay_replay_allow].
+    Rückgabe (chat_id, call_id) oder None = verwerfen (Grund geloggt)."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"callsign:{agent_id}", _call_rate_per_second(config)):
+        logger.info("Agent %s: %s verworfen — Call-Rate-Limit (Eigener-Bucket)",
+                    agent_id, label)
+        return None
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    if chat_id is None:
+        logger.warning("Agent %s: %s ohne gültiges chat_id — verworfen",
+                       agent_id, label)
+        return None
+    call_id = _call_frame_valid_call_id(data.get("call_id"))
+    if call_id is None:
+        logger.warning("Agent %s: %s ohne gültiges call_id — verworfen",
+                       agent_id, label)
+        return None
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: %s ungültig (%s) — verworfen", agent_id, label, reason)
+        return None
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: %s ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id, label)
+        return None
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning(
+            "Agent %s: %s Replay/Fenster-Verletzung — verworfen", agent_id, label)
+        return None
+    return chat_id, call_id
+
+
+def _call_enc_passthrough_frame(frame_type: str, agent_id: str, data: dict,
+                                chat_id: str, call_id: str) -> dict:
+    """Opaker Durchreich-Frame (Inhalte NUR im ct; Klar = IDs + Krypto-Hülle).
+    Parität chat.reply.enc/chat.sync.enc: hdr/nonce/ct unverändert, ts frisch."""
+    return {
+        "type": frame_type, "v": 1,
+        "chat_id": chat_id,
+        "call_id": call_id,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+
+
+async def _handle_agent_call_invite(state: _RelayState, agent_id: str,
+                                    data: dict) -> None:
+    """W21 (Anruf P1): call_invite.enc → opak ans Phone (§3.4: Vollbild
+    'incoming call'). kind/reason/say liegen NUR im ct; Klar bleiben IDs.
+    Owner-Claim (Parität chat.reply.enc): eine fremde chat_id (Owner =
+    anderer Agent) wird verworfen; eine unbekannte chat_id wird vom ERSTEN
+    Invite geclaimt (Agent-initiierter Anruf gehört ab sofort dem Agenten —
+    Namespace-Isolation der Call-Schiene). Session-Guards fail-closed."""
+    guarded = await _call_frame_guards(state, agent_id, data, "call_invite.enc")
+    if guarded is None:
+        return
+    chat_id, call_id = guarded
+    frame = _call_enc_passthrough_frame(
+        _CALL_INVITE_ENC_FRAME, agent_id, data, chat_id, call_id)
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if delivered is None:
+        return
+    if not delivered:
+        logger.info("Agent %s: call_invite.enc gespoolt (Phone offline)", agent_id)
+
+
+async def _handle_agent_call_end(state: _RelayState, agent_id: str,
+                                 data: dict) -> None:
+    """W21 (Anruf P1): call_end.enc → opak ans Phone (Auflegen: Agent-Initiative
+    ODER Echo des Tools). Gleiche Guards wie der Invite (eigenes Bucket-Member,
+    Form, Session, Replay); Owner-Claim unverändert — ein End in einer fremden
+    Konversation gilt nicht."""
+    guarded = await _call_frame_guards(state, agent_id, data, "call_end.enc")
+    if guarded is None:
+        return
+    chat_id, call_id = guarded
+    frame = _call_enc_passthrough_frame(
+        _CALL_END_ENC_FRAME, agent_id, data, chat_id, call_id)
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if delivered is None:
+        return
+    if not delivered:
+        logger.info("Agent %s: call_end.enc gespoolt (Phone offline)", agent_id)
+
+
+async def _handle_phone_call_signal(state: _RelayState, sender_device_id: str,
+                                    data: dict) -> None:
+    """W21 (Anruf P1): Phone→Agent Call-Signaling (call_ringing/accepted/
+    declined/missed/ended.enc) — fail-closed je SENDER-Gerät:
+
+    EIGENER Rate-Bucket je Gerät; Session-Broker = Routing-Wahrheit: die
+    Session muss BESTÄTIGT und geackt sein UND zu DIESEM Gerät gehören (ein
+    fremder Slot signalisiert keine fremde Session); das Ziel-agent_id
+    kommt IMMER aus dem Broker (nie aus dem Frame-Inhalt). ct bleibt OPAK,
+    Replay-Fenster p2a, Zustellung als opaker Frame an die Agent-WS
+    (Spool-Verband wie chat.backfill_request — Spät-Signale verwirft der
+    Adapter selbst; ein Ring/Ende ist beim Flush längst Geschichte)."""
+    frame_type = str(data.get("type") or "")
+    if not _chat_rate_allow(f"callsig:{sender_device_id}",
+                            _CALL_SIGNAL_MAX_PER_SECOND):
+        logger.info("Gerät %s: %s über Call-Signal-Rate-Cap — verworfen",
+                    _mask_id(sender_device_id), frame_type)
+        return
+    session_id = data.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip() \
+            or not _utf8_encodable(session_id):
+        logger.warning("Gerät %s: %s ohne gültige session_id — verworfen",
+                       _mask_id(sender_device_id), frame_type)
+        return
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    call_id = _call_frame_valid_call_id(data.get("call_id"))
+    if chat_id is None or call_id is None:
+        logger.warning("Gerät %s: %s ohne gültiges chat_id/call_id — verworfen",
+                       _mask_id(sender_device_id), frame_type)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Gerät %s: %s ungültig (%s) — verworfen",
+                       _mask_id(sender_device_id), frame_type, reason)
+        return
+    sender_key = _normalize_registry_device_id(sender_device_id)
+    async with state.broker_lock:
+        _prune_crypto_sessions(state)
+        session = state.crypto_sessions.get(session_id)
+        broker_agent = str(session["agent_id"]) \
+            if isinstance(session, dict) and session.get("agent_id") else None
+        broker_device = str(session.get("device_id") or "") \
+            if isinstance(session, dict) else ""
+        acked = bool(session.get("acked")) if isinstance(session, dict) else False
+    if broker_agent is None or not acked:
+        logger.warning(
+            "Gerät %s: %s ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            _mask_id(sender_device_id), frame_type)
+        return
+    if broker_device != sender_key:
+        logger.warning(
+            "Gerät %s: %s signalisiert Fremd-Session (Geräte-Bindung %s) — "
+            "verworfen (fail-closed)", _mask_id(sender_device_id), frame_type,
+            _mask_id(broker_device) if broker_device else "?")
+        return
+    if not _relay_replay_allow(state, session_id, "p2a",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Gerät %s: %s Replay/Fenster-Verletzung — verworfen",
+                       _mask_id(sender_device_id), frame_type)
+        return
+    frame = _call_enc_passthrough_frame(
+        frame_type, broker_agent, data, chat_id, call_id)
+    delivered = await _deliver_to_agent(state, broker_agent, frame)
+    if not delivered:
+        logger.info("Agent %s offline — %s von Gerät %s gespoolt",
+                    broker_agent, frame_type, _mask_id(sender_device_id))
 
 
 # ── PH2-T10: Chat-Status-Frames (F2-S1/S2/S3) ────────────────────────────────

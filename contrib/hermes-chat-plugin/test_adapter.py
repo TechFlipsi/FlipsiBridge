@@ -2083,7 +2083,18 @@ def test_w19_register_wires_all_six_hooks() -> None:
         "subagent_start", "subagent_stop", "on_session_end"}, \
         f"alle 6 W19-Hooks müssen registriert sein, war: {sorted(ctx.hooks)}"
     for name, cbs in ctx.hooks.items():
-        assert len(cbs) == 1 and callable(cbs[0]), name
+        assert cbs and all(callable(cb) for cb in cbs), name
+    # W21 (Anruf P2): pre_tool_call trägt jetzt ZWEI Callbacks — das W19-
+    # Status-Fächer (immer None) plus das flipsi-Capability-Gate „calls"
+    # (approve-Directive für flipsi_call_user/flipsi_call_end; Parität
+    # android_pre_tool_call). Alle anderen Hooks bleiben exakt eins.
+    assert len(ctx.hooks["pre_tool_call"]) == 2, \
+        "pre_tool_call = W19-Fächer + Call-Freigabe-Gate"
+    assert ctx.hooks["pre_tool_call"][1] is adapter_mod.flipsi_call_pre_tool_call, \
+        "zweiter pre_tool_call-Callback = flipsi Capability-Gate"
+    for name in ctx.hooks:
+        if name != "pre_tool_call":
+            assert len(ctx.hooks[name]) == 1, name
     # Kontrakt der beiden Gate-Hooks: Modul-Level-Callbacks sind async-def →
     # Rückgabewert (nach Await) ist IMMER None — nichts entscheiden.
     print("OK W19: register() verdrahtet alle 6 Hooks (raft-Muster)")
