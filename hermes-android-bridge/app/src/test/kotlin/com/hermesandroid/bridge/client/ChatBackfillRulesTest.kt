@@ -18,9 +18,11 @@ import org.junit.Test
  */
 class ChatBackfillRulesTest {
 
-    private fun json(vararg fields: Pair<String, Any>): JsonObject {
+    private fun json(vararg fields: Any): JsonObject {
         val obj = JsonObject()
-        for ((key, value) in fields) {
+        for (field in fields) {
+            @Suppress("UNCHECKED_CAST")
+            val (key, value) = field as Pair<String, Any>
             when (value) {
                 is String -> obj.addProperty(key, value)
                 is Boolean -> obj.addProperty(key, value)

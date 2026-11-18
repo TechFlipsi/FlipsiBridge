@@ -2209,3 +2209,425 @@ async def test_w20_status_snapshot_after_connect() -> None:
         "Snapshot bringt den Haupt-Working-Stand"
     await a.disconnect()
     print("OK W20: Status-Snapshot nach Connect (Haupt + offene Slots, keine Leichen)")
+
+
+# ═══════ F1 (Sir, 18.11.2026, Vollgas-Batch): cron.status-Live-Verband ═══════
+
+CRON_FRAME = adapter_mod.CRON_STATUS_FRAME
+CRON_ENC_FRAME = adapter_mod.CRON_STATUS_ENC_FRAME
+
+
+def _f1_cron_store(tmp_path, jobs: list) -> str:
+    """Cron-Store-Fixture (SSOT-Form: {'jobs': [...], 'updated_at': …})."""
+    store = tmp_path / "cron_jobs.json"
+    store.write_text(json.dumps({"jobs": jobs, "updated_at": 1}), encoding="utf-8")
+    return str(store)
+
+
+def _f1_cron_frames(ws, types=(CRON_FRAME, CRON_ENC_FRAME)) -> list[dict]:
+    """Nur die cron.status-Familie aus dem Mock-Log (Klar + enc)."""
+    return [f for f in ws.sent if f.get("type") in types]
+
+
+async def _f1_wait(pred, timeout: float = 3.0) -> None:
+    """Auf ein Frame-Ereignis warten (geplante Drains laufen asynchron)."""
+    import time as _t
+
+    async def _poll():
+        deadline = _t.monotonic() + timeout
+        while _t.monotonic() < deadline:
+            if pred():
+                return
+            await asyncio.sleep(0.005)
+        raise AssertionError("Frame-Ereignis blieb aus (timeout)")
+
+    await asyncio.wait_for(_poll(), timeout)
+
+
+@pytest.mark.asyncio
+async def test_f1_cron_collector_rows_order_caps(tmp_path) -> None:
+    """Store → Zeilen: geplant mit next_at (ISO→ms), paused OHNE next_at, "
+    completed/deaktiviert fliegt, fire_claim = running, Name-Cap 64, Liste
+    Cap 16, Reihenfolge running → geplant nach next_at → paused (kein Fake)."""
+    store = _f1_cron_store(tmp_path, [
+        {"name": "Geplant spät", "state": "scheduled", "enabled": True,
+         "next_run_at": "2026-11-25T09:00:00+01:00"},
+        {"name": "Geplant früh", "state": "scheduled", "enabled": True,
+         "next_run_at": "2026-11-22T03:00:00+01:00"},
+        {"name": "Pausiert", "state": "paused", "enabled": True,
+         "next_run_at": "2026-10-01T00:00:00+01:00"},
+        {"name": "Fertig", "state": "completed", "enabled": True},
+        {"name": "Aus", "state": "scheduled", "enabled": False,
+         "next_run_at": "2026-11-20T00:00:00+01:00"},
+        {"name": "Läuft jetzt", "state": "scheduled", "enabled": True,
+         "fire_claim": {"worker": "w1"},
+         "next_run_at": "2026-11-19T00:00:00+01:00"},
+    ])
+    a, _ws = make_adapter({"FLIPSI_CRON_JOBS_FILE": store})
+    rows = a._cron_rows()
+    by_name = {r["name"]: r for r in rows}
+    assert "Fertig" not in by_name and "Aus" not in by_name, \
+        "completed/deaktiviert gehört NICHT in die laufende/geplante Liste"
+    # Reihenfolge: running zuerst, planbare nach next_at, paused zuletzt
+    assert [r["name"] for r in rows] == ["Läuft jetzt", "Geplant früh",
+                                         "Geplant spät", "Pausiert"], \
+        f"Reihenfolge falsch: {[r['name'] for r in rows]}"
+    assert "next_at" not in by_name["Läuft jetzt"], \
+        "running trägt keinen next_at (kein erfundener Termin)"
+    assert "next_at" not in by_name["Pausiert"], \
+        "paused trägt KEINEN (alten) next_at — kein „demnächst“-Fake"
+    from datetime import datetime as _dt
+    expected = int(_dt.fromisoformat("2026-11-22T03:00:00+01:00")
+                   .timestamp() * 1000)
+    assert by_name["Geplant früh"]["next_at"] == expected, "ISO→unix-ms falsch"
+    assert by_name["Läuft jetzt"]["status"] == "running"
+    assert by_name["Geplant früh"]["status"] == "planned"
+    assert by_name["Pausiert"]["status"] == "paused"
+    print("OK F1: Kollektor (Reihenfolge, ISO→ms, paused ohne next_at, "
+          "completed/Aus fliegt, fire_claim=running)")
+
+
+@pytest.mark.asyncio
+async def test_f1_cron_collector_name_cap_and_max_16(tmp_path) -> None:
+    """RAM-/Frame-Schutz: Name > 64 Zeichen wird gekappt (Frame bleibt wahr),
+    mehr als 16 Zeilen werden ehrlich gekappt (kein Wachstum am Wire)."""
+    long_name = "X" * 100
+    jobs = [{"name": long_name, "state": "scheduled",
+             "next_run_at": "2026-11-20T08:00:00+01:00"}]
+    jobs += [{"name": f"Job-{i:02d}", "state": "scheduled",
+              "next_run_at": f"2026-12-01T{i:02d}:00:00+01:00"}
+             for i in range(20)]
+    store = _f1_cron_store(tmp_path, jobs)
+    a, _ws = make_adapter({"FLIPSI_CRON_JOBS_FILE": store})
+    rows = a._cron_rows()
+    assert len(rows) == 16, f"Cap 16 verletzt: {len(rows)}"
+    assert rows[0]["name"] == long_name[:64], \
+        "Name muss auf 64 Zeichen gekappt bleiben (Parität Label-Cap)"
+    print("OK F1: Caps (Name ≤64, Liste ≤16)")
+
+
+@pytest.mark.asyncio
+async def test_f1_cron_status_klartext_shape_and_empty_store(tmp_path) -> None:
+    """Klartext-Weg ohne E2E-Session (agent.status-Parität): je Connect läuft
+    cron.status mit {v, agent_id, jobs} — APP-GENERISCH (kein chat_id-Feld,
+    kein owner-Claim). Leerer/unlesbarer Store = HONEST '[]' (die Karte weiß
+    dann, dass nichts geplant ist — kein Schweigen, kein Fake-Eintrag)."""
+    jobs = [{"name": "Wochensicherung", "state": "scheduled",
+             "next_run_at": "2026-11-24T03:00:00+01:00"}]
+    a, ws = make_adapter({"FLIPSI_CRON_JOBS_FILE": _f1_cron_store(tmp_path, jobs)})
+    await a.connect()
+    frames = _f1_cron_frames(ws)
+    assert frames and frames[0]["type"] == CRON_FRAME, \
+        "ohne Session muss der Klartext-Weg laufen"
+    f = frames[0]
+    from datetime import datetime as _dt
+    expected = int(_dt.fromisoformat("2026-11-24T03:00:00+01:00")
+                   .timestamp() * 1000)
+    assert f["v"] == 1 and f["agent_id"] == "agent-a"
+    assert f["jobs"] == [{"name": "Wochensicherung", "status": "planned",
+                          "next_at": expected}], f"jobs falsch: {f['jobs']}"
+    assert "chat_id" not in f, "cron.status lebt je AGENT — kein Owner-Claim"
+    await a.disconnect()
+    # Leerer Store: je Connect geht ehrliches '[]' (App räumt die Karte leer).
+    a2, ws2 = make_adapter({"FLIPSI_CRON_JOBS_FILE": _f1_cron_store(tmp_path, [])})
+    await a2.connect()
+    f2 = _f1_cron_frames(ws2)[0]
+    assert f2["jobs"] == [], "leerer Store = leere Jobs-Liste im Frame"
+    await a2.disconnect()
+    # Kaputter Store: fail-soft → trotzdem '[]', kein Crash.
+    bad = tmp_path / "kaputt.json"
+    bad.write_text("kein json", encoding="utf-8")
+    a3, ws3 = make_adapter({"FLIPSI_CRON_JOBS_FILE": str(bad)})
+    await a3.connect()
+    assert _f1_cron_frames(ws3)[0]["jobs"] == [], "kaputter Store = []"
+    await a3.disconnect()
+    print("OK F1: Klartext-Shape je Connect (agent-global) + leerer/kaputter "
+          "Store fail-soft als []")
+
+
+@pytest.mark.asyncio
+async def test_f1_cron_status_enc_after_handshake(tmp_path) -> None:
+    """Mit bestätigter E2E-Session ist der enc-Weg PFLICHT (agent.status-
+    Parität): cron.status.enc mit {jobs: …} NUR im ct; nach dem Handshake geht
+    KEIN Klartext-cron.status mehr raus (App-Downgrade-Guard würde ihn
+    verwerfen). Je Connect (ohne Session) bleibt Klartext erlaubt."""
+    a, ws = _make_crypto_adapter(
+        tmp_path, {"FLIPSI_CRON_JOBS_FILE": _f1_cron_store(tmp_path, [
+            {"name": "Nightly", "state": "scheduled",
+             "next_run_at": "2026-11-21T02:30:00+01:00"}])})
+    await a.connect()
+    assert any(f["type"] == CRON_FRAME for f in _f1_cron_frames(ws)), \
+        "je Connect (ohne Session) Klartext erlaubt"
+    peer = await _establish_session(a, ws)
+    assert a._crypto_session is not None
+    assert await a.emit_cron_status() is True
+    all_cron = _f1_cron_frames(ws)
+    klar_frames = [f for f in all_cron if f["type"] == CRON_FRAME]
+    enc_frames = [f for f in all_cron if f["type"] == CRON_ENC_FRAME]
+    assert len(klar_frames) == 1, \
+        "nur der Connect-Send (vor dem Handshake) darf Klartext sein"
+    assert enc_frames, "nach Session muss cron.status.enc fliegen"
+    f = enc_frames[0]
+    assert f.get("chat_id") == "", "AAD ohne Owner-Chat (Status je Agent)"
+    assert "ct" in f and "hdr" in f and "nonce" in f
+    assert "jobs" not in f, "Jobs-Liste darf im enc-Frame NICHT klar liegen"
+    payload = peer.decrypt_frame(f)
+    from datetime import datetime as _dt
+    expected = int(_dt.fromisoformat("2026-11-21T02:30:00+01:00")
+                   .timestamp() * 1000)
+    assert payload == {"jobs": [{"name": "Nightly", "status": "planned",
+                                 "next_at": expected}]}, \
+        f"ct-Payload falsch: {payload}"
+    await a.disconnect()
+    print("OK F1: enc-first nach Handshake (Payload nur im ct, kein Klar-Spiegel)")
+
+
+@pytest.mark.asyncio
+async def test_f1_cron_refresh_loop_change_detect(tmp_path) -> None:
+    """Refresh-Loop: bei UNVERÄNDERTEM Stand kein Frame (Change-Detect-Band),
+    nach Store-Änderung kommt der neue Stand (späte Geräte + Kartendaten).
+    Timer stirbt sauber mit disconnect()."""
+    jobs1 = [{"name": "A", "state": "scheduled",
+              "next_run_at": "2026-11-20T10:00:00+01:00"}]
+    a, ws = make_adapter({"FLIPSI_CRON_JOBS_FILE": _f1_cron_store(tmp_path, jobs1),
+                          "FLIPSI_CRON_REFRESH_S": "0.05"})
+    await a.connect()
+    n0 = len(_f1_cron_frames(ws))
+    await asyncio.sleep(0.25)
+    n1 = len(_f1_cron_frames(ws))
+    assert n1 == n0, f"unveränderter Stand darf NICHT nachgesendet werden ({n0}→{n1})"
+    jobs2 = jobs1 + [{"name": "B", "state": "scheduled",
+                      "next_run_at": "2026-11-21T10:00:00+01:00"}]
+    (tmp_path / "cron_jobs.json").write_text(
+        json.dumps({"jobs": jobs2, "updated_at": 2}), encoding="utf-8")
+    a._cron_cache = (0.0, [])  # TTL-Cache invalidieren
+    await _f1_wait(lambda: len(_f1_cron_frames(ws)) > n1)
+    newest = _f1_cron_frames(ws)[-1]
+    assert [j["name"] for j in newest["jobs"]] == ["A", "B"], \
+        "Refresh liefert den NEUEN Zeilen-Stand"
+    await a.disconnect()
+    print(f"OK F1: Refresh-Loop (kein Dup je unverändertem Stand, Change-Frame {n1}→"
+          f"{len(_f1_cron_frames(ws))})")
+
+
+# ═══ F3 (Sir, offener Verband seit W19): session_meta — Queue statt Skip ═══
+
+META_FRAME = adapter_mod.SESSION_META_FRAME
+META_ENC_FRAME = adapter_mod.SESSION_META_ENC_FRAME
+
+
+def _f3_meta_frames(ws) -> list[dict]:
+    """Nur die chat.session_meta-Familie aus dem Mock-Log (Klar + enc)."""
+    return [f for f in ws.sent
+            if f.get("type") in (META_FRAME, META_ENC_FRAME)]
+
+
+SUBS = [{"name": "Recherche-A", "status": "läuft", "model": "glm-5.3"}]
+
+
+@pytest.mark.asyncio
+async def test_f3_session_meta_klartext_shape() -> None:
+    """Klartext-Weg ohne E2E-Session (P40-Port, REPLACE-Semantik): Frame mit
+    session_meta {platform, model, sub_agents}; leere Meta (nichts bekannt) =
+    KEIN Frame; unbekannte/zu lange Felder fliegen/gekappt. Rückgabe
+    gesendet=True/False ehrlich."""
+    a, ws = make_adapter({})
+    await a.connect()
+    assert "push_session_meta" in dir(a), "P40-Entry-Point fehlt am Live-Adapter"
+    assert hasattr(FlipsiBridgeChatAdapter, "live_instances"), \
+        "Hook-Verband braucht live_instances am FlipsiBridgeChatAdapter (P40)"
+    sent = await a.push_session_meta(
+        "chat-1", platform="discord", model="glm-5.3", sub_agents=SUBS)
+    assert sent is True
+    f = _f3_meta_frames(ws)[-1]
+    assert f["type"] == META_FRAME and f["v"] == 1
+    assert f["agent_id"] == "agent-a" and f["chat_id"] == "chat-1"
+    assert f["session_meta"] == {"platform": "discord", "model": "glm-5.3",
+                                 "sub_agents": [{"name": "Recherche-A",
+                                                 "status": "läuft",
+                                                 "model": "glm-5.3"}]}
+    assert "ts" in f
+    # Nichts bekannt → kein Frame (kein Platzhalter-Geraffel).
+    assert await a.push_session_meta("chat-2") is False
+    assert not any(fr.get("chat_id") == "chat-2"
+                   for fr in _f3_meta_frames(ws)), \
+        "leere Meta = KEIN Frame für diesen Chat"
+    # Caps: Name/Strings ≤64, subs Cap 8.
+    await a.push_session_meta(
+        "chat-3", platform="x" * 100, model="m" * 100,
+        sub_agents=[{"name": f"S{i}", "status": "läuft"} for i in range(12)])
+    g = _f3_meta_frames(ws)[-1]
+    sm = g["session_meta"]
+    assert sm["platform"] == "x" * 64 and sm["model"] == "m" * 64, "Cap 64"
+    assert len(sm["sub_agents"]) == 8, "sub-Cap 8 (Hook-Parität)"
+    await a.disconnect()
+    print("OK F3: push_session_meta-Klartext-Shape (REPLACE, Caps, leere Meta=kein Frame)")
+
+
+@pytest.mark.asyncio
+async def test_f3_session_meta_enc_after_handshake(tmp_path) -> None:
+    """Mit bestätigter E2E-Session geht die Meta NUR verschlüsselt
+    (chat.session_meta.enc, Payload NUR im ct) — Klartext wirft der App-
+    Downgrade-Guard weg. Payload-Shapes bleiben REPLACE-identisch."""
+    a, ws = _make_crypto_adapter(tmp_path)
+    await a.connect()
+    peer = await _establish_session(a, ws)
+    assert await a.push_session_meta("device-1", platform="telegram",
+                                     model="glm-5.3", sub_agents=SUBS) is True
+    frames = _f3_meta_frames(ws)
+    f = frames[-1]
+    assert f["type"] == META_ENC_FRAME
+    assert f.get("chat_id") == "device-1"
+    assert "ct" in f and "hdr" in f and "nonce" in f
+    assert "session_meta" not in f, "Meta darf im enc-Frame NICHT klar liegen"
+    payload = peer.decrypt_frame(f)
+    assert payload == {"session_meta": {"platform": "telegram",
+                                        "model": "glm-5.3",
+                                        "sub_agents": SUBS}}, f"ct falsch: {payload}"
+    assert not any(fr["type"] == META_FRAME for fr in frames), \
+        "mit aktiver Session darf KEIN Klartext-meta gehen"
+    await a.disconnect()
+    print("OK F3: enc-first nach Handshake (Meta nur im ct)")
+
+
+@pytest.mark.asyncio
+async def test_f3_session_meta_queue_nach_reconnect() -> None:
+    """F3-KERN (offener Verband seit W19): Push ohne Verbindung = Queue statt
+    Skip. Nach connect() werden geparkte Pushes nachgeliefert; REPLACE je
+    chat_id (neueste Meta gewinnt); FIFO-Cap 16 wirft die ÄLTESTEN raus."""
+    a, ws = make_adapter({})
+    # 1) Nicht verbunden: Push wird gebunden (nichts verloren), kein Frame.
+    assert await a.push_session_meta("chat-1", platform="discord",
+                                     model="glm-5.3") is False
+    assert not _f3_meta_frames(ws), "offline darf KEIN Meta-Frame gehen"
+    with a._meta_lock:
+        assert list(a._meta_queue) == ["chat-1"], "Queue muss je chat_id halten"
+    # 2) REPLACE: neue Meta für denselben Chat verdrängt die alte.
+    assert await a.push_session_meta("chat-1", platform="telegram",
+                                     model="glm-5.3-flash") is False
+    with a._meta_lock:
+        meta, _att = a._meta_queue["chat-1"]
+        assert meta["platform"] == "telegram", "neueste Meta gewinnt"
+    # 3) FIFO-Cap: 17 Chat-Keys (inkl. chat-1 an der Spitze) → die ÄLTESTEN
+    #    fliegen zuerst (chat-1, c-00), 16 bleiben.
+    for i in range(17):
+        await a.push_session_meta(f"c-{i:02d}", platform="cron")
+    with a._meta_lock:
+        assert len(a._meta_queue) == 16, "Queue-Cap 16"
+        assert "chat-1" not in a._meta_queue and "c-00" not in a._meta_queue, \
+            "ÄLTESTE Einträge fliegen zuerst (FIFO)"
+    # 4) Nachlieferung nach connect() — der Drain holt alle 16 nach.
+    await a.connect()
+    await _f1_wait(lambda: not a._meta_queue)
+    frames = _f3_meta_frames(ws)
+    chat_ids = {f["chat_id"] for f in frames if f["type"] == META_FRAME}
+    assert chat_ids == {f"c-{i:02d}" for i in range(1, 17)}, \
+        f"Nachlieferung unvollständig: {len(chat_ids)} Chats"
+    assert a.is_connected() is True  # Verband aktiv (Hook-Filter-Parität)
+    await a.disconnect()
+    print("OK F3: Nachliefer-Queue nach Reconnect (REPLACE je chat_id, FIFO-Cap 16)")
+
+
+@pytest.mark.asyncio
+async def test_f3_session_meta_queue_drain_enc_nach_handshake(tmp_path) -> None:
+    """Der Drain bewertet den enc-Stand JEDERZEIT NEU: eine während Disconnect
+    geparkte Meta geht nach dem Handshake als chat.session_meta.enc raus
+    (kein veralteter Klartext-Zustand aus der Parkphase)."""
+    a, ws = _make_crypto_adapter(tmp_path)
+    await a.connect()
+    peer = await _establish_session(a, ws)
+    # Parkphase simulieren: connected AUS, Push läuft in die Queue.
+    a._connected = False
+    assert await a.push_session_meta("device-1", platform="cron",
+                                     model="glm-5.3") is False
+    a._connected = True
+    assert not _f3_meta_frames(ws), "geparkt heißt: noch nichts auf dem Wire"
+    a._schedule_meta_drain()
+    await _f1_wait(lambda: not a._meta_queue)
+    f = _f3_meta_frames(ws)[-1]
+    assert f["type"] == META_ENC_FRAME, \
+        f"geparkte Meta muss NACH Handshake als enc gehen, war {f.get('type')}"
+    payload = peer.decrypt_frame(f)
+    assert payload == {"session_meta": {"platform": "cron", "model": "glm-5.3"}}
+    await a.disconnect()
+    print("OK F3: geparkte Meta geht nach Handshake als enc raus")
+
+
+@pytest.mark.asyncio
+async def test_f3_session_meta_send_fail_queues_then_delivers() -> None:
+    """Send-Fehlschlag bei BESTEHENDER Verbindung = ebenfalls Queue (nichts
+    geht verloren); danach gelingt der Send und die Meta wird nachgeliefert
+    (Attempts-Band verhindert Ewig-Stau)."""
+    a, ws = make_adapter({})
+    await a.connect()
+    ws.fail_types = {META_FRAME}
+    assert await a.push_session_meta("chat-9", platform="discord",
+                                     model="m1") is False
+    assert not [f for f in ws.sent if f.get("chat_id") == "chat-9"], \
+        "Fehlschlag = kein Frame, aber Queue"
+    with a._meta_lock:
+        assert "chat-9" in a._meta_queue
+    ws.fail_types = set()
+    a._schedule_meta_drain()
+    await _f1_wait(lambda: not a._meta_queue)
+    f = [fr for fr in ws.sent if fr.get("chat_id") == "chat-9"][-1]
+    assert f["type"] == META_FRAME and f["session_meta"]["model"] == "m1"
+    await a.disconnect()
+    print("OK F3: Send-Fehlschlag → Queue → nachgeliefert")
+
+
+@pytest.mark.asyncio
+async def test_f3_meta_state_fails_never_blocks_drain(tmp_path) -> None:
+    """Fail-soft-Band: Nachliefer-Entries sterben nach dem Attempts-Cap
+    (_SESSION_META_SEND_RETRY_MAX) — der Drain terminiert statt in einer
+    Ewig-Queue zu rotieren, ohne die Verbindung zu blockieren."""
+    a, ws = make_adapter({})
+    await a.connect()
+    ws.fail_types = {META_FRAME}
+    # Attempts-Band am Cap: Entry mit 3 Fehlversuchen (Wie nach 3 gescheiterten
+    # Drain-Runden).
+    a._meta_queue["chat-x"] = ({"platform": "cron"}, 3)
+    a._meta_enqueue("chat-y", {"platform": "discord"})
+    await a.drain_meta_queue()
+    with a._meta_lock:
+        assert not a._meta_queue, \
+            f"Cap-Kappung muss beide Entries beendet haben: {list(a._meta_queue)}"
+    await a.disconnect()
+    print("OK F3: Retry-Cap (Drain terminiert leer, keine Ewig-Queue)")
+
+
+@pytest.mark.asyncio
+async def test_f3_meta_push_targets_and_persistence(tmp_path) -> None:
+    """P40-Verband: meta_push_targets = neueste Empfangsaktivität zuerst, dann
+    Gateway-Map, dann Persistenz (Cap 32) — nach Gateway-Restart sind die
+    Slots NICHT blank, weil die Zustelldatei die bekannten Chats hält."""
+    state_dir = str(tmp_path / "state")
+    a, _ws = make_adapter({"FLIPSI_META_STATE_DIR": state_dir})
+    a._received_at["gw-a"] = 1000
+    a._received_at["gw-b"] = 2000
+    a._gw_chat_by_relay["gw-r"] = "gw-stable-1"
+    targets = a.meta_push_targets()
+    assert targets == ["gw-b", "gw-a", "gw-r"], f"Reihenfolge falsch: {targets}"
+    # Persistenz: neuer Chat wird vorn vermerkt.
+    a._persist_chats("gw-newest")
+    stored = a._persisted_chats()
+    assert stored == ["gw-newest", "gw-b", "gw-a"] or stored == \
+        ["gw-newest", "gw-b", "gw-a", "gw-r"], f"Persistenz falsch: {stored}"
+    # Restart-Simulation: NEUE Adapter-Instanz (leere Maps), gleiche Zustelldatei.
+    a2, _ws2 = make_adapter({"FLIPSI_META_STATE_DIR": state_dir})
+    assert "gw-newest" in a2.meta_push_targets(), \
+        "Gateway-Restart darf die Slots NICHT blank machen (P40)"
+    # Kaputte Datei → leere Liste, kein Crash.
+    state_path = a2._chats_state_path()
+    with open(state_path, "w", encoding="utf-8") as _fh:
+        _fh.write("{kaputt")
+    try:
+        assert a2._persisted_chats() == []
+    finally:
+        try:
+            import os as _os
+            _os.unlink(state_path)
+        except OSError:
+            pass
+    print("OK F3: Push-Ziele + Persistenz (Restart-Simulation, kaputte Datei fail-soft)")
+

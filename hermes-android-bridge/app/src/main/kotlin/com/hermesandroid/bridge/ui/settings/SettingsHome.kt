@@ -17,10 +17,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.i18n.AppLanguage
+import com.hermesandroid.bridge.ui.assistant.AssistantCardTexts
+import com.hermesandroid.bridge.ui.assistant.AssistantPackageCard
 
 /**
  * Welle 13 / P2 (Settings-Redesign, Sirs Direktive 11.11.): der neue
@@ -65,6 +69,10 @@ fun SettingsHome(
     var assistantOpen by rememberSaveable { mutableStateOf(false) }
     // B7 (Multi-Gerät): die Geräte-Karte startet ebenfalls zugeklappt.
     var devicesOpen by rememberSaveable { mutableStateOf(false) }
+    // W21 ASSISTENT-PAKET (G1/G2/G5-Überblickskarte): eigene Klappe — der
+    // Anfrage-Weg der Standard-Assistent-Rolle bleibt in AssistantRoleCard
+    // (KDoc-Verband: „deren Anfrage-Weg für die Rolle bestehen bleibt“).
+    var assistantPkgOpen by rememberSaveable { mutableStateOf(false) }
 
     // P10: die ACTIVITY baut den RoleManager-Koordinator (W4-CompositionLocal —
     // der wrapped Sprach-Context ist KEIN Activity-Context).
@@ -100,6 +108,36 @@ fun SettingsHome(
                 coordinator = assistantCoordinator,
                 expanded = assistantOpen,
                 onExpandedChange = { assistantOpen = it },
+            )
+        }
+        // W21 ASSISTENT-PAKET (Verdrahtung MERGE-LANE 18.11., nach KDoc):
+        // G1 rendert die Karte aus den BESTEHENDEN Assistenten-Strings (Rolle/
+        // Overlay-Stand liest sie je Kartenöffnung selbst); G2/G5 nehmen die
+        // Texte als Parameter ([AssistantCardTexts]) — hier je Locale aus
+        // strings.xml ×3 gelöst. G5 ehrlich „ohne Session“: der Session-
+        // Epoch-Verband lebt noch nicht im Client (das GATE im screen-
+        // Capability-Pfad ist laut KDoc Anschluss-Lane) — KEIN Fake-Schlüssel,
+        // kein stiller Schalter; die Zeile trägt den noSession-Text und der
+        // Schalter bleibt disabled, bis die Anschluss-Lane den Schlüssel
+        // anstöpselt (dann consent/grant/revoke an Prefs/Persistenz hängen).
+        item(key = "assistantPkg") {
+            val pkgTexts = AssistantCardTexts(
+                bubbleTitle = stringResource(R.string.assistant_pkg_bubble_title),
+                bubbleReadyDesc = stringResource(R.string.assistant_pkg_bubble_ready_desc),
+                bubbleNeedPermDesc = stringResource(R.string.assistant_pkg_bubble_need_perm_desc),
+                bubbleGrantAction = stringResource(R.string.assistant_pkg_bubble_grant_action),
+                bubbleGrantA11y = stringResource(R.string.assistant_pkg_bubble_grant_a11y),
+                bubbleGrantUnavailable = stringResource(R.string.assistant_pkg_bubble_grant_unavailable),
+                screenContextTitle = stringResource(R.string.assistant_pkg_screen_context_title),
+                screenContextDesc = stringResource(R.string.assistant_pkg_screen_context_desc),
+                screenContextNoSession = stringResource(R.string.assistant_pkg_screen_context_no_session),
+                screenContextGrantA11y = stringResource(R.string.assistant_pkg_screen_context_grant_a11y),
+                screenContextAskA11y = stringResource(R.string.assistant_pkg_screen_context_ask_a11y),
+            )
+            AssistantPackageCard(
+                expanded = assistantPkgOpen,
+                onExpandedChange = { assistantPkgOpen = it },
+                texts = pkgTexts,
             )
         }
         // B7 (Multi-Gerät): Geräte-Verwaltung — Liste aus relay.state

@@ -1,13 +1,19 @@
 package com.hermesandroid.bridge.chat
 
 import android.content.Context
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import com.google.gson.Gson
 import com.hermesandroid.bridge.client.ChatStatusRank
 import java.io.File
 import java.io.FileOutputStream
+import java.security.KeyStore
 import java.security.MessageDigest
 import java.text.SimpleDateFormat
 import java.util.concurrent.Executors
+import javax.crypto.KeyGenerator
+import javax.crypto.Mac
+import javax.crypto.SecretKey
 
 /**
  * SIRS-02 (P2, Volltest 03.11.2026): Chat-Verlauf überlebt den App-Restart.
@@ -53,6 +59,16 @@ import java.util.concurrent.Executors
  *   + rename, Parität zu IdentityStore/relay-keys-Muster).
  * - Korrupte Zeilen werden beim Laden still übersprungen (ein zerstörter
  *   Eintrag kostet nie den ganzen Verlauf); nie crashen.
+ * - PH-6-REST: load/loadAll füllen einen RAM-Volltext-Index über ALLE
+ *   Agenten ([SearchIndex], JVM-rein), append inkrementell je persistierter
+ *   Bubble; ChatHistoryStore.searchAll = Volltextsuche quer durch den Verlauf
+ *   (UI-Lane verdrahtet die Trefferliste separat).
+ * - P24: Jede Verlaufs-Datei trägt ein At-rest-Siegel („.<name>.seal“,
+ *   HMAC-SHA256 mit AndroidKeyStore-Schlüssel, [HistorySeal] = JVM-reines
+ *   Format + Verify-Semantik). Load verifiziert FAIL-CLOSED (TAMPERED →
+ *   SealBreach — ehrlich laut statt stilles Laden), UNSEALED (Alt-Bestand
+ *   nach Update) migriert verlustfrei, JE Schreib-Finale siegelt neu (atomar,
+ *   unter fileLock). Side-Car bewusst außerhalb des Siegel-Scopes.
  */
 object ChatHistoryStore {
 
@@ -122,6 +138,10 @@ object ChatHistoryStore {
                 // ersten Pfades mit dem Legacy-Stand überbauen).
                 val file = adoptLegacyFile(root, entry.agentId,
                     fileFor(root, entry.agentId))
+                // P24: Guard auch VOR Schreiben (kein Siegel-Laundering: eine
+                // zuvor manipulierte Datei bekommt nie ein frisches Siegel —
+                // append verweigert sich, der Load-Befund bleibt ehrlich).
+                guardSealedRead(file)
                 // J12: O(1)-Append (eine Zeile anhängen) statt Voll-Rewrite.
                 FileOutputStream(file, true).use {
                     it.write((gson.toJson(entry) + "\n").toByteArray(Charsets.UTF_8))
@@ -130,8 +150,18 @@ object ChatHistoryStore {
                 // Läufen kürzt sofort (selten — FIFO-500-Dateien liegen im
                 // Alltag weit unter 512 KiB). FIFO/Byte-Kürzung sonst beim Load.
                 if (file.length() > MAX_FILE_BYTES) {
-                    writeAtomic(file, capLines(readLines(file)))
+                    val cappedLines = capLines(readLines(file))
+                    writeAtomic(file, cappedLines)
+                    // PH-6: Kürzung in den Index zurückspiegeln (evictierte
+                    // Zeilen fliegen aus dem Suchindex).
+                    searchIndex.indexAgent(entry.agentId,
+                        parse(cappedLines).map(::toIndexable))
                 }
+                // P24: Neu-Siegel je Schreib-Finale (atomar, unter fileLock —
+                // Konsistenz Siegel↔Inhalt ist Pflicht gegen False-Tamper).
+                sealAfterWrite(file)
+                // PH-6: inkrementell (persistChatBubble-Einstieg).
+                searchIndex.index(toIndexable(entry))
             }
         }
     }
@@ -151,13 +181,23 @@ object ChatHistoryStore {
         // append/load auf dieselbe Agent-Datei.
         val (file, lines) = synchronized(fileLock) {
             val f = adoptLegacyFile(root, agentId, fileFor(root, agentId))
+            guardSealedRead(f) // P24: fail-closed/fail-loud je Verlauf-Datei
             f to readLines(f).toMutableList()
         }
         val capped = capLines(lines)
         if (capped.size < lines.size) {
-            runCatching { synchronized(fileLock) { writeAtomic(file, capped) } }
+            runCatching {
+                synchronized(fileLock) {
+                    writeAtomic(file, capped)
+                    sealAfterWrite(file) // P24: Kürzung = Neu-Siegel
+                }
+            }
         }
-        return parse(capped)
+        val entries = parse(capped)
+        // PH-6: Agent-Scheibe = Disk-Wahrheit (Restore/Lese-Pfad, Replace).
+        searchIndex.indexAgent(agentId, entries.map(::toIndexable))
+        searchIndexPrimed = true
+        return entries
     }
 
     /** Alle Agenten-Verläufe, cross-Agent chronologisch (seq-Sortierung). */
@@ -167,9 +207,19 @@ object ChatHistoryStore {
         // unverriegelt (torn-read: eine zwischen ListFiles und Read umbenannte
         // Datei + halbe Append-Zeile = still verschluckter Eintrag je Restore).
         synchronized(fileLock) {
-            (root.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: emptyArray())
-                .flatMap { parse(readLines(it)) }
+            val entries = (root.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") } ?: emptyArray())
+                .flatMap { file ->
+                    guardSealedRead(file) // P24 je Verlauf-Datei
+                    parse(readLines(file))
+                }
                 .sortedBy { it.seq }
+            // PH-6: Voll-Rebuild über alle Agenten-Verläufe (Restore = Prima-
+            // zeit des Suchindex; ensureSearchIndexAsync nutzt denselben Pfad
+            // lazy beim App-Start — Hintergrund-IO-Executor).
+            searchIndex.clear()
+            entries.forEach { searchIndex.index(toIndexable(it)) }
+            searchIndexPrimed = true
+            entries
         }
 
     /**
@@ -193,8 +243,12 @@ object ChatHistoryStore {
                 fileFor(root, agentId)
                     .let { hashed ->
                         File(root, ".${hashed.name}.part").delete()
+                        HistorySeal.removeSealFor(hashed) // P24: Siegel räumt mit
                         hashed.delete()
                     }
+                // PH-6: gelöschter Verlauf = gelöschte Index-Scheibe (keine
+                // Geister-Treffer aus gelöschten Verläufen).
+                searchIndex.clearAgent(agentId)
             }
         }
     }
@@ -212,7 +266,16 @@ object ChatHistoryStore {
     fun hasHistory(root: File, agentId: String): Boolean = runCatching {
         synchronized(fileLock) {
             val file = adoptLegacyFile(root, agentId, fileFor(root, agentId))
-            if (!file.exists()) false else readLines(file).isNotEmpty()
+            if (!file.exists()) {
+                false
+            } else {
+                // P24: manipulierter Bestand zählt NICHT als bekannt (fail-
+                // closed durch die runCatching-Welle; Befund bleibt ehrlich
+                // via lastSealBreach — der Backfill-Einstieg darf die Recovery
+                // leiten, der lokale Siegel-Befund bleibt stehen).
+                guardSealedRead(file)
+                readLines(file).isNotEmpty()
+            }
         }
     }.getOrDefault(false)
 
@@ -249,6 +312,9 @@ object ChatHistoryStore {
         return runCatching {
             synchronized(fileLock) {
                 val file = adoptLegacyFile(root, agentId, fileFor(root, agentId))
+                // P24: Backfill überschreibt nie einen verdächtigen Bestand
+                // (Breach → Befund-Zettel + runCatching fängt → 0, fail-closed).
+                guardSealedRead(file)
                 val existing = parse(readLines(file))
                 val knownMsgIds = existing
                     .mapNotNull { it.msgId?.takeIf(String::isNotBlank) }
@@ -271,7 +337,17 @@ object ChatHistoryStore {
                 // Chronologisch aufsteigend — Bestand vor Backfill bei Gleich-
                 // stand (stable sort): dieselbe Platte-Wahrheit bleibt voran.
                 val merged = (existing + fresh).sortedBy { it.seq }
-                writeAtomic(file, capLines(merged.map(::normalizedForDisk)))
+                // FIX (K2-Fund, b9338f4-Erbe): die Zeilen für capLines/
+                // writeAtomic sind JSON-Strings je Entry — normalizedForDisk
+                // normalisiert, gson.toJson macht die Zeile (Parität zum
+                // append-Format; List<Entry> direkt in capLines = Typbruch).
+                val cappedLines = capLines(merged.map { gson.toJson(normalizedForDisk(it)) })
+                writeAtomic(file, cappedLines)
+                // P24: Neu-Siegel nach dem atomaren Merge-Rewrite.
+                sealAfterWrite(file)
+                // PH-6: Agent-Scheibe = Merge-Wahrheit (frisch einsortierte
+                // Zeilen sofort suchbar).
+                searchIndex.indexAgent(agentId, parse(cappedLines).map(::toIndexable))
                 fresh.size
             }
         }.getOrDefault(0)
@@ -391,6 +467,167 @@ object ChatHistoryStore {
             if (ChatStatusRank.isKnown(row.status)) rows.add(row.msgId to row.status)
         }
         ChatStatusRank.foldRows(rows)
+    }
+
+    // ── PH-6 + P24: Verlauf-Suche + At-rest-Siegel ───────────────────────────
+    //
+    // PH-6-REST (Soll-Aufnahme): Volltextsuche ÜBER ALLE Agenten-Verläufe —
+    // der RAM-Index ([SearchIndex], JVM-rein, Cap 20k Docs FIFO) wird beim
+    // Restore gespeist (load/loadAll, Aufrufer laufen ohnehin auf IO-Threads)
+    // und je persistierter Bubble inkrementell ergänzt; gelöschte/gekürzte/
+    // gemergte Verläufe spiegeln die Disk-Wahrheit (Replace je Agent-Scheibe).
+    //
+    // P24 (fixliste 24): Jede Verlaufs-Datei trägt ein Siegel (HMAC-SHA256
+    // über den Datei-Inhalt mit einem AndroidKeyStore-Schlüssel — nicht
+    // exportierbar, keine User-Auth: Hintergrund-Lese-Pfad):
+    // - Load verifiziert FAIL-CLOSED: TAMPERED/KEY_UNAVAILABLE (Siegel da,
+    //   Schlüssel nicht erreichbar) → [HistorySeal.SealBreach] — ehrlich laut
+    //   statt stilles Laden; Befund-Zettel via [lastSealBreach] für die
+    //   UI-Lane (Fehlerzustand + Chat-löschen-Weg, String-Bedarf im Report).
+    // - UNSEALED (Alt-Bestand nach Update) = MIGRATION ohne Verlust (sofort
+    //   siegeln, Inhalt byte-genau unverändert, beim ersten Load/Append).
+    // - JE Schreib-Finale (append/mergeBackfill/Kürzung) NEU-SIEGELN — atomar
+    //   (.part → rename), unter fileLock (Siegel↔Inhalt-Konsistenz = Pflicht
+    //   gegen False-Tamper); Guard auch vor append (kein Siegel-Laundering).
+    // - Torn-Append nach Stromausfall: [HistorySeal] heilt NUR das krypto-
+    //   grafisch bewiesene gesiegelte Präfix (RECOVERED, laut im Log) —
+    //   Bestand bleibt unveränderbar, Fake-Appends werden verworfen.
+    //
+    // Side-Car chat_status.sidecar bewusst UNVERSIEGELT (kein Verlaufs-Text,
+    // nur Chip-Rang-Zeilen — bewusster Scope-Schnitt P24).
+
+    private val searchIndex = SearchIndex()
+    @Volatile private var searchIndexPrimed = false
+
+    /** P24-Schlüssel-Quelle (lazy; JVM-Testumgebung ohne AndroidKeyStore →
+     *  mac() = null → unversiegelter Offenbetrieb, kein Pseudo-Schutz). */
+    private val sealSource: HistorySeal.MacSource by lazy { AndroidHistorySealKey.create() }
+
+    /** Ehrlicher Siegel-Befund-Zettel (null = unauffällig). */
+    data class SealBreachRecord(val fileName: String, val at: Long, val reason: String)
+
+    @Volatile private var sealBreachRecord: SealBreachRecord? = null
+
+    /** UI-Lese-API: letzter Kompromittierungs-/Key-Befund (fail-loud-Zettel). */
+    fun lastSealBreach(): SealBreachRecord? = sealBreachRecord
+
+    internal fun clearSealBreachForTest() {
+        sealBreachRecord = null
+    }
+
+    /**
+     * PH-6-Volltextsuche über ALLE Agenten-Verläufe (RAM-Index): Treffer =
+     * agent, localId = Entry.seq, msg_id, Text-Snippet, Anzeigezeit (+score).
+     * UI-Verband (NOTIZ, nicht hier verdrahtet): Trefferliste über diese
+     * API, Sprung-Anker = (agentId, seq) → Mapping auf ChatMessage.id in
+     * ChatScreen; Cap-Schnitt beim Aufrufer möglich (default 50).
+     */
+    fun searchAll(query: String, limit: Int = SearchIndex.DEFAULT_RESULT_LIMIT): List<SearchIndex.Hit> =
+        searchIndex.search(query, limit)
+
+    /** Index-Größe (0 = unprimt → UI-Lane kann Ladezustand zeigen). */
+    fun searchIndexEntryCount(): Int = searchIndex.entryCount()
+
+    /**
+     * Lazy Aufbau des RAM-Index beim APP-START: Hintergrund-IO-Executor,
+     * noop wenn schon geprimt; migriert zugleich die P24-Siegel für den
+     * Alt-Bestand. Hook-NOTIZ für die Lifecycle-Lane: einmalig beim Start
+     * mit ChatHistoryStore.root(context) aufrufen — nie blockierend.
+     */
+    fun ensureSearchIndexAsync(root: File) {
+        ioExecutor.execute {
+            if (searchIndexPrimed) return@execute
+            runCatching { loadAll(root) }
+                .onFailure { println("FB-PH6: Suchindex-Aufbau fehlgeschlagen: $it") }
+        }
+    }
+
+    /** P24-Read-Guard mit Befund-Zettel + lautem Log; wirft SealBreach durch. */
+    private fun guardSealedRead(file: File) {
+        try {
+            if (HistorySeal.readGuard(file, sealSource) == HistorySeal.Verdict.RECOVERED) {
+                println("FB-P24: torn append in ${file.name} — auf gesiegeltes " +
+                    "Präfix zurückgeschnitten, neu gesiegelt")
+            }
+        } catch (breach: HistorySeal.SealBreach) {
+            sealBreachRecord = SealBreachRecord(
+                fileName = breach.fileName,
+                at = System.currentTimeMillis(),
+                reason = breach.reason.name,
+            )
+            println("FB-P24: SIEGEL-BREACH (${breach.reason}) in ${breach.fileName} — " +
+                "Verlauf-Laden verweigert")
+            throw breach
+        }
+    }
+
+    /** P24: Neu-Siegel nach Schreib-Finale (NUR synchron unter fileLock rufen —
+     *  Konsistenz Siegel↔Inhalt sonst False-Tamper). */
+    private fun sealAfterWrite(file: File) {
+        if (!HistorySeal.sealFile(file, sealSource)) {
+            if (sealKeyWarned.compareAndSet(false, true)) {
+                println("FB-P24: kein Siegel-Schlüssel verfügbar — Verläufe " +
+                    "bleiben unversiegelt (Keystore-Welt nicht auflösbar)")
+            }
+        }
+    }
+
+    private val sealKeyWarned = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** Store-Entry → Index-Anfrage (PH-6). Null-Härtung: gson kann ohne
+     *  Adapter null in nicht-null Kotlin-Felder einschleusen (alte/korrupte
+     *  Disk-Zeilen) — der Index darf daran NIE kippen (Load = Restore-Pfad). */
+    private fun toIndexable(entry: Entry) = SearchIndex.Indexable(
+        agentId = entry.agentId ?: "",
+        seq = entry.seq,
+        msgId = entry.msgId?.takeIf(String::isNotBlank),
+        fromAgent = entry.fromAgent,
+        text = entry.text ?: "",
+        time = entry.time ?: "",
+    )
+
+    /**
+     * P24: AndroidKeyStore-HMAC-Schlüssel (HmacSHA256/256-bit, nicht
+     * exportierbar, setUserAuthenticationRequired(false) — Hintergrund-Lese-
+     * Pflicht). JVM-Unit-Test-Umgebung (kein AndroidKeyStore-Provider):
+     * mac() = null → dokumentierter Offenbetrieb unversiegelt (die
+     * HistorySealRules deckt die Siegel-Semantik mit JCE-Mock-Key ab).
+     */
+    private object AndroidHistorySealKey {
+        private const val KEY_ALIAS = "fb_chat_history_seal_hmac"
+
+        fun create(): HistorySeal.MacSource {
+            val resolved by lazy { resolve() }
+            return HistorySeal.MacSource { macOrNull(resolved) }
+        }
+
+        private fun macOrNull(key: SecretKey?): Mac? = runCatching {
+            key?.let { secret ->
+                Mac.getInstance(HistorySeal.SEAL_ALGORITHM).apply { init(secret) }
+            }
+        }.getOrNull()
+
+        private fun resolve(): SecretKey? = runCatching {
+            val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+            if (keyStore.containsAlias(KEY_ALIAS)) {
+                keyStore.getKey(KEY_ALIAS, null) as? SecretKey
+            } else {
+                val generator = KeyGenerator.getInstance(
+                    KeyProperties.KEY_ALGORITHM_HMAC_SHA256,
+                    "AndroidKeyStore",
+                )
+                generator.init(
+                    KeyGenParameterSpec.Builder(
+                        KEY_ALIAS,
+                        KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
+                    )
+                        .setDigests(KeyProperties.DIGEST_SHA256)
+                        .setUserAuthenticationRequired(false)
+                        .build(),
+                )
+                generator.generateKey()
+            }
+        }.getOrNull()
     }
 
     // ── Interna ──────────────────────────────────────────────────────────────

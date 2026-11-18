@@ -125,9 +125,123 @@ object DashboardRules {
 
     /**
      * Singular-Rettung bleibt: „1 Agent“ statt „1 Agenten“ — W15c über die
-     * Plural-Ressource dash_agent_count (one/other, DE wie EN korrekt),
-     * nicht mehr als deutsches Literal im Rule-Code.
+     * Plural-Ressource dash_agent_count (one/other, DE wie EN korrekt), nicht
+     * mehr als deutsches Literal im Rule-Code.
      */
     fun agentCountLabel(total: Int): LabelRes =
         LabelRes(R.plurals.dash_agent_count, count = total, args = listOf(total))
+
+    // ══════ F1 (Sir, 18.11.2026, Vollgas-Batch): cron.status-Verband ═════════
+    // Karte „Geplante Aufgaben“ (APP-GENERISCH — der Frame lebt je AGENT, die
+    // App kennt keinen Agent-Namen in der Karte). Quelle: cron.status(-enc)-
+    // Frames des Adapters mit {jobs: [{name, status, next_at?}]}. KEIN-DOPPEL
+    // mit den Sub-Slots: die Cron-Karte ist EIN app-globales Gebilde (nicht je
+    // Agent, keine Sub-Slot-Elemente) — sie steht SOLO nach den Agenten-Slots.
+
+    /** Sichtbarer Job-Zustand (Protokoll-Werte des cron.status-Frames). */
+    enum class CronJobState { RUNNING, PLANNED, PAUSED }
+
+    /**
+     * EIN geplanter/laufender Gateway-Cron-Job (aus dem cron.status-Payload,
+     * das RelayClient parst — Wiring-Bedarf notiert). nextAtMs NUR bei
+     * [CronJobState.PLANNED] gesetzt (running/paused tragen keinen Termin —
+     * kein erfundener „demnächst“-Fake).
+     */
+    data class CronJobItem(
+        val name: String,
+        val state: CronJobState,
+        val nextAtMs: Long? = null,
+    )
+
+    /**
+     * Sichtzeile der Karte: [minutesFromNow] = rel. Minuten bis zur nächsten
+     * Ausführung (nur PLANNED); [overdue] = fälliger Termin ist VERPASST
+     * (Scheduler-Tot/Catch-up — ehrlich rot markiert statt „demnächst“-Lüge),
+     * nur bei PLANNED möglich.
+     */
+    data class CronJobView(
+        val item: CronJobItem,
+        val minutesFromNow: Long?,
+        val hoursFromNow: Long?,
+        val overdue: Boolean,
+    )
+
+    /** Protokoll-String → Zustand (unbekannt/leer = geplant, kein Throw). */
+    fun cronJobState(raw: String?): CronJobState =
+        when ((raw ?: "").trim().lowercase(Locale.ROOT)) {
+            "running" -> CronJobState.RUNNING
+            "paused" -> CronJobState.PAUSED
+            else -> CronJobState.PLANNED
+        }
+
+    /** next_at (Unix-ms) → Sichtwerte: Verpasst-Flag + Minuten/Std.-Eimer. */
+    fun cronJobView(
+        name: String,
+        state: CronJobState,
+        nextAtMs: Long?,
+        nowMs: Long,
+    ): CronJobView {
+        if (state != CronJobState.PLANNED || nextAtMs == null || nextAtMs <= 0L) {
+            return CronJobView(
+                CronJobItem(name.ifBlank { "?" }, state),
+                minutesFromNow = null,
+                hoursFromNow = null,
+                overdue = false,
+            )
+        }
+        // Ceil + Floor-Grenze: JEDE sichtbare Zeile trägt ≥1 Minute — „in 0 min“
+        // existiert nicht (sofort veraltete Anzeige) und fällig-jetzt liest als
+        // „überfällig · vor 1 min“ (ehrlich knapp statt gerundetes 0-Fake).
+        val deltaMs = nextAtMs - nowMs
+        val minutes = ((kotlin.math.abs(deltaMs) + 59_999L) / 60_000L).coerceAtLeast(1L)
+        return if (deltaMs <= 0L) {
+            // next_at liegt hinter/bei der Device-Uhr — Termine ohne Scheduler
+            // bleiben nicht „demnächst“ stehen (Parität Adapter-Verband).
+            CronJobView(
+                CronJobItem(name.ifBlank { "?" }, state, nextAtMs),
+                minutesFromNow = minutes,
+                hoursFromNow = null,
+                overdue = true,
+            )
+        } else {
+            CronJobView(
+                CronJobItem(name.ifBlank { "?" }, state, nextAtMs),
+                minutesFromNow = minutes,
+                hoursFromNow = minutes / 60L,
+                overdue = false,
+            )
+        }
+    }
+
+    /**
+     * Sortierung der Karten-Zeilen: laufende zuerst, dann geplante nach
+     * nächster Ausführung (verpasste ganz vorn — drängen sich nach vorn, weil
+     * sie Aufmerksamkeit wollen), pausiert zuletzt; Zeilen-Cap 16 (Parität zum
+     * Adapter-Frame-Cap _CRON_STATUS_JOBS_MAX).
+     */
+    fun cronSortedRows(jobs: List<CronJobItem>, nowMs: Long): List<CronJobView> {
+        val views = jobs.take(16).map { cronJobView(it.name, it.state, it.nextAtMs, nowMs) }
+        return views.sortedWith(
+            compareBy(
+                { row -> when {
+                    row.item.state == CronJobState.RUNNING -> 0
+                    row.item.state == CronJobState.PLANNED && row.overdue -> 1
+                    row.item.state == CronJobState.PLANNED -> 2
+                    else -> 3
+                } },
+                { row -> when {
+                    row.item.state == CronJobState.PLANNED && row.overdue -> -(row.minutesFromNow ?: 0L)
+                    row.item.state == CronJobState.PLANNED -> row.minutesFromNow ?: Long.MAX_VALUE
+                    else -> 0L
+                } },
+            ),
+        )
+    }
+
+    /**
+     * Karte sichtbar? NUR mit mindestens einem Job (Leerzustand: die Sektion
+     * bleibt KOMPLETT weg — W19 Leerzustand-Muster der Sub-Slots, kein
+     * „keine geplanten“-Geraffel, keine Titelzeile ohne Inhalt).
+     */
+    fun cronCardVisible(jobs: List<CronJobItem>): Boolean = jobs.isNotEmpty()
 }

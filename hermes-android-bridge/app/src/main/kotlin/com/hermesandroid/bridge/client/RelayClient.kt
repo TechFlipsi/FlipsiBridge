@@ -45,6 +45,8 @@ import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
 import com.hermesandroid.bridge.ui.settings.DeviceRules  // APP-ANSCHLUSS: DeviceEntry des B7-Geräte-UI
+import com.hermesandroid.bridge.ui.dashboard.DashboardRules  // F1: CronJobItem des B7/F1-cron.status-Verbands
+import com.hermesandroid.bridge.ui.chat.ChatSpeechSpeaker  // W21 ANRUF P5: Call-Modus-TTS (§3.3)
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -138,6 +140,18 @@ object RelayClient {
     private const val CHAT_NOTIFY_ID_BASE = 9000
     /** PH-FIX-BACKEND-B: Backoff je hello_ack-Retry (failures × Basis, 1 s / 2 s). */
     private const val HELLO_ACK_RETRY_BACKOFF_MS = 1_000L
+
+    // ── W21 ANRUF (P4-P6, roadmap-anruf.md §3.4/§3.6): Ring-Benachrichtigung ──
+    // Klingel = eigener HIGH-Kanal MIT Vibrations-Muster (CallRules.RING_-
+    // VIBRATION_PATTERN). Bewusst KANAL-Vibration statt Vibrator-API: die
+    // Manifest-Erlaubnis android.permission.VIBRATE existiert NICHT (keine
+    // Lane durfte sie nachtragen) — die Kanal-Schwingung läuft über die
+    // erteilte POST_NOTIFICATIONS und stoppt mit dem Notification-Cancel
+    // (Annahme/Ablehnen/Timeout/Ende). Heads-up (kein full-screen-lock):
+    // USE_FULL_SCREEN_INTENT fehlt ebenfalls am Manifest — setFullScreenIntent
+    // degradiert dort ehrlich auf Heads-up (§3.6-Wunsch, Bedarf notiert).
+    private const val CALL_NOTIFY_CHANNEL = "fb_call"
+    private const val CALL_NOTIFY_ID = 8000
 
     // --- Termux revival watchdog ---
     // When the relay is unreachable past these thresholds, fire the
@@ -527,6 +541,23 @@ object RelayClient {
     val pairingFrame: StateFlow<PairingFrameRules.PairingFrame?> = _pairingFrame.asStateFlow()
 
     /**
+     * ── W21 ANRUF (P4-P6 + G11/G12): die EINE Call-Session ───────────────────
+     * Genau ein Anruf je Gerät (CallRules.inviteDecision weist Zweitrufe mit
+     * call_declined.enc ab); null = kein Anruf. Die UI bindet: ankommender
+     * Anruf = Vollbild-Karte (ChatScreen-Call-Mount), laufender Anruf =
+     * Status-Zeile (Strip) mit Auflegen/Sprechen/Freigabe-Pill/Screenshot.
+     */
+    private val _callSession = MutableStateFlow<CallRules.CallSession?>(null)
+    val callSession: StateFlow<CallRules.CallSession?> = _callSession.asStateFlow()
+
+    /** Klingel-Fenster-Takt (RING → call_missed.enc, CallRules.RING_TIMEOUT_MS). */
+    private var callRingTimeoutJob: Job? = null
+    /** Sicherheits-Deckel des ACTIVEN Calls (CallRules.ACTIVE_CAP_MS → hangUp). */
+    private var callDeckJob: Job? = null
+    /** Turn-Zähler der Call-Aufnahme-Chunks (Name-Bindung, je Call neu). */
+    private val callAudioChunkSeq = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
      * ── B6 (Multi-Gerät): Backfill-Verband ───────────────────────────────────
      * backfillSyncing: Agent-ids, deren Verlauf gerade nachgeladen wird (dezente
      * Fortschritt-Zeile in der Conversation, KEIN Blockieren).
@@ -619,6 +650,21 @@ object RelayClient {
         MutableStateFlow<Map<String, Map<String, AgentStatusRules.SubAgentSlot>>>(emptyMap())
     val agentSubs: StateFlow<Map<String, Map<String, AgentStatusRules.SubAgentSlot>>> =
         _agentSubs.asStateFlow()
+
+    /**
+     * F1 (Sir, 18.11.2026, Verdrahtung MERGE-LANE): Cron-Jobs des GATEWAYS —
+     * cron.status(-enc)-Frames des Adapters (Karte „Geplante Aufgaben“ am
+     * Dashboard). APP-GENERISCH: der Frame trägt den GESAMT-Stand
+     * ({jobs:[{name,status,next_at?}]}, next_at NUR planned — Contract
+     * contrib/hermes-chat-plugin/adapter.py emit_cron_status); je Frame =
+     * REPLACE. Klartext- UND enc-Pfad landen im selben Flow (enc: Payload
+     * im ct, Kettensync-Pflicht wie agent.status.enc). Räumung an den 3
+     * Verbindungspunkten (Parität markAgentsOffline).
+     */
+    private val _cronJobs =
+        MutableStateFlow<List<DashboardRules.CronJobItem>>(emptyList())
+    val cronJobs: StateFlow<List<DashboardRules.CronJobItem>> =
+        _cronJobs.asStateFlow()
 
     /** MEDIA-T1: Empfangene Agenten-Medien (vollständig reassembliert). */
     private val _chatMediaEvents = MutableStateFlow<List<ChatMediaEvent>>(emptyList())
@@ -960,12 +1006,18 @@ object RelayClient {
         // Verbindung lügt beides (Parität agentWorking-Verband).
         _agentStatus.value = emptyMap()
         _agentSubs.value = emptyMap()
+        // F1 (cron.status-Verband): Cron-Jobs ebenso — ohne Verbindung lügt
+        // der letzte Karten-Stand weiter (Parität markAgentsOffline).
+        _cronJobs.value = emptyList()
         // PH-FIX-CHAT-A (F6): bewusstes Trennen markiert die Agenten ebenso
         // offline (onClosed läuft hier nicht — disconnect() bumpt generation,
         // die Callbacks kehren früh zurück).
         markAgentsOffline()
         // APP-ANSCHLUSS: Geräte-Liste ebenso — ohne Verbindung „online“ gelogen.
         markDevicesOffline()
+        // W21 ANRUF (P6): bewusstes Trennen während eines Calls — sauber beenden
+        // (genau wie bei totem Socket; kein Signal, kein Klingeln-Überbleibsel).
+        endCallOnConnectionLost()
         // PH-3 Welle 2: Session-Keys verwerfen (RAM-only; frischer Handshake je
         // Verbindung — Spec §2.5 Rotation je Session).
         cryptoSessions.clear()
@@ -1231,6 +1283,9 @@ object RelayClient {
                 // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
                 _agentStatus.value = emptyMap()
                 _agentSubs.value = emptyMap()
+                // F1 (cron.status-Verband): Cron-Jobs ebenso — ohne Verbindung
+                // lügt der letzte Karten-Stand weiter (Parität markAgentsOffline).
+                _cronJobs.value = emptyList()
                 // PH-FIX-CHAT-A (F6): die Agenten-Liste ist der letzte
                 // relay.state-Snapshot — ohne Verbindung ist JEDE „online“-
                 // Anzeige gelogen (Presence-Push ist Ein-Weg ohne Spool).
@@ -1238,6 +1293,10 @@ object RelayClient {
                 // APP-ANSCHLUSS: Geräte-Liste ebenso (Parität markAgentsOffline).
                 markDevicesOffline()
                 endSession()
+                // W21 ANRUF (P6): Verbindung weg während eines Calls — sauber
+                // beenden (kein Senden an der toten WS möglich; Klingel-/Timer-
+                // Räumung läuft mit, der Adapter holt das End-Signal selbst).
+                endCallOnConnectionLost()
                 // v0.12.0 (Akku P0-2): Leakschutz — ein gestorbener Stream darf
                 // den Vollcapture-Zustand nicht dauerhaft stehen lassen.
                 EventStore.highVolumeEvents = false
@@ -1287,12 +1346,19 @@ object RelayClient {
                 // W18-Kette: agent.status + Sub-Slots ebenso (Parität agentWorking).
                 _agentStatus.value = emptyMap()
                 _agentSubs.value = emptyMap()
+                // F1 (cron.status-Verband): Cron-Jobs ebenso — ohne Verbindung
+                // lügt der letzte Karten-Stand weiter (Parität markAgentsOffline).
+                _cronJobs.value = emptyList()
                 // PH-FIX-CHAT-A (F6): wie onClosed — Snapshot „online“ ist
                 // ohne Verbindung gelogen.
                 markAgentsOffline()
                 // APP-ANSCHLUSS: Geräte-Liste ebenso (Parität markAgentsOffline).
                 markDevicesOffline()
                 endSession()
+                // W21 ANRUF (P6): Verbindung weg während eines Calls — sauber
+                // beenden (kein Senden an der toten WS möglich; Klingel-/Timer-
+                // Räumung läuft mit, der Adapter holt das End-Signal selbst).
+                endCallOnConnectionLost()
                 // v0.12.0 (Akku P0-2): Leakschutz — wie onClosed.
                 EventStore.highVolumeEvents = false
                 EventStore.streamingEnabled = false
@@ -1661,6 +1727,10 @@ object RelayClient {
                 // bleiben KLAR wie beim chat.activity.enc-Verband).
                 "agent.status" -> { handleAgentStatusFrame(json); return }
                 "agent.status.enc" -> { handleAgentStatusEnc(json); return }
+                // F1 (18.11.2026): cron.status — Gateway-Cron-Jobs (Karte
+                // „Geplante Aufgaben“; klar + enc, enc-Payload = {jobs: …} im ct).
+                "cron.status" -> { handleCronStatusFrame(json); return }
+                "cron.status.enc" -> { handleCronStatusEnc(json); return }
                 // MEDIA-T1: chunked Media (E2E-only) + Chunk-Acks (Progress).
                 "chat.media.enc" -> { handleChatMediaEnc(json); return }
                 "chat.media.chunk_ack" -> { handleMediaChunkAck(json); return }
@@ -1677,6 +1747,11 @@ object RelayClient {
                 // B5: Anmelde-Tor — pairing.request → StateFlow (UI/B7 bindet),
                 // Senden über sendPairingApprove/sendPairingDeny (sendRawFrame).
                 "pairing.request" -> { handlePairingRequestFrame(json); return }
+                // W21 ANRUF (P4): Call-Signaling Agent→Phone — opak Pass-Through
+                // des Relays (Inhalt NUR im ct; Klar = chat_id/call_id/agent_id/
+                // session/hdr). Empfang fail-closed je E2E-Session (Kettensync).
+                "call_invite.enc" -> { handleCallInviteEnc(json); return }
+                "call_end.enc" -> { handleCallEndEnc(json); return }
                 // B6: Backfill-Verlauf-Batch je frisches Gerät (K ≤ 200) +
                 // ids-only Status-Snapshot — Chips über die msg_id-Bindung.
                 "chat.backfill.enc" -> { handleChatBackfillEnc(json); return }
@@ -2664,6 +2739,38 @@ object RelayClient {
             handleChatFpCheckResult(agentId, chatId, ts, ok = null, text = text)
             return
         }
+        // ── W21 ANRUF (P5, roadmap-anruf.md §3.3): Call-Modus-TTS-Chunks ────
+        // Der Adapter markiert Call-Antworten im ct mit call_chunk_seq (satz-
+        // weise, §3.3 "früh raus") + call_id. Im AKTIVEN Anruf wird der Chunk
+        // SOFORT GESPROCHEN (TTS-Verbund, QUEUE_ADD = satzweise Reihenfolge);
+        // der normale Verlaufspfad (Bubble/Platte/Notification) bleibt — der
+        // Chat-Verlauf zeigt die Antwort zusätzlich. Fremde/Spät-Marker sind
+        // normale Chat-Antworten (kein Call-Bezug, kein Sprechen).
+        val payloadCallId = runCatching {
+            payload.get(CallRules.CALL_ID_FIELD)
+                ?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        val chunkSeq = runCatching {
+            payload.get(CallRules.CALL_CHUNK_SEQ_FIELD)
+                ?.takeIf { it.isJsonPrimitive }?.asInt
+        }.getOrNull()
+        if (CallRules.callTtsActive(_callSession.value, payloadCallId, chunkSeq) &&
+            text.isNotBlank() && appContext != null
+        ) {
+            val ctx = appContext!!
+            try {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    runCatching {
+                        ChatSpeechSpeaker.ensure(ctx)
+                        ChatSpeechSpeaker.enqueue(
+                            ctx,
+                            CallRules.CALL_SPEAK_ID_BASE + (chunkSeq ?: 0),
+                            text,
+                        )
+                    }
+                }
+            } catch (_: Exception) {}
+        }
         // SEC-W1 W1C-4: atomares update{} (CAS) — kein Lost-Update mehr.
         _chatEvents.update { (it + ChatMessageEvent(chatId, agentId, text, ts, elapsedMs))
             .takeLast(MAX_CHAT_EVENTS) }
@@ -2770,6 +2877,441 @@ object RelayClient {
     fun dismissPairingFrame() {
         _pairingFrame.value = null
     }
+
+    // ── W21 ANRUF (P4-P6 + G11/G12): Call-Signaling — Empfang/Senden ─────────
+    // Frame-Verträge GELESEN (tools/android_relay.py + adapter.py, HEAD b063693):
+    // - Agent→Phone call_invite.enc: ct = {kind, reason} (opak), Klar = ids.
+    // - Phone→Agent call_ringing/accepted/declined/missed/ended.enc: leerer ct,
+    //   call_id als Klar-Feld, je Geräte-Session (Relay löst agent_id aus dem
+    //   Session-Broker, NIE aus dem Frame), Rate-Cap 6/s je Gerät.
+    // - §3.4-Kette: Invite → sofort call_ringing (App quittiert Klingeln) →
+    //   accept/decline; verpasster Ring (45 s) → call_missed.enc.
+
+    /** call_invite.enc — Klingeln: ct entschlüsseln (Kettensync-PFLICHT), Entscheidung aus CallRules. */
+    private fun handleCallInviteEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val callId = stringOf(json, "call_id")
+        val chatId = stringOf(json, "chat_id")
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() } ?: run {
+            Log.w(TAG, "ANRUF: call_invite.enc ohne aktive E2E-Session verworfen (fail-closed)")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "ANRUF: call_invite.enc-Entschlüsselung fehlgeschlagen — verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val kind = runCatching {
+            payload.get("kind")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        val reason = runCatching {
+            payload.get("reason")?.takeIf { it.isJsonPrimitive }?.asString
+        }.getOrNull()
+        val now = System.currentTimeMillis()
+        val invite = CallRules.InviteSpec(callId, agentId, chatId, kind ?: "voice", reason)
+        when (val decision = CallRules.inviteDecision(_callSession.value, invite, now)) {
+            is CallRules.InviteDecision.Invalid -> {
+                Log.w(TAG, "ANRUF: call_invite mit unbrauchbaren IDs verworfen (fail-closed, kein Signal)")
+            }
+            // Zweiter Call während RINGING/ACTIVE — ABWEISUNG des NEUEN Calls
+            // (Parität Backend: ein Anruf je Gerät; der Adapter fällt auf
+            // Chat-Fallback zurück und verliert nichts).
+            CallRules.InviteDecision.Busy -> {
+                Log.i(TAG, "ANRUF: Zweitanruf während laufendem Call abgewiesen (call_declined.enc)")
+                if (validCallSignalFields(callId, chatId)) {
+                    sendCallSignal(CallRules.FRAME_DECLINED, agentId, chatId ?: "", callId ?: "")
+                }
+            }
+            // Duplikat-Invite (Spool-Flush) — Klingeln bleibt stehen, Fenster neu.
+            CallRules.InviteDecision.Refreshed -> {
+                Log.i(TAG, "ANRUF: Duplikat-Invite (call ${(callId ?: "").take(12)}) — Klingeln gehalten")
+                scheduleRingTimeout(callId ?: "")
+            }
+            is CallRules.InviteDecision.Opened -> {
+                _callSession.value = decision.session
+                callAudioChunkSeq.set(0)
+                startCallRingNotification(decision.session)
+                Log.i(TAG, "ANRUF: Ankommender Anruf von ${agentId.take(24)} (call ${decision.session.callId.take(12)}, kind=${decision.session.kind})")
+                // §3.4: Klingeln SOFORT quittieren — der Adapter wartet auf
+                // ringing/accepted je Session (Signal-Verband wie chat.read).
+                sendCallSignal(CallRules.FRAME_RINGING, agentId, decision.session.chatId, decision.session.callId)
+                scheduleRingTimeout(decision.session.callId)
+            }
+        }
+    }
+
+    /** call_end.enc — Agent legt auf: opak ct entschlüsseln (Kettensync), Session beenden. */
+    private fun handleCallEndEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val callId = stringOf(json, "call_id")
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() } ?: run {
+            Log.w(TAG, "ANRUF: call_end.enc ohne aktive E2E-Session verworfen (fail-closed)")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "ANRUF: call_end.enc-Entschlüsselung fehlgeschlagen — verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val session = _callSession.value ?: run {
+            // Parität Adapter-Verwurf: fremdes/spätes Ende ohne lokalen Auftrag.
+            Log.i(TAG, "ANRUF: call_end.enc ohne lokalen Anruf-Auftrag — verworfen (call ${(callId ?: "").take(12)})")
+            return
+        }
+        val ended = CallRules.remoteEnd(session, callId, System.currentTimeMillis())
+        if (ended == null) {
+            Log.w(TAG, "ANRUF: call_end für fremde/laufende call_id ${(callId ?: "").take(12)} — verworfen")
+            return
+        }
+        Log.i(TAG, "ANRUF: Agent hat aufgelegt (call ${session.callId.take(12)})")
+        endCallLocalState(ended)
+    }
+
+    /** Form-Check für abweisende Signale auf defekten Klar-Feldern (kein Echo von Mist). */
+    private fun validCallSignalFields(callId: String?, chatId: String?): Boolean =
+        CallRules.validCallId(callId) && !chatId.isNullOrBlank()
+
+    /**
+     * Phone→Agent Call-Signum über die E2E-Session (WS, Klar = ids + Krypto-
+     * Hülle; ct bleibt leer {}). Parität chat.send.enc-Bau: AAD bindet die
+     * chat_id, der Relay prüft Session/Replay/Rate je SENDER-Gerät.
+     */
+    private fun sendCallSignal(frameType: String, agentId: String, chatId: String, callId: String): Boolean {
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() } ?: return false
+        val frame = runCatching {
+            peer.encryptFrame(frameType, chatId, emptyMap<String, String>())
+        }.getOrNull() ?: return false
+        // Klar-Feld des Signal-Vertrags (ids-only — kein Inhalt außerhalb des ct).
+        frame.addProperty("call_id", callId)
+        val ws = webSocket ?: return false
+        val ok = runCatching { ws.send(frame.toString()) }.getOrDefault(false)
+        if (BuildConfig.DEBUG) Log.d(TAG, "ANRUF: $frameType → Agent ${agentId.take(24)} (ok=$ok)")
+        return ok
+    }
+
+    // ── Klingel-Benachrichtigung (Vibration über KANAL, kein VIBRATE-Perm) ──
+
+    private fun startCallRingNotification(session: CallRules.CallSession) {
+        val ctx = appContext ?: return
+        // Android 13+ ohne POST_NOTIFICATIONS: Karte in der Chat-Route bleibt
+        // die Anzeige (Request-Lauf existiert in BridgeScreen).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ctx.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.i(TAG, "ANRUF: Ring ohne Notification-Erlaubnis still — Vollbild-Karte in der Chat-Route")
+            return
+        }
+        runCatching {
+            val nm = ctx.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        CALL_NOTIFY_CHANNEL,
+                        // MERGE-LANE 18.11.: Klingel-Kanal-Texte je Locale (×3).
+                        ctx.getString(R.string.call_channel_name),
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ).apply {
+                        description = ctx.getString(R.string.call_channel_description)
+                        enableVibration(true)
+                        vibrationPattern = CallRules.RING_VIBRATION_PATTERN
+                    },
+                )
+            }
+            val alias = CallRules.displayName(
+                _agents.value.firstOrNull { it.agentId == session.agentId }?.displayName,
+                session.agentId,
+            )
+            val tap = PendingIntent.getActivity(
+                ctx, CALL_NOTIFY_ID,
+                Intent(ctx, MainActivity::class.java)
+                    .setFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notif = NotificationCompat.Builder(ctx, CALL_NOTIFY_CHANNEL)
+                .setSmallIcon(R.drawable.ic_call)
+                .setContentTitle(alias)
+                // MERGE-LANE 18.11.: Klingel-Fallback je Locale — aus den
+                // call_*-Ressourcen komponiert (Kanal-Keys call_channel_name/
+                // call_channel_description; der Fallback nennt die zwei Wege
+                // der Klingel-Karte ehrlich: Annehmen / Ablehnen).
+                .setContentText(
+                    session.reason.ifBlank {
+                        ctx.getString(R.string.call_ring_kind_generic) + " — " +
+                            ctx.getString(R.string.call_action_accept) + " / " +
+                            ctx.getString(R.string.call_action_decline)
+                    },
+                )
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_CALL)
+                .setContentIntent(tap)
+                .setOngoing(true)
+                // §3.6-FSI-Wunsch: ohne Manifest-Erlaubnis degradiert dies
+                // ehrlich auf Heads-up (kein Crash, kein Stillstand).
+                .setFullScreenIntent(tap, true)
+                .build()
+            nm.notify(CALL_NOTIFY_ID, notif)
+        }.onFailure { Log.w(TAG, "ANRUF: Ring-Notification fehlgeschlagen: ${it.message}") }
+    }
+
+    private fun stopCallRingNotification() {
+        val nm = appContext
+            ?.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager ?: return
+        runCatching { nm.cancel(CALL_NOTIFY_ID) }
+    }
+
+    // ── Timeout-Takte (P6) ───────────────────────────────────────────────────
+
+    private fun cancelCallTimers() {
+        callRingTimeoutJob?.cancel()
+        callRingTimeoutJob = null
+        callDeckJob?.cancel()
+        callDeckJob = null
+    }
+
+    private fun scheduleRingTimeout(callId: String) {
+        callRingTimeoutJob?.cancel()
+        callRingTimeoutJob = scope?.launch {
+            kotlinx.coroutines.delay(CallRules.RING_TIMEOUT_MS)
+            val session = _callSession.value ?: return@launch
+            if (session.callId != callId ||
+                !CallRules.ringWindowPassed(session, System.currentTimeMillis())
+            ) {
+                return@launch
+            }
+            val ended = CallRules.ringTimeout(session, System.currentTimeMillis())
+            Log.i(TAG, "ANRUF: Klingel-Fenster aus — verpasst (call_missed.enc, call ${callId.take(12)})")
+            if (ended != null) endCallLocalState(ended)
+            sendCallSignal(CallRules.FRAME_MISSED, session.agentId, session.chatId, session.callId)
+        }
+    }
+
+    private fun scheduleCallDeck(callId: String) {
+        callDeckJob?.cancel()
+        callDeckJob = scope?.launch {
+            kotlinx.coroutines.delay(CallRules.ACTIVE_CAP_MS)
+            val session = _callSession.value ?: return@launch
+            if (session.callId != callId ||
+                !CallRules.activeCapExceeded(session, System.currentTimeMillis())
+            ) {
+                return@launch
+            }
+            val ended = CallRules.hangUp(session, System.currentTimeMillis())
+            Log.w(TAG, "ANRUF: Sicherheits-Deckel — Call sauber beendet (call ${callId.take(12)})")
+            if (ended != null) {
+                endCallLocalState(ended)
+                sendCallSignal(CallRules.FRAME_ENDED, session.agentId, session.chatId, session.callId)
+            }
+        }
+    }
+
+    // ── UI-Aktionen (Call-Mount bindet sie an Annehmen/Ablehnen/Auflegen) ────
+
+    /** Annehmen (48dp-Karte): RINGING → ACTIVE + call_accepted.enc (§3.4). */
+    fun acceptCall() {
+        val session = _callSession.value ?: return
+        val next = CallRules.accept(session, System.currentTimeMillis()) ?: return
+        _callSession.value = next
+        callAudioChunkSeq.set(0)
+        stopCallRingNotification()
+        cancelCallTimers()
+        scheduleCallDeck(session.callId)
+        sendCallSignal(CallRules.FRAME_ACCEPTED, session.agentId, session.chatId, session.callId)
+        Log.i(TAG, "ANRUF: Angenommen (call ${session.callId.take(12)}) — Call-Modus aktiv")
+    }
+
+    /** Ablehnen (48dp-Karte): RINGING → ENDED + call_declined.enc. */
+    fun declineCall() {
+        val session = _callSession.value ?: return
+        val next = CallRules.decline(session, System.currentTimeMillis()) ?: return
+        Log.i(TAG, "ANRUF: Abgelehnt (call ${session.callId.take(12)})")
+        endCallLocalState(next)
+        sendCallSignal(CallRules.FRAME_DECLINED, session.agentId, session.chatId, session.callId)
+    }
+
+    /** Auflegen (Status-Zeile): ACTIVE → ENDED + call_ended.enc. */
+    fun hangUpCall() {
+        val session = _callSession.value ?: return
+        val next = CallRules.hangUp(session, System.currentTimeMillis()) ?: return
+        Log.i(TAG, "ANRUF: Aufgelegt (call ${session.callId.take(12)}, dauer=${CallRules.activeSeconds(session, System.currentTimeMillis())}s)")
+        endCallLocalState(next)
+        sendCallSignal(CallRules.FRAME_ENDED, session.agentId, session.chatId, session.callId)
+    }
+
+    /** G11-Pill: Agent darf im Call den Screen steuern (bestehender interaction-Verband). */
+    fun setCallAgentSteer(allowed: Boolean) {
+        val session = _callSession.value ?: return
+        val next = CallRules.setAgentSteer(session, allowed) ?: return
+        _callSession.value = next
+        Log.i(TAG, "ANRUF: Screen-Steuer-Freigabe $allowed (call ${session.callId.take(12)})")
+    }
+
+    /**
+     * Lokales Call-Ende (ALLE Pfadenden): StateFlow, Klingel-Räumung, Timer,
+     * Call-Modus-Sprachausgabe stoppen (barge-in/Ende §3.1). KEIN Senden — die
+     * Aufrufer senden ihre Signale getrennt (Senden an toter WS = no-op false).
+     */
+    private fun endCallLocalState(ended: CallRules.CallSession) {
+        _callSession.value = ended
+        stopCallRingNotification()
+        cancelCallTimers()
+        try {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { ChatSpeechSpeaker.stopAll() }
+            }
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * P6: Verbindungsweg stirbt (onClosed/onFailure/disconnect) während eines
+     * Calls — sauber beenden OHNE Signal (WS tot; der Adapter holt das über
+     * sein Ring-Fenster/TTL selbst). Klingel/Ausgabe/Aufnahme räumen die UI-
+     * Verband-Beobachter mit (Session-Phase → ENDED).
+     */
+    private fun endCallOnConnectionLost() {
+        val session = _callSession.value ?: return
+        val ended = CallRules.connectionLost(session, System.currentTimeMillis()) ?: return
+        Log.w(TAG, "ANRUF: Verbindung verloren (code-lose Trennung) — Call ${session.callId.take(12)} sauber beendet")
+        endCallLocalState(ended)
+    }
+
+    // ── P5 (§3.1-§3.3): Call-Modus-Sprachweg OHNE WebRTC ────────────────────
+
+    /**
+     * Nutzersprache im aktiven Call: der Aufnahme-Chunk (AAC/M4A derselben
+     * Voice-Memo-Pipeline) läuft als chat.media.enc-Chunk (kind "voice")
+     * E2E zum Agenten — der Adapter transkribiert (ASR) und antwortet als
+     * TTS-Chunks (call_chunk_seq-Marker, unten gesprochen). Bewusst KEINE
+     * Chat-Bubble/Platte-Kopie für das Turn: es lebt im Call-Kontext.
+     * onResult läuft IMMER auf dem Main-Thread (deliverMediaResult-Muster).
+     */
+    fun sendCallAudio(
+        agentId: String,
+        bytes: ByteArray,
+        onResult: (ok: Boolean, error: String?) -> Unit,
+    ) {
+        val session = _callSession.value
+        if (session == null || session.phase != CallRules.Phase.ACTIVE) {
+            deliverMediaResult2(onResult, false, "kein aktiver Anruf")
+            return
+        }
+        if (session.agentId != agentId) {
+            deliverMediaResult2(onResult, false, "Anruf läuft mit einem anderen Agenten")
+            return
+        }
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() }
+        val chatId = peer?.chatId
+        if (peer == null || chatId.isNullOrBlank()) {
+            deliverMediaResult2(onResult, false, "keine aktive E2E-Sitzung")
+            return
+        }
+        if (bytes.isEmpty() || bytes.size.toLong() > MediaProtocol.MAX_BYTES) {
+            deliverMediaResult2(onResult, false, "Call-Chunk leer oder zu groß")
+            return
+        }
+        val base = serverUrl?.trim()?.trimEnd('/')
+        if (base.isNullOrBlank()) {
+            deliverMediaResult2(onResult, false, "Kein Relay-Server konfiguriert")
+            return
+        }
+        if (!isConnected) {
+            deliverMediaResult2(onResult, false, "Keine Verbindung zum Relay")
+            return
+        }
+        val seq = callAudioChunkSeq.getAndIncrement()
+        val mediaId = MediaProtocol.newMediaId { CryptoEngine.secureRandomBytes(16) }
+        val name = CallRules.callAudioName(session.callId, seq)
+        activeScopeForCall()?.launch(Dispatchers.IO) {
+            val outcome = runCatching {
+                uploadMediaChunks(
+                    base, agentId, peer, chatId, mediaId,
+                    "voice", name, "audio/mp4", bytes,
+                )
+            }
+            outcome.onSuccess {
+                if (it.sent) {
+                    Log.i(TAG, "ANRUF: Call-Turn hoch (turn#$seq, ${bytes.size} B, call ${session.callId.take(12)})")
+                    deliverMediaResult2(onResult, true, null)
+                } else {
+                    deliverMediaResult2(onResult, false, "Relay lehnte Call-Chunk ab")
+                }
+            }.onFailure { e ->
+                deliverMediaResult2(onResult, false, e.message?.take(80) ?: "Call-Chunk fehlgeschlagen")
+            }
+        }
+    }
+
+    private fun activeScopeForCall(): CoroutineScope? = scope?.takeIf { isConnected }
+
+    /** Main-Thread-Zusteller der Call-Ergebnisse (deliverMediaResult ohne media_id). */
+    private fun deliverMediaResult2(onResult: (ok: Boolean, error: String?) -> Unit, ok: Boolean, error: String?) {
+        try {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                runCatching { onResult(ok, error) }
+            }
+        } catch (_: Exception) {}
+    }
+
+    // ── G12 (§7.2): Screenshot NUR für den Agenten ──────────────────────────
+
+    /**
+     * RAM-Bitmap (A11y-Screenshot-API, downscaled/EXIF-leer via Neukompression)
+     * als Bild-Message kind "screengrab" E2E an den Agenten — KEIN MediaStore/
+     * Galerie-Schreiben, KEINE lokale Kopie (uploadMediaChunks persistiert
+     * nichts; nach dem POST existiert nichts mehr vom Bild). Der Aufrufer
+     * (Call-Mount) hält die Capability-Schranke screen_capture + 3-s-Chip.
+     */
+    fun sendScreengrab(
+        agentId: String,
+        name: String,
+        mime: String,
+        bytes: ByteArray,
+        onResult: (ok: Boolean, error: String?) -> Unit,
+    ) {
+        val peer = cryptoSessions[agentId]?.takeIf { it.isActive() }
+        val chatId = peer?.chatId
+        if (peer == null || chatId.isNullOrBlank()) {
+            deliverMediaResult2(onResult, false, "keine aktive E2E-Sitzung")
+            return
+        }
+        if (bytes.isEmpty() || bytes.size.toLong() > MediaProtocol.MAX_BYTES) {
+            deliverMediaResult2(onResult, false, "Screengrab leer oder zu groß")
+            return
+        }
+        val base = serverUrl?.trim()?.trimEnd('/')
+        if (base.isNullOrBlank()) {
+            deliverMediaResult2(onResult, false, "Kein Relay-Server konfiguriert")
+            return
+        }
+        if (!isConnected) {
+            deliverMediaResult2(onResult, false, "Keine Verbindung zum Relay")
+            return
+        }
+        val mediaId = MediaProtocol.newMediaId { CryptoEngine.secureRandomBytes(16) }
+        activeScopeForCall()?.launch(Dispatchers.IO) {
+            val outcome = runCatching {
+                uploadMediaChunks(
+                    base, agentId, peer, chatId, mediaId,
+                    "screengrab", name, mime, bytes,
+                )
+            }
+            outcome.onSuccess {
+                if (it.sent) {
+                    Log.i(TAG, "ANRUF: Screengrab an Agent ${agentId.take(24)} gesendet (RAM-only, kein Persist)")
+                    deliverMediaResult2(onResult, true, null)
+                } else {
+                    deliverMediaResult2(onResult, false, "Relay lehnte Screengrab ab")
+                }
+            }.onFailure { e ->
+                deliverMediaResult2(onResult, false, e.message?.take(80) ?: "Screengrab fehlgeschlagen")
+            }
+        }
+    }
+
 
     /** APP-ANSCHLUSS: Frame-Typ des Entfernens (Kap. 4.2, B4-Kontrakt). */
     private const val DEVICE_REVOKE_FRAME = "device_revoke"
@@ -3136,6 +3678,75 @@ object RelayClient {
             return
         }
         handleAgentStatusFrame(json)
+    }
+
+    /**
+     * F1 (Verdrahtung MERGE-LANE 18.11.): cron.status-Frame → [cronJobs]-Flow.
+     * Parsen fail-soft je Zeile (eine kaputte Zeile fällt, der Rest bleibt);
+     * kein Downgrade-Guard nötig — der Adapter sendet enc-first, ein
+     * Klartext-Frame existiert NUR ohne E2E-Session (Verband wie agent.status).
+     */
+    private fun handleCronStatusFrame(json: JsonObject) {
+        val jobs = parseCronJobs(json)
+        _cronJobs.value = jobs
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                TAG,
+                "cron.status: ${jobs.size} Jobs " +
+                    "(agent ${stringOf(json, "agent_id")?.take(24) ?: "?"})",
+            )
+        }
+    }
+
+    /**
+     * F1: cron.status.enc-Spiegel — Payload entschlüsseln (Kettensync
+     * PFLICHT, sonst Desync) und DIESELBE klare Wirkung wie cron.status
+     * (Klon des agent.status.enc-Verbands; Jobs = {jobs: …}-ct-Payload).
+     */
+    private fun handleCronStatusEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: return
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "PH-3: cron.status.enc-Spiegel verworfen (Entschlüsselung fehlgeschlagen)")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val jobs = parseCronJobs(payload)
+        _cronJobs.value = jobs
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "cron.status.enc: ${jobs.size} Jobs (agent ${agentId.take(24)})")
+        }
+    }
+
+    /**
+     * F1: cron.status-Jobs parsen — je Zeile name (Pflicht, sonst Zeile weg),
+     * status (Protokoll-String, Unbekanntes = geplant per DashboardRules),
+     * next_at (strikt numerisch — GSON-Koerzion als String-Primitiv bleibt
+     * raus, statt still 0 zu erfinden).
+     */
+    private fun parseCronJobs(json: JsonObject): List<DashboardRules.CronJobItem> {
+        val arr = json.get("jobs")?.takeIf { it.isJsonArray }?.asJsonArray ?: return emptyList()
+        val out = ArrayList<DashboardRules.CronJobItem>(arr.size())
+        for (element in arr) {
+            val row = element.takeIf { it.isJsonObject }?.asJsonObject ?: continue
+            val name = row.get("name")
+                ?.takeIf { it.isJsonPrimitive }?.asString?.trim().orEmpty()
+            if (name.isEmpty()) continue
+            val status = row.get("status")
+                ?.takeIf { it.isJsonPrimitive }?.asString
+            val nextAt = row.get("next_at")
+                ?.takeIf { it.isJsonPrimitive }
+                ?.let { runCatching { it.asLong }.getOrNull() }
+                ?.takeIf { it > 0L }
+            out += DashboardRules.CronJobItem(
+                name = name,
+                state = DashboardRules.cronJobState(status),
+                nextAtMs = nextAt,
+            )
+        }
+        return out
     }
 
     /** PH-3: session_fp des Agenten (für den FP-Abgleich-Button im Chat). */

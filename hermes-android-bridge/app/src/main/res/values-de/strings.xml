@@ -596,4 +596,73 @@
     <string name="dev_pairing_ttl">Restzeit %1$s</string>
     <string name="dev_pairing_accept">Annehmen</string>
     <string name="dev_pairing_deny">Ablehnen</string>
+    <!-- W21 ANRUF (P4-P6): Call-UI — Klingel-Karte, Aktive-Leiste, Freigaben, Klingel-Kanal -->
+    <string name="call_ring_kind_voice">Eingehender Sprachanruf</string>
+    <string name="call_ring_kind_generic">Eingehender Anruf</string>
+    <string name="call_ringing_a11y">Ankommender Anruf von %1$s — Karte mit Annehmen und Ablehnen</string>
+    <string name="call_ring_icon_a11y">Anruf-Signet</string>
+    <string name="call_action_decline">Ablehnen</string>
+    <string name="call_action_decline_a11y">Anruf ablehnen</string>
+    <string name="call_action_accept">Annehmen</string>
+    <string name="call_action_accept_a11y">Anruf annehmen</string>
+    <string name="call_active_a11y">Anruf mit %1$s läuft, %2$s</string>
+    <string name="call_active_status">Anruf aktiv · %1$s</string>
+    <string name="call_action_hangup">Auflegen</string>
+    <string name="call_action_hangup_a11y">Anruf beenden</string>
+    <string name="call_action_talk">Sprechen</string>
+    <string name="call_action_talk_recording">Aufnahme — loslassen</string>
+    <string name="call_action_talk_a11y">Sprachturn starten (halten)</string>
+    <string name="call_action_talk_recording_a11y">Aufnahme läuft — loslassen zum Senden</string>
+    <string name="call_action_screengrab">Screenshot</string>
+    <string name="call_action_screengrab_confirm">Bestätigen (3 s)</string>
+    <string name="call_action_screengrab_a11y">Screenshot an den Agenten senden (bestätigungspflichtig)</string>
+    <string name="call_action_screengrab_confirm_a11y">Screenshot senden bestätigen — drei Sekunden Zeit</string>
+    <string name="call_steer_on">Wisch-Freigabe an</string>
+    <string name="call_steer_off">Wisch-Freigabe aus</string>
+    <string name="call_steer_cap_missing">Bedienen aus</string>
+    <string name="call_steer_on_a11y">Agent darf den Bildschirm steuern — zum Ausschalten tippen</string>
+    <string name="call_steer_off_a11y">Agent darf den Bildschirm nicht steuern — zum Freigeben tippen</string>
+    <string name="call_channel_name">Anrufe</string>
+    <string name="call_channel_description">Eingehende Anrufe deiner Agenten</string>
+    <!-- W21 ASSISTENT-PAKET (G2/G5-Karte) -->
+    <string name="assistant_pkg_bubble_title">Overlay-Blase über allen Apps</string>
+    <string name="assistant_pkg_bubble_ready_desc">Tippen öffnet die Spracheingabe</string>
+    <string name="assistant_pkg_bubble_need_perm_desc">Freigabe fehlt — Overlays für die Blase erlauben</string>
+    <string name="assistant_pkg_bubble_grant_action">Overlay-Freigabe erteilen</string>
+    <string name="assistant_pkg_bubble_grant_a11y">Overlay-Freigabe für die Assistenten-Blase erteilen</string>
+    <string name="assistant_pkg_bubble_grant_unavailable">OEM-Weg nicht verfügbar — Overlay-Freigabe in den Systemeinstellungen suchen</string>
+    <string name="assistant_pkg_screen_context_title">Screen-Kontext</string>
+    <string name="assistant_pkg_screen_context_desc">Zustimmung je Session — der Agent darf den Bildschirm nur mit ausdrücklicher Freigabe lesen</string>
+    <string name="assistant_pkg_screen_context_no_session">Keine Session — die Zustimmung wird nach dem nächsten Agenten-Start neu gefragt</string>
+    <string name="assistant_pkg_screen_context_grant_a11y">Screen-Kontext für diese Session erlaubt — zum Widerrufen tippen</string>
+    <string name="assistant_pkg_screen_context_ask_a11y">Screen-Kontext für diese Session fragen — zum Erlauben tippen</string>
+    <!-- PH-6/P24: Verlauf-Siegel + Volltext-Suchindex -->
+    <string name="history_seal_breach_title">Verlauf kann nicht geladen werden</string>
+    <string name="history_seal_breach_body">Der Verlauf-Datei fehlt ein gültiges Siegel (At-rest-Schutz) — Laden verweigert. Nach dem Löschen startet ein neuer, gesigelter Verlauf.</string>
+    <string name="history_seal_breach_action_clear">Verlauf löschen</string>
+    <string name="search_index_building">Suchindex wird aufgebaut …</string>
+    <!-- F1 (18.11.2026): Dashboard-Karte „Geplante Aufgaben“ (cron.status) -->
+    <string name="dash_cron_title">Geplante Aufgaben</string>
+    <string name="dash_cron_running">läuft</string>
+    <string name="dash_cron_planned">geplant</string>
+    <string name="dash_cron_paused">pausiert</string>
+    <string name="dash_cron_overdue">überfällig</string>
+    <string name="dash_cron_in_minutes">in %1$d min</string>
+    <string name="dash_cron_in_hours">in %1$d Std.</string>
+    <string name="dash_cron_ago_minutes">vor %1$d min</string>
+    <string name="dash_cron_ago_hours">vor %1$d Std.</string>
+    <!-- Singular-Rettung je Einzahl („1 Tag“ statt „1 Tagen“, wie dash_days_ago-Plural) -->
+    <plurals name="dash_cron_in_days">
+        <item quantity="one">in %1$d Tag</item>
+        <item quantity="other">in %1$d Tagen</item>
+    </plurals>
+    <plurals name="dash_cron_ago_days">
+        <item quantity="one">vor %1$d Tag</item>
+        <item quantity="other">vor %1$d Tagen</item>
+    </plurals>
+    <string name="call_screengrab_failed">Screenshot unlesbar — RAM-Kopie verworfen.</string>
+    <string name="call_screengrab_failed_reason">Screenshot fehlgeschlagen: %1$s</string>
+    <string name="call_screengrab_sent">Screenshot an Agent gesendet — keine Kopie gespeichert.</string>
+    <string name="call_screengrab_confirm_hint">Screenshot an Agent — zur Bestätigung innerhalb von 3 s erneut tippen.</string>
+    <string name="call_screengrab_talk_failed">Sprachturn fehlgeschlagen: </string>
 </resources>

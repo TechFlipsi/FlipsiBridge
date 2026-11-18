@@ -66,6 +66,13 @@ import kotlinx.coroutines.isActive
  * Aktivität (chat.event). Laufende SUB-AGENTEN stehen ALLEIN in der
  * Slots-Sektion (W19 KEIN-DOPPEL: EIN Ort, nie zweimal am Screen).
  *
+ * F1 (18.11.2026): KARTE „GEPLANTE AUFGABEN“ — Gateway-Cron-Jobs aus dem
+ * cron.status(-enc)-Frame des Adapters (APP-GENERISCH: EIN app-globales
+ * Gebilde, der Agent-Name gehört nicht in die Karte). KEIN-DOPPEL mit den
+ * Sub-Slots: die Cron-Liste teilt keine Elemente/Ebene mit den Sub-Agenten-
+ * Slots (jene hängen an agent.status/agentSubs, diese an cron.status —
+ * zwei getrennte Verbände). Leerzustand: Sektion bleibt KOMPLETT weg.
+ *
  * Daten-Verband: ALLE Zustände kommen aus vorhandenen RelayClient-Flows
  * (relay.state → [RelayClient.agents], chat.activity →
  * [RelayClient.agentWorking], chat.session_meta → [RelayClient.agentMeta],
@@ -73,6 +80,14 @@ import kotlinx.coroutines.isActive
  * [RelayClient.e2eSessions]) — KEIN neuer Endpunkt, KEIN neuer Store; die
  * Sichtregeln rechnen in [DashboardRules] (JVM-getestet). Fehlende
  * Meta-Daten = die Zeile entfällt (kein Platzhalter-Geraffel).
+ *
+ * STRINGS (MERGE-LANE 18.11.): alle 11 dash_cron_*-Texte leben je Locale in
+ * strings.xml (DE = values/ + values-de/, EN = values-en/) — aufgelöst in
+ * [cronStatusWord]/[cronNextRunText] per stringResource; die TAGE als
+ * Plural-Ressourcen (dash_cron_in_days/dash_cron_ago_days — Singular-Rettung
+ * „1 Tag“, dash_days_ago-Muster). EN: Scheduled tasks / running / planned /
+ * paused / overdue / in %1$d min / in %1$d h / in %1$d days / %1$d min ago /
+ * %1$d h ago / %1$d days ago.
  *
  * Live-Ticker: solange ein Agent frisch „beschäftigt“ ist, tickt die Uhr
  * sekündlich (mm:ss wie im Conversation-Kopf), sonst reicht ein 30-s-Raster
@@ -92,6 +107,10 @@ fun DashboardScreen(
     val agentSubs by RelayClient.agentSubs.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
     val e2eSessions by RelayClient.e2eSessions.collectAsState()
+    // F1 (Verdrahtung MERGE-LANE 18.11.): cron.status-Jobs aus dem
+    // RelayClient-Flow (APP-GENERISCH, je Frame = Gesamt-Stand/REPLACE;
+    // Räumung an den 3 Verbindungspunkten — Parität markAgentsOffline).
+    val cronJobs by RelayClient.cronJobs.collectAsState()
     // Verbindungs-Zustand für das Statusbanner (eine Warn-Instanz, oben).
     val connectionState by BridgeStatus.state.collectAsState()
     val connectionServerUrl by BridgeStatus.serverUrl.collectAsState()
@@ -181,6 +200,15 @@ fun DashboardScreen(
                 item(key = "subAgents") {
                     SubAgentSlotsSection(slots = subSlots, nowMs = nowMs)
                 }
+            }
+        }
+        // ── F1: Karte „Geplante Aufgaben“ (cron.status-Verband, app-global) ──
+        // KEIN-DOPPEL: die Cron-Zeilen teilen KEINE Ebene mit den Sub-Slots —
+        // die Sektion erscheint NUR mit mindestens einem Job (Leerzustand weg),
+        // egal wie viele Agenten existieren.
+        if (DashboardRules.cronCardVisible(cronJobs)) {
+            item(key = "cronJobs") {
+                CronJobsCard(rows = DashboardRules.cronSortedRows(cronJobs, nowMs))
             }
         }
     }
@@ -500,6 +528,144 @@ private fun SubAgentSlotRow(
                     tint = FlipsiColors.Ember,
                 )
             }
+        }
+    }
+}
+
+// ── F1 (18.11.2026): Karte „Geplante Aufgaben“ (cron.status-Verband) ─────────
+
+/**
+ * EIN app-globales Karten-Gebilde (APP-GENERISCH): Liste der Gateway-Cron-Jobs
+ * mit Status-Punkt (Zustandsfarbe) + Name + relativem Termin. KEIN-DOPPEL mit
+ * den Sub-Slots (W19): eigene Sektion, eigene Datenquelle (cron.status), keine
+ * Sub-Agenten-Elemente. Leerzustand rendert NIEMALS (der Screen ruft die Karte
+ * nur mit cronCardVisible() = ≥1 Job).
+ *
+ * Strings (MERGE-LANE 18.11.): Titel + Status-/Termin-Worte lösen je Locale
+ * aus strings.xml ×3 (dash_cron_*; Tage als Plural-Ressource) — kein DE-Literal
+ * mehr im Screen, die Rules liefern nur Zahlen/Enums.
+ */
+@Composable
+private fun CronJobsCard(rows: List<DashboardRules.CronJobView>) {
+    SectionTitle(stringResource(R.string.dash_cron_title))
+    Spacer(Modifier.height(8.dp))
+    Card(
+        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            rows.forEachIndexed { index, row ->
+                CronJobRow(row, divider = index > 0)
+            }
+        }
+    }
+}
+
+/** EINE Cron-Zeile: Status-Punkt (Zustandsfarbe), Name, rechts Wort + Term. */
+@Composable
+private fun CronJobRow(row: DashboardRules.CronJobView, divider: Boolean) {
+    // Zustand nie NUR über Farbe (A11y): neben dem Punkt steht immer das Wort.
+    val state = row.item.state
+    val tint = when {
+        state == DashboardRules.CronJobState.RUNNING -> FlipsiColors.Ember
+        state == DashboardRules.CronJobState.PLANNED && row.overdue -> FlipsiColors.SignalRedText
+        state == DashboardRules.CronJobState.PLANNED -> FlipsiColors.SignalGreen
+        else -> FlipsiColors.TextSecondary
+    }
+    if (divider) {
+        // Sichtbarer Trenner — LineStrong (Konvention BridgeTheme: Line ist auf
+        // Panel zu schwach, TextSecondary-alpha wäre ein zweites Farb-Etikett).
+        Spacer(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp)
+                .height(1.dp)
+                .background(FlipsiColors.LineStrong),
+        )
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .background(tint, CircleShape),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            row.item.name,
+            style = MaterialTheme.typography.bodyMedium,
+            color = FlipsiColors.TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                cronStatusWord(row),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = tint,
+            )
+            val term = cronNextRunText(row)
+            if (term != null) {
+                Spacer(Modifier.height(1.dp))
+                Text(
+                    term,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = FlipsiColors.TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/** Status-Wort je Zeile (Ressourcen ×3 — stringResource löst je Locale). */
+@Composable
+private fun cronStatusWord(row: DashboardRules.CronJobView): String =
+    when {
+        row.item.state == DashboardRules.CronJobState.RUNNING ->
+            stringResource(R.string.dash_cron_running)
+        row.item.state == DashboardRules.CronJobState.PLANNED && row.overdue ->
+            stringResource(R.string.dash_cron_overdue)
+        row.item.state == DashboardRules.CronJobState.PLANNED ->
+            stringResource(R.string.dash_cron_planned)
+        else -> stringResource(R.string.dash_cron_paused)
+    }
+
+/**
+ * Termin-Text (relativ, Ressourcen ×3): future = „in X“, verpasst = ehrliches
+ * „vor X“ (rot getönt via Status-Wort), ohne Termin (running/paused) = null →
+ * Zeile entfällt. Uhr-Vergleich = nowMs (gleiche Eimer-Logik wie relativeTime;
+ * Device-Uhr-Abweichung verschiebt die Eimer). Tage = Plural-Ressource
+ * (dash_cron_in_days/dash_cron_ago_days, W15c-Muster: Singular-Rettung
+ * „1 Tag“ statt „1 Tagen“ via getQuantityString je Locale).
+ */
+@Composable
+private fun cronNextRunText(row: DashboardRules.CronJobView): String? {
+    if (row.item.state != DashboardRules.CronJobState.PLANNED) return null
+    val minutes = row.minutesFromNow ?: return null
+    val hours = row.hoursFromNow ?: (minutes / 60L)
+    val days = hours / 24L
+    return when {
+        days >= 1L -> {
+            val pluralRes = if (row.overdue) R.plurals.dash_cron_ago_days
+            else R.plurals.dash_cron_in_days
+            LocalContext.current.resources
+                .getQuantityString(pluralRes, days.toInt(), days)
+        }
+        hours >= 1L -> {
+            if (row.overdue) stringResource(R.string.dash_cron_ago_hours, hours)
+            else stringResource(R.string.dash_cron_in_hours, hours)
+        }
+        else -> {
+            if (row.overdue) stringResource(R.string.dash_cron_ago_minutes, minutes)
+            else stringResource(R.string.dash_cron_in_minutes, minutes)
         }
     }
 }

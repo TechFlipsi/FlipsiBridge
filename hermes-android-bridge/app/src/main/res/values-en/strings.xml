@@ -599,4 +599,73 @@
     <string name="dev_pairing_ttl">%1$s remaining</string>
     <string name="dev_pairing_accept">Accept</string>
     <string name="dev_pairing_deny">Deny</string>
+    <!-- W21 CALL (P4-P6): call UI — ringing card, active strip, grants, ring channel -->
+    <string name="call_ring_kind_voice">Incoming voice call</string>
+    <string name="call_ring_kind_generic">Incoming call</string>
+    <string name="call_ringing_a11y">Incoming call from %1$s — card with accept and decline</string>
+    <string name="call_ring_icon_a11y">Call icon</string>
+    <string name="call_action_decline">Decline</string>
+    <string name="call_action_decline_a11y">Decline call</string>
+    <string name="call_action_accept">Accept</string>
+    <string name="call_action_accept_a11y">Accept call</string>
+    <string name="call_active_a11y">Call with %1$s in progress, %2$s</string>
+    <string name="call_active_status">Call active · %1$s</string>
+    <string name="call_action_hangup">Hang up</string>
+    <string name="call_action_hangup_a11y">End call</string>
+    <string name="call_action_talk">Talk</string>
+    <string name="call_action_talk_recording">Recording — release</string>
+    <string name="call_action_talk_a11y">Start voice turn (hold)</string>
+    <string name="call_action_talk_recording_a11y">Recording in progress — release to send</string>
+    <string name="call_action_screengrab">Screenshot</string>
+    <string name="call_action_screengrab_confirm">Confirm (3 s)</string>
+    <string name="call_action_screengrab_a11y">Send screenshot to the agent (confirmation required)</string>
+    <string name="call_action_screengrab_confirm_a11y">Confirm sending the screenshot — three seconds</string>
+    <string name="call_steer_on">Screen steering on</string>
+    <string name="call_steer_off">Screen steering off</string>
+    <string name="call_steer_cap_missing">Steering off</string>
+    <string name="call_steer_on_a11y">Agent may control the screen — tap to turn it off</string>
+    <string name="call_steer_off_a11y">Agent may not control the screen — tap to allow it</string>
+    <string name="call_channel_name">Calls</string>
+    <string name="call_channel_description">Incoming calls from your agents</string>
+    <!-- W21 ASSISTANT PACKAGE (G2/G5 card) -->
+    <string name="assistant_pkg_bubble_title">Overlay bubble over all apps</string>
+    <string name="assistant_pkg_bubble_ready_desc">Tap opens the voice input</string>
+    <string name="assistant_pkg_bubble_need_perm_desc">Permission missing — allow overlays for the bubble</string>
+    <string name="assistant_pkg_bubble_grant_action">Grant overlay permission</string>
+    <string name="assistant_pkg_bubble_grant_a11y">Grant overlay permission for the assistant bubble</string>
+    <string name="assistant_pkg_bubble_grant_unavailable">OEM route unavailable — look for the overlay permission in system settings</string>
+    <string name="assistant_pkg_screen_context_title">Screen context</string>
+    <string name="assistant_pkg_screen_context_desc">Consent per session — the agent may read the screen only with explicit permission</string>
+    <string name="assistant_pkg_screen_context_no_session">No session — consent will be asked again after the next agent start</string>
+    <string name="assistant_pkg_screen_context_grant_a11y">Screen context allowed for this session — tap to revoke</string>
+    <string name="assistant_pkg_screen_context_ask_a11y">Ask for screen context in this session — tap to allow</string>
+    <!-- PH-6/P24: history seal + full-text search index -->
+    <string name="history_seal_breach_title">History can’t be loaded</string>
+    <string name="history_seal_breach_body">The history file is missing a valid seal (at-rest protection) — loading is refused. After deletion a new, sealed history starts.</string>
+    <string name="history_seal_breach_action_clear">Delete history</string>
+    <string name="search_index_building">Search index building …</string>
+    <!-- F1 (18.11.2026): dashboard card "Scheduled tasks" (cron.status) -->
+    <string name="dash_cron_title">Scheduled tasks</string>
+    <string name="dash_cron_running">running</string>
+    <string name="dash_cron_planned">planned</string>
+    <string name="dash_cron_paused">paused</string>
+    <string name="dash_cron_overdue">overdue</string>
+    <string name="dash_cron_in_minutes">in %1$d min</string>
+    <string name="dash_cron_in_hours">in %1$d h</string>
+    <string name="dash_cron_ago_minutes">%1$d min ago</string>
+    <string name="dash_cron_ago_hours">%1$d h ago</string>
+    <!-- Singular rescue per count ("1 day" not "1 days", like the dash_days_ago plural) -->
+    <plurals name="dash_cron_in_days">
+        <item quantity="one">in %1$d day</item>
+        <item quantity="other">in %1$d days</item>
+    </plurals>
+    <plurals name="dash_cron_ago_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="call_screengrab_failed">Screenshot unreadable — RAM copy discarded.</string>
+    <string name="call_screengrab_failed_reason">Screenshot failed: %1$s</string>
+    <string name="call_screengrab_sent">Screenshot sent to agent — no copy was kept.</string>
+    <string name="call_screengrab_confirm_hint">Screenshot to agent — tap again within 3 s to confirm.</string>
+    <string name="call_screengrab_talk_failed">Voice turn failed: </string>
 </resources>

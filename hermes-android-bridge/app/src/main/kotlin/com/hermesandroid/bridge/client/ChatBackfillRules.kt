@@ -1,6 +1,7 @@
 package com.hermesandroid.bridge.client
 
 import com.google.gson.JsonObject
+import com.google.gson.JsonPrimitive
 
 /**
  * B6 (Multi-Gerät, Sir-General-GO 17.11.): Backfill-Regeln — rein, JVM-testbar
@@ -75,7 +76,7 @@ object ChatBackfillRules {
     }.getOrNull()
 
     private fun boolOf(json: JsonObject, field: String): Boolean? = runCatching {
-        json.get(field)?.takeIf { it.isJsonPrimitive }?.takeIf { p ->
+        (json.get(field) as? JsonPrimitive)?.takeIf { p ->
             p.isBoolean || (p.isString && (p.asString == "true" || p.asString == "false"))
         }?.asBoolean
     }.getOrNull()

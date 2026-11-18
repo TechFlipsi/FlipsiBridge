@@ -39,6 +39,7 @@ import threading
 import time
 import uuid
 import weakref
+from datetime import datetime
 from collections import deque
 from typing import Any, Callable, Optional
 from urllib.parse import urlsplit
@@ -197,6 +198,49 @@ _STATUS_SEND_TIMEOUT_S = 0.5           # Status-Send-Gate (fail-soft, nie Chat-k
 _STATUS_WEB_TOOLS = frozenset({"web_search", "web_extract", "browser_exec"})
 _STATUS_WEB_LABEL = "Sucht im Web"     # web-Verband-Label (fester Vertrag an die App)
 
+# ── F1 (Sir, 18.11.2026, Vollgas-Batch): cron.status-Live-Verband ────────────
+# Geplante/laufende Cron-Jobs des GATEWAYS auf der bestehenden Agent-WS —
+# APP-GENERISCH (der App ist es egal, welcher Agent schickt): Frame lebt je
+# AGENT (chat_id "agent-global", Parität agent.status), Payload nur Bekanntes:
+#   {jobs: [{name ≤64, status: running|planned|paused, next_at?: unix-ms}]}
+# Quelle: SSOT <hermes_home>/cron/jobs.json (read-only, TTL-Cache — der Gateway-
+# change_watcher feuert auf genau dieser Datei), Override FLIPSI_CRON_JOBS_FILE
+# (Tests/isolierte Profile). Mechanik = agent.status identisch: enc-first
+# (E2E-Session → NUR 'cron.status.enc', Klartext wirft der App-Downgrade-Guard
+# weg), Send-Gate je Frame; Sends je Connect + je bestätigtem Handshake + je
+# Reconnect + Refresh-Loop (Change-Detect, späte Geräte kriegen den Stand).
+# Relay-Whitelist-Verband: die Frame-Typen müssen in der Agent-Whitelist
+# (tools/android_relay.py _AGENT_FRAME_TYPES) erlaubt sein — BEFUND notiert.
+CRON_STATUS_FRAME = "cron.status"
+CRON_STATUS_ENC_FRAME = "cron.status.enc"
+_CRON_STATUS_JOBS_MAX = 16             # Liste gekappt (RAM-/Frame-Schutz, ehrlich)
+_CRON_STATUS_NAME_CAP = 64             # Parität Label-Cap (Relay-Gate-Welt)
+_CRON_STATUS_SEND_TIMEOUT_S = 0.5      # Status-Send-Gate (fail-soft, Parität)
+_CRON_STATES_ORDER = {"running": 0, "planned": 1, "paused": 2}
+_CRON_REFRESH_S = 60.0                 # Refresh/Change-Poll (env FLIPSI_CRON_REFRESH_S)
+_CRON_STORE_TTL_S = 15.0               # Store-Lese-Cache (read-only, kein Lock-I/O)
+
+# ── F3 (Sir, 18.11.2026, offener Verband seit W19): chat.session_meta ────────
+# push_session_meta aus dem hermes-android-plugin (P40-Verband) in den Live-
+# Adapter nachziehen: Entry-Point der Gateway-Side-Hooks (flipsi-session-meta —
+# beobachtet agent:start/step/end + async_delegations, pusht Session-Quelle +
+# aktives Modell + laufende Sub-Agenten). Seit W19 liefen diese Pushes INS LEERE
+# (Hook skippte bei is_connected=False; Adapter hatte die Methode nicht — jeder
+# Aufruf = Exception → Log-Zeile). FIX hier: Queue statt Skip — Nicht-verbundene
+# Pushes werden je chat_id REPLACE-geparkt und nach dem Reconnect nachgeliefert.
+# enc-first (Parität Fixliste 14): mit E2E-Session NUR 'chat.session_meta.enc'
+# (Klartext wirft der App-Downgrade-Guard weg), ohne Session klartext. Meta =
+# REPLACE (was None ist, fehlt am Phone → Zeile weg). Persistierte Chat-Ziele
+# (P40): nach Gateway-Restart ist _received_at leer — die Persistenz hält die
+# bekannten Slots wach (fail-soft, Cap 32).
+SESSION_META_FRAME = "chat.session_meta"
+SESSION_META_ENC_FRAME = "chat.session_meta.enc"
+_SESSION_META_MAX_SUB_AGENTS = 8       # Parität P40 (Hook _SUBS_MAX = 8)
+_SESSION_META_STR_CAP = 64             # Anzeige-Felder gekappt (Protokoll-Parität)
+_SESSION_META_QUEUE_CAP = 16           # FIFO-RAM-Schutz der Nachliefer-Queue
+_SESSION_META_SEND_RETRY_MAX = 3       # fehlgeschlagene Drains → verwerfen
+_META_STATE_DIR_ENV = "FLIPSI_META_STATE_DIR"  # Override (Tests) — Default: plugin/state
+
 # ── B3 (Multi-Gerät, Plan roadmap-multigeraete.md Kap. 1/2/3/4/5): ────────────
 # Session-Map je Gerät (je Geräte-ik eine eigene X3DH/Ratchet-Session), Pin-Map
 # je ik_pub (TOFU-TOFU je Gerät), Antwort-Fan-out je Geräte-Session,
@@ -327,6 +371,23 @@ def _format_media_bytes(size: int) -> str:
     if size >= 1024 * 1024:
         return f"{size / (1024 * 1024):.1f} MB"
     return f"{max(1, size // 1024)} KB"
+
+
+def _parse_iso_to_ms(value) -> Optional[int]:
+    """F1: ISO-8601-Zeitstempel → Unix-ms (Cron-Store next_run_at, aware bevor-
+    zugt). Naive Werte werden ehrlich als LOKALE Zeit gewertet (der Cron-Store
+    des Gateways schreibt tz-aware Stamps). Unbrauchbar → None (Feld fällt
+    beim Frame-Bau — kein erfundener Zeitpunkt)."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        return int(dt.timestamp() * 1000)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
 
 
 class CryptoFrameError(RuntimeError):
@@ -1185,6 +1246,27 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         STATUS_ADAPTERS.add(self)
         self._models_task: Optional[asyncio.Task] = None  # W18: Refresh-Timer
 
+        # --- F1 (Sir): cron.status-Live-Verband (Gateway-Cron-Jobs → App) ---
+        self._cron_store_override: Optional[str] = _cfg(extra, "FLIPSI_CRON_JOBS_FILE")
+        try:
+            self.cron_refresh_s: float = max(
+                0.05, float(_cfg(extra, "FLIPSI_CRON_REFRESH_S",
+                                 default=str(_CRON_REFRESH_S)) or _CRON_REFRESH_S))
+        except ValueError:
+            self.cron_refresh_s = float(_CRON_REFRESH_S)
+        self._cron_cache: tuple = (0.0, [])   # (monotonic-Expiry, raw-job-Liste)
+        self._cron_task: Optional[asyncio.Task] = None
+        self._cron_sent_fp: str = ""          # Dedup-Band: zuletzt REAL gesendet
+
+        # --- F3 (Sir): chat.session_meta-Nachliefer-Verband (P40 nachziehen) --
+        # Queue je chat_id → (meta, attempts): nicht verbundene bzw. fehlgesch-
+        # lagene Pushes werden gebunden und nach dem Reconnect nachgeliefert
+        # (statt Skip/Verlust — der offene Verband seit W19).
+        self._meta_lock = threading.Lock()
+        self._meta_queue: dict[str, tuple[dict, int]] = {}
+        self._meta_fut: Optional[Any] = None  # concurrent.futures.Future des Drains
+        self._meta_state_dir: Optional[str] = _cfg(extra, _META_STATE_DIR_ENV)
+
         # ── W21 (Anruf P2, roadmap-anruf.md §3.5): Call-Zustandsmaschine + ────
         # generisches Bridge-Tool. Ring-Fenster + Auto-End je Agent konfigurier-
         # bar (env FLIPSI_CALL_RING_TIMEOUT / FLIPSI_CALL_AUTO_END); die Call-
@@ -1281,6 +1363,19 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("FlipsiBridge: agent.models-Connect-Send fehlgeschlagen",
                            exc_info=True)
+        # F1: cron.status je Connect (Late-Joiner-Sofort, wie emit_models) +
+        # Refresh-Loop (Change-Detect) starten. Fail-soft — kein Connect-Erfolg
+        # hängt am Broadcast.
+        try:
+            await self.emit_cron_status()
+        except Exception:
+            logger.warning("FlipsiBridge: cron.status-Connect-Send fehlgeschlagen",
+                           exc_info=True)
+        self._cron_task = asyncio.get_running_loop().create_task(
+            self._cron_refresh_loop())
+        # F3: Nachliefer-Queue abarbeiten — Pushes aus der getrennten Phase
+        # (Hook-Verband) werden hier geholt, statt zu verfallen.
+        self._schedule_meta_drain()
         return True
 
     async def _open_ws(self, url: str) -> Any:
@@ -1315,6 +1410,13 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             except (asyncio.CancelledError, Exception):
                 pass
             self._models_task = None
+        if self._cron_task is not None:
+            self._cron_task.cancel()
+            try:
+                await self._cron_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._cron_task = None
         if self._frame_task is not None:
             self._frame_task.cancel()
             try:
@@ -1785,6 +1887,15 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                     "agent_id": self.agent_id, "display_name": self.display_name})
                 backoff = self._RECONNECT_BACKOFF_MIN
                 logger.info("FlipsiBridge: Reconnect erfolgreich (Backoff zurückgesetzt)")
+                # F1: Late-Joiner + Ist-Stand nach dem WS-Neuaufbau (Parität
+                # zur W20-Snapshot-Probe). Fail-soft, je Frame einzeln.
+                try:
+                    await self.emit_cron_status()
+                except Exception:
+                    logger.warning("FlipsiBridge: cron.status-Reconnect-Send "
+                                   "fehlgeschlagen", exc_info=True)
+                # F3: In der Totphase geparkte Meta-Pushes nachliefern.
+                self._schedule_meta_drain()
             except Exception as exc:
                 logger.warning("FlipsiBridge: Reconnect fehlgeschlagen: %s", exc)
 
@@ -1941,6 +2052,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._received_at[chat_id] = int(time.time() * 1000)
         while len(self._received_at) > 256:
             self._received_at.pop(next(iter(self._received_at)))
+        # F3 (P40-Verband): bekannte Chat-Ziele PERSISTIERT halten — nach einem
+        # Gateway-Restart ist _received_at leer, das Hook-Push an die Slots
+        # lief ins LEERE. Fail-soft: Schreibfehler = debug-Log, nie Block.
+        self._persist_chats(chat_id)
         # W4-B2: Adapter-gesteuerter Slash-Präfix-Parser — NACH Dekrypt und
         # Fp-Gatter, VOR der Gateway-Zustellung. True = lokal behandelt (kein
         # Gateway-Push; Read-Receipt + Antwort hier); /new und alle Nicht-
@@ -2588,6 +2703,15 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("FlipsiBridge: Status-Snapshot-Send fehlgeschlagen",
                            exc_info=True)
+        # F1: cron.status je bestätigtem Handshake neu (enc-Verband-Pflicht —
+        # Klartext vom Connect wird vom App-Downgrade-Guard verworfen).
+        try:
+            await self.emit_cron_status()
+        except Exception:
+            logger.warning("FlipsiBridge: cron.status-Handshake-Send fehlgeschlagen",
+                           exc_info=True)
+        # F3: Nachliefer-Queue abarbeiten — ab jetzt läuft enc sicher.
+        self._schedule_meta_drain()
 
     async def _emit_status_snapshot(self) -> None:
         """W20: Ist-Stand (working/label + offene Sub-Slots) nach (Re)Connect.
@@ -3475,6 +3599,409 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
     # Kontrakt je Callback: async def **kwargs, try/except-suppress rundum
     # (im Fächer), reine in-memory-Verbandsarbeit + _schedule_status_frames,
     # Rückgabe IMMER None.
+
+    # ───────────────── F1 (Sir, 18.11.2026): cron.status-Live-Verband ─────────
+    # Geplante/laufende Cron-Jobs des GATEWAYS → App (Karte „Geplante Aufgaben“,
+    # APP-GENERISCH — die App kennt keinen Agent-Namen im Frame). Quelle:
+    # <hermes_home>/cron/jobs.json (read-only + TTL, die gleiche SSOT, auf der
+    # der Gateway-Change-Watcher feuert). Sende-Mechanik = agent.status:
+    # enc-first je Geräte-Session, Send-Gate, Sends je Connect/Handshake/
+    # Reconnect + Change-Detect-Refresh (nur bei geändertem Zeilen-Stand).
+
+    @staticmethod
+    def _cron_store_default_path() -> str:
+        """Hermes-Home des aktiven Profils → cron/jobs.json (fail-soft Fallback
+        auf ~/.hermes — Parität zum Gateway-Observer-Schema)."""
+        try:
+            from hermes_cli.config import get_hermes_home  # noqa: PLC0415
+            return os.path.join(get_hermes_home(), "cron", "jobs.json")
+        except Exception:
+            return os.path.join(os.path.expanduser("~"), ".hermes",
+                                "cron", "jobs.json")
+
+    def _load_cron_jobs_raw(self) -> list:
+        """Cron-Store read-only lesen (fail-soft, TTL-Cache _CRON_STORE_TTL_S).
+        Kein Schreibzugriff, keine DB-Locks: JSON-Snapshot. Fehler/unlesbar =
+        leere Liste (kein Job erfunden)."""
+        now = time.monotonic()
+        expires, cached = self._cron_cache
+        if now < expires:
+            return cached
+        path = self._cron_store_override or self._cron_store_default_path()
+        jobs: list = []
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                raw = data.get("jobs")
+                if isinstance(raw, list):
+                    jobs = [j for j in raw if isinstance(j, dict)]
+            elif isinstance(data, list):
+                jobs = [j for j in data if isinstance(j, dict)]
+        except (OSError, ValueError):
+            logger.debug("FlipsiBridge: cron-Store nicht lesbar (%s)", path)
+        except Exception:
+            logger.debug("FlipsiBridge: cron-Store-Lesefehler (%s)", path)
+        self._cron_cache = (now + _CRON_STORE_TTL_S, jobs)
+        return jobs
+
+    @staticmethod
+    def _cron_row(job: dict) -> Optional[dict]:
+        """Ein Store-Job → App-Zeile {name, status, next_at?}. Ehrlich: nur
+        Bekanntes bleibt; completed/deaktiviert fliegt (keine laufende/geplante
+        Aufgabe), paused trägt NIE next_at (altgeparkte Stamps sind gefälschte
+        „demnächst“-Angaben)."""
+        name = str(job.get("name") or "").strip()
+        if not name:
+            return None
+        enabled = job.get("enabled")
+        if enabled is False:
+            return None
+        state = str(job.get("state") or "").strip().lower()
+        if job.get("fire_claim"):
+            status = "running"            # worker hält einen Claim am Job
+        elif state == "paused" or job.get("paused_at"):
+            status = "paused"
+        elif state in ("", "scheduled", "pending", "queued"):
+            status = "planned"
+        elif state == "running":
+            status = "running"
+        else:
+            return None                   # completed/unbekannt → Zeile weg
+        row: dict = {"name": name[:_CRON_STATUS_NAME_CAP], "status": status}
+        next_ms = _parse_iso_to_ms(job.get("next_run_at"))
+        if status == "planned" and next_ms is not None:
+            row["next_at"] = int(next_ms)
+        return row
+
+    def _cron_rows(self) -> list[dict]:
+        """Store → geordnete Zeilen: running zuerst (kein next_at), dann geplant
+        nach nächster Ausführung, paused zuletzt; Cap _CRON_STATUS_JOBS_MAX."""
+        rows = [r for r in (self._cron_row(j) for j in self._load_cron_jobs_raw())
+                if r is not None]
+        rows.sort(key=lambda r: (_CRON_STATES_ORDER.get(r["status"], 3),
+                                 r.get("next_at") or (1 << 62)))
+        return rows[:_CRON_STATUS_JOBS_MAX]
+
+    @staticmethod
+    def _cron_fingerprint(rows: list[dict]) -> str:
+        """Zeilen-Stand als stabiler JSON-Fingerprint (Change-Detect der
+        Refresh-Loop — unveränderter Stand = kein Frame, spart Rate-Plätze)."""
+        try:
+            return json.dumps(rows, sort_keys=True, separators=(",", ":"),
+                              ensure_ascii=False)
+        except Exception:
+            return ""
+
+    async def emit_cron_status(self) -> bool:
+        """cron.status-Frame über die bestehende Agent-WS — fail-soft.
+
+        Mechanik = emit_agent_status (F1-Verband): enc-first (E2E-Session →
+        NUR 'cron.status.enc' mit Payload {jobs: …} im ct; Klartext wirft der
+        App-Downgrade-Guard weg), ohne Session Klartext 'cron.status'; Frame
+        lebt je AGENT (kein chat_id-Feld — APP-GENERISCH). Rückgabe gesendet;
+        Erfolg aktualisiert das Change-Detect-Band (_cron_sent_fp).
+        """
+        if not self._connected or self._ws is None:
+            return False
+        rows = self._cron_rows()
+        fp = self._cron_fingerprint(rows)
+        payload = {"jobs": rows}
+        frames = self._enc_fanout_frames(CRON_STATUS_ENC_FRAME, "",
+                                         dict(payload))
+        if frames is None:
+            frames = [{
+                "type": CRON_STATUS_FRAME, "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, **payload}]
+        sent = False
+        for status_env in frames:
+            try:
+                await asyncio.wait_for(self._send_json(status_env),
+                                       _CRON_STATUS_SEND_TIMEOUT_S)
+                sent = True
+            except Exception as exc:
+                logger.warning("FlipsiBridge: cron.status-Send fehlgeschlagen: %s",
+                               exc)
+        if sent:
+            self._cron_sent_fp = fp
+        return sent
+
+    async def _cron_refresh_loop(self) -> None:
+        """F1-Refresh: alle cron_refresh_s den Zeilen-Stand prüfen — nur bei
+        Änderung (Fingerprint ≠ zuletzt REAL gesendet) geht ein Frame raus
+        (relative „in X min“-Anzeigen am Phone rechnen je Ticker; das Frame
+        trägt die DATEN, nicht die Uhr). Start-Verzögerung = cron_refresh_s
+        (je Connect sendet connect() bereits sofort). Fail-soft, stirbt mit
+        disconnect()."""
+        while True:
+            await asyncio.sleep(self.cron_refresh_s)
+            try:
+                fp = self._cron_fingerprint(self._cron_rows())
+                if fp == self._cron_sent_fp:
+                    continue
+                await self.emit_cron_status()
+            except Exception:
+                logger.warning("FlipsiBridge: cron.status-Refresh fehlgeschlagen",
+                               exc_info=True)
+
+    # ───────────────── F3 (Sir, offener Verband seit W19): chat.session_meta ──
+    # push_session_meta (Entry-Point des flipsi-session-meta-Gateway-Hooks)
+    # + P40-Verband (Meta-Push-Ziele mit Persistenz) + Nachliefer-Queue:
+    # Nicht verbundene / fehlgeschlagene Pushes werden je chat_id REPLACE-
+    # gebunden und nach dem Reconnect nachgeliefert (statt Skip/Verlust).
+
+    @classmethod
+    def live_instances(cls) -> list:
+        """LIVE-Adapter-Instanzen (WeakSet-Snapshot, Parität zum hermes-android-
+        plugin) für den Gateway-Observer: der Hook findet die Klasse über den
+        Loader-Namespace und fannen die Pushes an diese Instanz-Liste — Connect-
+        Filter macht der Aufrufer (is_connected-Verband)."""
+        return list(STATUS_ADAPTERS)
+
+    def _chats_state_path(self):
+        """Persistente Chat-Ziele je Agent (P40): <state-dir>/<agent>.chats.json.
+        Default = ~/.flipsibridge/chat-state (Parität zum media_dir-Verband des
+        Adapters — bewusst NICHT im Plugin-Dir, sonst kippen Repo-Checkouts
+        Schreibartefakte in den Baum); Override FLIPSI_META_STATE_DIR (Tests/
+        isoliertes Profil). Fail-soft: alle Fehler der Schreib-/Lese-Schiene =
+        debug-Log."""
+        safe = re.sub(r"[^A-Za-z0-9_-]", "_", str(self.agent_id))[:48] or "agent"
+        base = self._meta_state_dir or os.path.join(
+            os.path.expanduser("~"), ".flipsibridge", "chat-state")
+        return os.path.join(base, safe + ".chats.json")
+
+    def _persist_chats(self, chat_id: str) -> None:
+        """Aktuelles _received_at (neueste zuerst, Cap 32) je Agent speichern.
+        Fail-soft: jeder Fehler = debug-Log, nie ein Push-Block (P40)."""
+        try:
+            path = self._chats_state_path()
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            ids = [c for c, _ in sorted(self._received_at.items(),
+                                        key=lambda item: item[1], reverse=True)]
+            if chat_id not in ids:
+                ids.insert(0, chat_id)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"chats": ids[:32], "updated_at": int(time.time())}, fh)
+        except Exception as exc:
+            logger.debug("FlipsiBridge: Chat-Ziele-Persistenz fehlgeschlagen: %s",
+                         exc)
+
+    def _persisted_chats(self) -> list:
+        """Persistierte Chat-IDs lesen (fail-soft: [] = nicht lesbar — kein Ziel
+        aus einer kaputten Datei)."""
+        try:
+            with open(self._chats_state_path(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            chats = data.get("chats") if isinstance(data, dict) else None
+            if isinstance(chats, list):
+                return [str(c) for c in chats if str(c).strip()]
+        except Exception:
+            pass
+        return []
+
+    def meta_push_targets(self) -> list:
+        """Wire-Chat-IDs der Phone-Chats — Push-Ziele für Gateway-Hooks (P40):
+        neueste Empfangsaktivität zuerst, dann Gateway-Map, dann Persistenz
+        (überlebt Gateway-Restarts). Read-only, dedup; ohne Bekanntes: leere
+        Liste (Hook pusht dann nichts — keine Chat-ID erfunden)."""
+        targets: list = []
+        seen: set = set()
+        try:
+            for chat_id, _ts in sorted(self._received_at.items(),
+                                       key=lambda item: item[1], reverse=True):
+                if chat_id not in seen:
+                    seen.add(chat_id)
+                    targets.append(chat_id)
+        except Exception:  # pragma: no cover — defekte Map = kein Ziel aus ihr
+            pass
+        try:
+            for chat_id in self._gw_chat_by_relay:
+                if chat_id not in seen:
+                    seen.add(chat_id)
+                    targets.append(chat_id)
+        except Exception:  # pragma: no cover
+            pass
+        try:
+            for chat_id in self._persisted_chats() or []:
+                if chat_id not in seen:
+                    seen.add(chat_id)
+                    targets.append(chat_id)
+        except Exception:  # pragma: no cover
+            pass
+        return targets
+
+    @staticmethod
+    def _session_meta_clip(value: Any) -> str:
+        """String-Gate der Meta-Felder: trim + cap; Nicht-String = '' (Feld
+        fällt beim Meta-Bau — kein Fake-Wert)."""
+        if not isinstance(value, str):
+            return ""
+        return value.strip()[:_SESSION_META_STR_CAP]
+
+    def _build_session_meta(self, platform: Any, model: Any,
+                            sub_agents: Optional[list]) -> dict:
+        """Kanonisches Meta (REPLACE-Semantik — was hier nicht steht, fehlt am
+        Phone): platform/model je bekannt ≥1 Zeichen, sub_agents [{name, status?,
+        model?}] (name Pflicht, Cap 8 = Hook-Parität)."""
+        meta: dict = {}
+        platform_clipped = self._session_meta_clip(platform)
+        if platform_clipped:
+            meta["platform"] = platform_clipped
+        model_clipped = self._session_meta_clip(model)
+        if model_clipped:
+            meta["model"] = model_clipped
+        subs: list = []
+        for entry in sub_agents or []:
+            if not isinstance(entry, dict):
+                continue
+            name = self._session_meta_clip(entry.get("name"))
+            if not name:
+                continue  # Name-freie Einträge fliegen (Phone: Zeile weg)
+            sub: dict = {"name": name}
+            status = self._session_meta_clip(entry.get("status"))
+            if status:
+                sub["status"] = status
+            sub_model = self._session_meta_clip(entry.get("model"))
+            if sub_model:
+                sub["model"] = sub_model
+            subs.append(sub)
+            if len(subs) >= _SESSION_META_MAX_SUB_AGENTS:
+                break
+        if subs:
+            meta["sub_agents"] = subs
+        return meta
+
+    def _meta_enqueue(self, chat_id: str, meta: dict) -> None:
+        """F3-Kern: Push in die Nachliefer-Queue — REPLACE je chat_id (neueste
+        Meta gewinnt), FIFO-Cap wirft ÄLTESTE Einträge raus (RAM-Schutz;
+        Attempts-Stand wird übernommen)."""
+        with self._meta_lock:
+            previous = self._meta_queue.get(chat_id)
+            attempts = previous[1] if previous else 0
+            self._meta_queue[chat_id] = (dict(meta), attempts)
+            while len(self._meta_queue) > _SESSION_META_QUEUE_CAP:
+                self._meta_queue.pop(next(iter(self._meta_queue)))
+
+    def _meta_requeue_failed(self, chat_id: str, meta: dict,
+                             attempts: int) -> None:
+        """Send-Misserfolg → zurück in die Queue mit attempts+1 (Cap
+        _SESSION_META_SEND_RETRY_MAX dann verwerfen — keine Ewig-Queue).
+        attempts MUSS der Vor-POP-Stand des Drains sein: der Drain nimmt den
+        Entry VOR dem Send aus der Queue, der Zähler überlebt nur, wenn er
+        übergeben wird (sonst zählt jeder Versuch wieder bei 1 → Ewig-Queue)."""
+        new_attempts = (attempts or 0) + 1
+        with self._meta_lock:
+            if new_attempts > _SESSION_META_SEND_RETRY_MAX:
+                logger.warning("FlipsiBridge: session_meta-Nachlieferung verworfen "
+                               "(chat=%s nach %d Fehlversuchen)",
+                               chat_id[:24], new_attempts)
+                return
+            self._meta_queue[chat_id] = (dict(meta), new_attempts)
+            while len(self._meta_queue) > _SESSION_META_QUEUE_CAP:
+                self._meta_queue.pop(next(iter(self._meta_queue)))
+
+    async def _meta_send_one(self, chat_id: str, meta: dict) -> bool:
+        """EIN Meta-Push enc-first auf den aktuellen Stand (Parität
+        emit_agent_status): mit Geräte-Session NUR chat.session_meta.enc
+        (Payload NUR im ct — der Phone-Payload-Parser liest es, der Downgrade-
+        Guard würde Klartext verwerfen), ohne Session Klartext chat.session_meta
+        mit ts. Fehler brechen NIE den Aufrufer (Status ≠ Inhalt)."""
+        wire_chat_id = self._relay_chat_id_for(chat_id)
+        frames = self._enc_fanout_frames(
+            SESSION_META_ENC_FRAME, wire_chat_id, {"session_meta": dict(meta)})
+        if frames is None:
+            frames = [{
+                "type": SESSION_META_FRAME, "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, "chat_id": wire_chat_id,
+                "session_meta": dict(meta), "ts": int(time.time() * 1000)}]
+        sent = False
+        for meta_env in frames:
+            try:
+                await asyncio.wait_for(self._send_json(meta_env),
+                                       _STATUS_SEND_TIMEOUT_S)
+                sent = True
+            except Exception as exc:
+                logger.warning("FlipsiBridge: chat.session_meta-Send fehlgeschlagen "
+                               "(chat=%s): %s", chat_id[:24], exc)
+        return sent
+
+    async def _meta_drain_coro(self) -> None:
+        """F3-Nachliefer-Drain: Queue abarbeiten je Reihenfolge; je Eintrag ein
+        Send mit AKTUELLEM enc-Stand (auch Einträge, die während Disconnect als
+        Klartext-Ziel geparkt wurden, gehen nach Session-Etablierung als enc).
+        Erfolg = Entry raus; Misserfolg = Attempts+1 (Cap → verwerfen — der
+        Attempt-Stand ÜBERLEBT den Pop, sonst rotiert der Drain ewig). Ohne
+        WS: stoppt (Queue bleibt — der nächste connect()/Reconnect plant
+        neu)."""
+        while self._connected and self._ws is not None:
+            with self._meta_lock:
+                if not self._meta_queue:
+                    return
+                chat_id, (meta, attempts) = next(iter(self._meta_queue.items()))
+                del self._meta_queue[chat_id]
+            ok = await self._meta_send_one(chat_id, meta)
+            if ok:
+                continue
+            if not self._connected or self._ws is None:
+                self._meta_enqueue(chat_id, meta)  # Attempts-Reset egal: frischer Start
+                return
+            self._meta_requeue_failed(chat_id, meta, attempts)
+            await asyncio.sleep(0.05)
+
+    def _schedule_meta_drain(self) -> None:
+        """F3: Nachliefer-Drain auf den Adapter-WS-Loop legen (coalesce: max 1
+        offener Drain; ein laufender liest die Queue frisch weiter). Ohne Loop:
+        Queue bleibt — kein Schedul-Fehler, der connect()-Pfad plant nach."""
+        loop = self._status.get("loop")
+        if loop is None or not self._connected:
+            return
+        with self._meta_lock:
+            if not self._meta_queue:
+                return
+            if self._meta_fut is not None and not self._meta_fut.done():
+                return
+        try:
+            fut = asyncio.run_coroutine_threadsafe(self._meta_drain_coro(), loop)
+        except Exception:
+            logger.warning("FlipsiBridge: session_meta-Nachliefer-Scheduling "
+                           "fehlgeschlagen", exc_info=True)
+            return
+        with self._meta_lock:
+            self._meta_fut = fut
+
+    async def drain_meta_queue(self) -> None:
+        """Test-Hook: den Nachliefer-Drain synchron ausführen (kein Scheduling)."""
+        await self._meta_drain_coro()
+
+    async def push_session_meta(
+        self,
+        chat_id: str,
+        *,
+        platform: Any = None,
+        model: Any = None,
+        sub_agents: Optional[list] = None,
+    ) -> bool:
+        """F3 (P40-Verband nachziehen): Session-Meta eigenständig ans Phone
+        drücken — Entry-Point der Gateway-Side-Hooks (platform/model/sub_agents,
+        REPLACE-Semantik: was None ist, fehlt am Phone → Zeile weg).
+
+        F3-Fix des W19-Skips: ohne Verbindung (oder bei Send-Fehlschlag) geht
+        die Meta NICHT verloren — sie wird je chat_id gebunden und nach dem
+        Reconnect nachgeliefert ([_schedule_meta_drain] an connect/hello_ack/
+        Frame-Loop-Reconnect). enc-first wie chat.activity-Parität. Rückgabe:
+        gesendet (True) — geparkt/niete = False; Fehler werfen NIE.
+        """
+        meta = self._build_session_meta(platform, model, sub_agents)
+        chat_id = str(chat_id or "").strip()
+        if not meta or not chat_id:
+            return False
+        if not self._connected or self._ws is None:
+            self._meta_enqueue(chat_id, meta)   # F3: Queue statt Skip
+            return False
+        sent = await self._meta_send_one(chat_id, meta)
+        if not sent:
+            self._meta_enqueue(chat_id, meta)   # F3: Send-Fail = Queue statt Verlust
+        return sent
 
     async def hook_pre_gateway_dispatch(self, **kwargs: Any) -> None:
         """W19: parent ON bei Whitelist-Text-Event (flipsibridge/discord/

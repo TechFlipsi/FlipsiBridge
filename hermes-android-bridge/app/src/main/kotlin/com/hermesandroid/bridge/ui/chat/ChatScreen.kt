@@ -74,15 +74,22 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
+import com.hermesandroid.bridge.chat.HistorySeal  // P24: SealBreach-Fang (Restore/Backfill)
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.CallRules
 import com.hermesandroid.bridge.client.ChatBackfillRules
 import com.hermesandroid.bridge.client.ChatStatusRank
 import com.hermesandroid.bridge.client.RelayClient
+import com.hermesandroid.bridge.executor.ActionExecutor
 import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.media.VoiceMemoRecorder
+import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.ui.FlipsiColors
+import com.hermesandroid.bridge.ui.call.CallActiveStrip
+import com.hermesandroid.bridge.ui.call.CallRingingOverlay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -245,6 +252,14 @@ fun ChatScreen(
     // AppLock-Gate (ChatScreen rendert nur nach Unlock).
     val historyContext = LocalContext.current
     var historyRestored by rememberSaveable { mutableStateOf(false) }
+    // P24 (MERGE-LANE 18.11.): SealBreach-Fang — ein Siegel-Verstoß beim
+    // Verlauf-Restore zeigt den FEHLERZUSTAND (Banner + Verlauf-löschen-Weg)
+    // statt Coroutine-Crash. Saveable wie historyRestored (Konfig-Wechsel);
+    // nach Prozess-Neustart läuft der Load erneut und meldet frisch.
+    var historySealBreach by rememberSaveable { mutableStateOf(false) }
+    // PH-6: dezenter Suchindex-Aufbau-Hinweis (kein Blockieren; Fenster-Deckel
+    // in der Hinweis-Effekt-Schleife unten — nie ein Ewigzähler).
+    var searchIndexBuilding by remember { mutableStateOf(false) }
     // W4-FIX-JAG2 (C1): auch der Status-Snapshot der restaurierten Einträge
     // ist saveable — der Saver-Verband der anderen Maps (B8/B7/J1). Vorher
     // nur `remember`: die Rotation zerstörte die Map, während
@@ -269,7 +284,7 @@ fun ChatScreen(
     // (Sweep) blockt wie live, read heilt.
     LaunchedEffect(chatStatus, msgIdByLocalId) {
         if (msgIdByLocalId.isEmpty()) return@LaunchedEffect
-        var raised: Map<Long, String>? = null
+        var raised: MutableMap<Long, String>? = null
         for ((localId, msgId) in msgIdByLocalId) {
             val live = chatStatus[msgId] ?: continue
             val current = statusHighWaterByLocalId[localId]
@@ -283,13 +298,24 @@ fun ChatScreen(
     }
     LaunchedEffect(historyRestored) {
         if (historyRestored) return@LaunchedEffect
-        // HAKEN-FIX (1): der Side-Car (Platte = höchster bekannter Chip-Stand
-        // je msg_id) wandert in denselben IO-Sprung wie der Verlaus-Load.
-        val (entries, statusByMsgId) = withContext(Dispatchers.IO) {
-            val root = ChatHistoryStore.root(historyContext.applicationContext)
-            ChatHistoryStore.loadAll(root) to ChatHistoryStore.loadStatuses(root)
+        // P24 (MERGE-LANE 18.11.): SealBreach-FANG — loadAll/loadStatuses sind
+        // fail-closed (Verlauf-Laden verweigert laut HistorySeal.readGuard
+        // ehrlich LAUT statt Stilltode). Der Fang hält den Screen lebendig:
+        // FEHLERZUSTAND (Banner + Verlauf-löschen-Weg) statt Coroutine-Crash,
+        // der Live-Verband läuft verlaufslos weiter. historyRestored wird
+        // trotzdem gesetzt → kein Reload-Loop je Rekombposition.
+        val (entries, statusByMsgId): Pair<List<ChatHistoryStore.Entry>?, Map<String, String>> = try {
+            // HAKEN-FIX (1): der Side-Car (Platte = höchster bekannter Chip-Stand
+            // je msg_id) wandert in denselben IO-Sprung wie der Verlaus-Load.
+            withContext(Dispatchers.IO) {
+                val root = ChatHistoryStore.root(historyContext.applicationContext)
+                ChatHistoryStore.loadAll(root) to ChatHistoryStore.loadStatuses(root)
+            }
+        } catch (breach: HistorySeal.SealBreach) {
+            historySealBreach = true
+            null to emptyMap()
         }
-        if (entries.isNotEmpty()) {
+        if (entries != null && entries.isNotEmpty()) {
             var nextId = RESTORED_ID_BASE
             val restored = ArrayList<ChatMessage>(entries.size)
             val statusById = HashMap<Long, String>()
@@ -410,6 +436,30 @@ fun ChatScreen(
             }
         }
         historyRestored = true
+    }
+
+    // PH-6 (MERGE-LANE 18.11.): Volltext-Suchindex primen (Lazy-Hook —
+    // Hintergrund-IO-Executor, NIE blockierend, noop wenn schon geprimt) und
+    // den dezenten Aufbau-Hinweis führen: RAM-Index leer, WÄHREND Verlauf-
+    // Dateien existieren (und kein Siegel-Verstoß die Meldung trägt) = Aufbau
+    // läuft. EINE Zeile, kein Blockieren, Fenster-Deckel ~10 s (kein Ewigzähler;
+    // leeres Verlauf zeigt nie einen Aufbau-Hinweis).
+    LaunchedEffect(historyRestored) {
+        if (!historyRestored) return@LaunchedEffect
+        ChatHistoryStore.ensureSearchIndexAsync(historyContext.applicationContext)
+        val indexRoot = ChatHistoryStore.root(historyContext.applicationContext)
+        var ticks = 0
+        while (ticks < 6) {
+            val files = indexRoot.listFiles { f -> f.isFile && f.name.endsWith(".jsonl") }
+            val building = !historySealBreach &&
+                files?.isNotEmpty() == true &&
+                ChatHistoryStore.searchIndexEntryCount() == 0
+            searchIndexBuilding = building && ticks < 5
+            if (!searchIndexBuilding) break
+            kotlinx.coroutines.delay(2_000L)
+            ticks++
+        }
+        searchIndexBuilding = false
     }
 
     // PH-FIX-CHAT-A (F1, Sortierung): Agenten-Antworten beim EINTREFFEN in
@@ -565,9 +615,20 @@ fun ChatScreen(
             if ((backfillEpochsConsumed[agentId] ?: 0L) >= epoch) continue
             val agentHash = agentId.hashCode()
             val root = ChatHistoryStore.root(context.applicationContext)
-            val entries = withContext(Dispatchers.IO) {
-                ChatHistoryStore.load(root, agentId)
+            // P24 (MERGE-LANE 18.11.): SealBreach-Fang — der Backfill-Load
+            // wirft bei Siegel-Verstoß ehrlich laut; der Fang konsumiert die
+            // Batch-Epoch (KEIN Retry-Loop — jede Wiederholung wirft denselben
+            // Verstoß erneut), zeigt den Fehlerzustand, der Screen läuft weiter.
+            val entries: List<ChatHistoryStore.Entry>? = try {
+                withContext(Dispatchers.IO) {
+                    ChatHistoryStore.load(root, agentId)
+                }
+            } catch (breach: HistorySeal.SealBreach) {
+                historySealBreach = true
+                backfillEpochsConsumed = backfillEpochsConsumed + (agentId to epoch)
+                null
             }
+            if (entries == null) continue
             val seenKeys = messages.map {
                 ChatTimelineMerge.dedupeKey(it.agentId, it.fromAgent, it.text, it.time)
             }.toHashSet()
@@ -1146,6 +1207,221 @@ fun ChatScreen(
     SideEffect {
         onConversationOpen(conversationOpen)
     }
+
+    // ═══ W21 ANRUF (P4-P6 + G11/G12): Call-Mount ══════════════════════════════
+    // Ankommender Anruf = Vollbild-Karte (Overlay über Liste UND Conversation),
+    // laufender Anruf = Status-Zeile (Strip) über der Route (WA-Muster). Die
+    // Session lebt in RelayClient.callSession; die Verbände hier sind nur
+    // Aufnahme (P5 half-duplex) + Screenshot-Fluss (G12, §7.2) + Bindung.
+    // Flat-Indent des bestehenden if/else bewusst unangetastet (nur Umklammerung).
+    val callSession by RelayClient.callSession.collectAsState()
+    val callAlias = callSession?.let { cs ->
+        CallRules.displayName(
+            relayAgents.firstOrNull { it.agentId == cs.agentId }?.displayName,
+            cs.agentId,
+        )
+    }
+    val callSteerCapabilityOn = CapabilityGate.isEnabled(CallRules.CAP_INTERACTION)
+    // Eigener Recorder-Namespace neben dem Composer (ComposerUi bleibt unangetastet):
+    // Call-Turns sind half-duplex-Verband (§3.1), kein Composer-Verwechslungsweg.
+    val callRecorder = remember { VoiceMemoRecorder(context) }
+    var callTalkRecording by remember { mutableStateOf(false) }
+    var callInfoLine by remember { mutableStateOf<String?>(null) }
+    var screengrabConfirmOpen by remember { mutableStateOf(false) }
+    var screengrabBusy by remember { mutableStateOf(false) }
+    var callDurationTick by remember { mutableStateOf(0L) }
+
+    /** P5-Turn aufnehmen: Barge-in stoppt die Agent-Ausgabe (§3.1). */
+    fun callTalkStart() {
+        val cs = callSession ?: return
+        if (cs.phase != CallRules.Phase.ACTIVE || callTalkRecording) return
+        ChatSpeechSpeaker.stopAll()  // Barge-in: Nutzerrede stoppt TTS (§3.1)
+        val micGranted = ContextCompat.checkSelfPermission(
+            context, android.Manifest.permission.RECORD_AUDIO,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!micGranted) {
+            callInfoLine = context.getString(R.string.chat_media_permission_missing)
+            return
+        }
+        if (runCatching { callRecorder.start() }.isFailure) {
+            callInfoLine = context.getString(R.string.chat_media_record_failed)
+            return
+        }
+        callTalkRecording = true
+        callInfoLine = null
+    }
+
+    /** P5-Turn senden (loslassen) oder verwerfen — Chunk-Cap per Auto-Stopp. */
+    fun callTalkStop(cancelled: Boolean = false) {
+        if (!callTalkRecording) return
+        callTalkRecording = false
+        if (cancelled) {
+            // cancel() löscht die Teilaufnahme selbst (Recorder-Verband).
+            runCatching { callRecorder.cancel() }
+            return
+        }
+        val file = runCatching { callRecorder.stop() }.getOrNull()
+        val cs = callSession
+        if (file == null || cs == null || cs.phase != CallRules.Phase.ACTIVE) {
+            file?.delete()
+            return
+        }
+        mediaScope.launch(Dispatchers.IO) {
+            val bytes = runCatching { file.readBytes() }.getOrNull()
+            file.delete()  // Call-Turn lebt NUR als E2E-Chunk (keine Platte/Lokalkopie)
+            if (bytes == null) {
+                callInfoLine = context.getString(R.string.chat_media_generic_error)
+                return@launch
+            }
+            RelayClient.sendCallAudio(cs.agentId, bytes) { ok, error ->
+                if (!ok) {
+                    callInfoLine = stringResource(R.string.call_screengrab_talk_failed) +
+                        (error ?: context.getString(R.string.chat_send_failed_unknown))
+                }
+            }
+        }
+    }
+
+    /** §7.2 Privacy-Kette: EXIF/Geo-Inherent-Strip (Neukompression) + Downscale ≤ 1400 px. */
+    fun screengrabDownscaleBytes(b64: String): ByteArray? = runCatching {
+        val raw = android.util.Base64.decode(b64, android.util.Base64.DEFAULT)
+        val bitmap = android.graphics.BitmapFactory.decodeByteArray(raw, 0, raw.size)
+            ?: return@runCatching null
+        val edge = maxOf(bitmap.width, bitmap.height)
+        val scaled = if (edge > CallRules.SCREENGRAB_MAX_EDGE_PX) {
+            val factor = CallRules.SCREENGRAB_MAX_EDGE_PX.toFloat() / edge
+            android.graphics.Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * factor).toInt().coerceAtLeast(1),
+                (bitmap.height * factor).toInt().coerceAtLeast(1),
+                true,
+            )
+        } else {
+            null
+        }
+        val out = java.io.ByteArrayOutputStream()
+        (scaled ?: bitmap).compress(
+            android.graphics.Bitmap.CompressFormat.JPEG,
+            CallRules.SCREENGRAB_JPEG_QUALITY,
+            out,
+        )
+        bitmap.recycle()
+        scaled?.recycle()
+        out.toByteArray()
+    }.getOrNull()
+
+    fun callScreengrabExecute() {
+        val cs = callSession ?: return
+        screengrabBusy = true
+        mediaScope.launch {
+            val shot = ActionExecutor.takeScreenshot()
+            if (!shot.success) {
+                screengrabBusy = false
+                callInfoLine = stringResource(R.string.call_screengrab_failed_reason, shot.message.take(80))
+                return@launch
+            }
+            val b64 = (shot.data as? Map<*, *>)?.get("image") as? String
+            // Downscale/Neukompression auf IO (Bitmap-Arbeit gehört nicht aufs Main).
+            val bytes = b64?.let { withContext(Dispatchers.IO) { screengrabDownscaleBytes(it) } }
+            if (bytes == null) {
+                screengrabBusy = false
+                // SR-Bedarf: call_screengrab_failed
+                callInfoLine = stringResource(R.string.call_screengrab_failed)
+                return@launch
+            }
+            // §7.2 Privacy-Kette: Neukompression (EXIF/Geo strippt inherent),
+            // Downscale ≤ 1400 px, KEIN MediaStore, KEINE Lokalkopie.
+            RelayClient.sendScreengrab(
+                cs.agentId,
+                CallRules.screengrabName(cs.callId, System.currentTimeMillis()),
+                "image/jpeg",
+                bytes,
+            ) { ok, error ->
+                screengrabBusy = false
+                callInfoLine = if (ok) {
+                    // SR-Bedarf: call_screengrab_sent
+                    stringResource(R.string.call_screengrab_sent)
+                } else {
+                    stringResource(R.string.call_screengrab_failed_reason, error?.take(80) ?: "?")
+                }
+            }
+        }
+    }
+
+    /** G12-Fluss: 3-s-Bestätigungs-Chip (§7.2 Standard), Capability-Schranke, RAM-only. */
+    fun callScreengrabTap() {
+        if (screengrabBusy) return
+        if (!CapabilityGate.isEnabled(CallRules.CAP_SCREEN_CAPTURE)) {
+            callInfoLine = "Screenshot-Fähigkeit aus — in Einstellungen › Fähigkeiten einschalten."
+            return
+        }
+        if (!screengrabConfirmOpen) {
+            // SR-Bedarf: call_screengrab_confirm_hint
+            callInfoLine = stringResource(R.string.call_screengrab_confirm_hint)
+            screengrabConfirmOpen = true
+            return
+        }
+        screengrabConfirmOpen = false
+        callScreengrabExecute()
+    }
+
+    // Dauer-Takt (Strip) + Turn-Cap + Räumung bei Phasenwechsel (P6-Verband).
+    LaunchedEffect(callSession?.phase, callSession?.callId) {
+        val phase = callSession?.phase
+        if (phase != CallRules.Phase.ACTIVE) {
+            callDurationTick = 0L
+            callInfoLine = null
+            screengrabConfirmOpen = false
+            if (callTalkRecording) {
+                runCatching { callRecorder.cancel() }
+                callTalkRecording = false
+            }
+        } else {
+            callDurationTick = System.currentTimeMillis()
+            while (callSession?.phase == CallRules.Phase.ACTIVE) {
+                kotlinx.coroutines.delay(1000L)
+                callDurationTick = System.currentTimeMillis()
+            }
+        }
+    }
+    LaunchedEffect(callTalkRecording) {
+        if (callTalkRecording) {
+            kotlinx.coroutines.delay(CallRules.AUDIO_CHUNK_MAX_MS)
+            if (callTalkRecording) callTalkStop()  // Turn-Cap (§3.1, kein Diktat)
+        }
+    }
+    LaunchedEffect(screengrabConfirmOpen) {
+        if (screengrabConfirmOpen) {
+            kotlinx.coroutines.delay(CallRules.SCREENGRAB_CONFIRM_MS)
+            screengrabConfirmOpen = false
+        }
+    }
+
+    // ── W21 ANRUF (P4): Route-Wrapper — Status-Zeile (aktiv) schwebt ÜBER der
+    // Route (WA-Muster unter dem Kopf, kein Verdeckens des Chat-Headers), die
+    // Klingel-Karte liegt als Overlay über Liste UND Conversation. Das
+    // bestehende if/else bleibt unangetastet (Flat-Indent bewusst).
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (callSession?.phase == CallRules.Phase.ACTIVE && callSession != null &&
+            callAlias != null
+        ) {
+            val cs = callSession!!
+            CallActiveStrip(
+                session = cs,
+                alias = callAlias,
+                durationSeconds = CallRules.activeSeconds(cs, callDurationTick),
+                steerCapabilityOn = callSteerCapabilityOn,
+                screengrabPendingConfirmation = screengrabConfirmOpen,
+                talkRecording = callTalkRecording,
+                infoLine = callInfoLine,
+                onToggleSteer = { RelayClient.setCallAgentSteer(!cs.agentScreenSteer) },
+                onScreengrabRequest = { callScreengrabTap() },
+                onTalkStart = { callTalkStart() },
+                onTalkEnd = { callTalkStop() },
+                onHangUp = { RelayClient.hangUpCall() },
+            )
+        }
+        Box(modifier = Modifier.fillMaxSize()) {
     if (agent == null) {
         AgentListBody(
             padding = padding,
@@ -1312,6 +1588,13 @@ fun ChatScreen(
                     }
                 }
             },
+            // P24 (MERGE-LANE 18.11.): Siegel-Verstoß-Fehlerzustand — die
+            // Verlauf-löschen-Aktion nutzt den BESTEHENDEN Chat-löschen-Weg
+            // (Bestätigungsdialog + onClearHistory räumt die Agent-Verlaufs-
+            // datei inkl. Siegel; E2E-Keys unangetastet).
+            historySealBreach = historySealBreach,
+            // PH-6: dezenter Suchindex-Aufbau-Hinweis (kein Blockieren).
+            searchIndexBuilding = searchIndexBuilding,
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
@@ -1337,6 +1620,23 @@ fun ChatScreen(
             },
         )
     }
+
+            // ── W21 ANRUF (P4): Klingel-Karte als OVERLAY über beiden Zuständen
+            // (Annehmen/Ablehnen sind 48-dp-Pills in CallScreen, Vibration über
+            // den Ring-Kanal des RelayClient).
+            if (callSession?.phase == CallRules.Phase.RINGING && callSession != null &&
+                callAlias != null
+            ) {
+                val cs = callSession!!
+                CallRingingOverlay(
+                    session = cs,
+                    alias = callAlias,
+                    onAccept = { RelayClient.acceptCall() },
+                    onDecline = { RelayClient.declineCall() },
+                )
+            }
+        }  // Box (Call-Overlay-Ebene)
+    }  // Column (Call-Route-Wrapper)
 
     // MEDIA-T1: Anhang-Auswahl (Foto/Video, Datei, Sprachnachricht). Der
     // Sheet öffnet NUR innerhalb einer geöffneten Conversation (Picker-
@@ -1592,6 +1892,14 @@ private fun ConversationBody(
     // nicht springen lassen“).
     historyPrependCount: Int = 0,
     onConsumePrependCount: () -> Unit = {},
+    // P24 (MERGE-LANE 18.11.): Siegel-Verstoß beim Verlauf-Restore — FEHLER-
+    // zustand statt Crash: Zeile (Titel + Befund) + Verlauf-löschen-Aktion
+    // über den BESTEHENDEN Bestätigungsdialog-Weg (confirmDeleteChat →
+    // onClearHistory; der Chat-löschen-Verband räumt die Verlaufsdatei inkl.
+    // Siegel, E2E-Keys unangetastet).
+    historySealBreach: Boolean = false,
+    // PH-6: dezenter Suchindex-Aufbau-Hinweis (nie blockierend).
+    searchIndexBuilding: Boolean = false,
 ) {
     val listState = rememberLazyListState()
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
@@ -1827,6 +2135,52 @@ private fun ConversationBody(
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
             )
+        }
+        // PH-6 (MERGE-LANE 18.11.): dezenter Aufbau-Hinweis der Volltext-
+        // suche (gleiche dezent-Zeilen-Familie wie der Backfill-Hinweis).
+        if (searchIndexBuilding) {
+            Text(
+                stringResource(R.string.search_index_building),
+                style = MaterialTheme.typography.labelSmall,
+                color = FlipsiColors.TextSecondary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
+        // P24 (MERGE-LANE 18.11.): Siegel-Verstoß — FEHLERZUSTAND statt Crash.
+        // Ehrlich laut: Titel + Befund + Verlauf-löschen-Aktion über den
+        // bestehenden Bestätigungsdialog (confirmDeleteChat → onClearHistory
+        // räumt die Agent-Verlaufsdatei inkl. Siegel — ein frischer Load startet
+        // einen neuen, gesiegelten Verlauf; E2E-Keys bleiben unangetastet).
+        if (historySealBreach) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        stringResource(R.string.history_seal_breach_title),
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = FlipsiColors.SignalRedText,
+                    )
+                    Text(
+                        stringResource(R.string.history_seal_breach_body),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                TextButton(
+                    onClick = { confirmDeleteChat = true },
+                    modifier = Modifier.heightIn(min = 48.dp),
+                ) {
+                    Text(stringResource(R.string.history_seal_breach_action_clear))
+                }
+            }
         }
         // WELLE 13 (Sir): Herz-Knopf = Support — W16 (Fixliste 34): play
         // öffnet DIREKT das „Unterstützen“-Sheet im Chat; GitHub hat das
