@@ -668,4 +668,5 @@
     <string name="call_screengrab_sent">Screenshot sent to agent — no copy was kept.</string>
     <string name="call_screengrab_confirm_hint">Screenshot to agent — tap again within 3 s to confirm.</string>
     <string name="call_screengrab_talk_failed">Voice turn failed: </string>
+    <string name="call_screengrab_cap_missing">Screenshot capability off — enable it in Settings › Capabilities.</string>
 </resources>

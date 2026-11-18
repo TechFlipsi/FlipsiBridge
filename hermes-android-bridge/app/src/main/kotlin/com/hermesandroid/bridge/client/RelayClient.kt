@@ -152,7 +152,6 @@ object RelayClient {
     // degradiert dort ehrlich auf Heads-up (§3.6-Wunsch, Bedarf notiert).
     private const val CALL_NOTIFY_CHANNEL = "fb_call"
     private const val CALL_NOTIFY_ID = 8000
-private const val CALL_NOTIFY_ID = 8000
         // J1-FIX: Anzeige-Fenster der ENDED-Session im StateFlow (10 s).
         private const val ENDED_KEEP_MS = 10_000L
 
@@ -2968,8 +2967,8 @@ private const val CALL_NOTIFY_ID = 8000
         // remoteEnd prüft+beendet atomar, veraltete Main-Schreibungen fliegen raus.
         var firedEnd: CallRules.CallSession? = null
         _callSession.update { cur ->
-            val ended = CallRules.remoteEnd(cur, callId, System.currentTimeMillis())
-            if (ended != null) { firedEnd = ended; ended } else cur
+            CallRules.remoteEnd(cur, callId, System.currentTimeMillis())
+                ?.let { firedEnd = it; it } ?: cur
         }
         val ended = firedEnd
         if (ended == null) {
@@ -3096,8 +3095,8 @@ private const val CALL_NOTIFY_ID = 8000
                     cur.phase == CallRules.Phase.RINGING &&
                     CallRules.ringWindowPassed(cur, now)
                 ) {
-                    val ended = CallRules.ringTimeout(cur, now)
-                    if (ended != null) { fired = ended; ended } else cur
+                    CallRules.ringTimeout(cur, now)
+                        ?.let { fired = it; it } ?: cur
                 } else cur
             }
             val ended = fired ?: return@launch

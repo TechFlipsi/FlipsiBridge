@@ -662,4 +662,5 @@
     <string name="call_screengrab_sent">Screenshot an Agent gesendet — keine Kopie gespeichert.</string>
     <string name="call_screengrab_confirm_hint">Screenshot an Agent — zur Bestätigung innerhalb von 3 s erneut tippen.</string>
     <string name="call_screengrab_talk_failed">Sprachturn fehlgeschlagen: </string>
+    <string name="call_screengrab_cap_missing">Screenshot-Fähigkeit aus — in Einstellungen › Fähigkeiten einschalten.</string>
 </resources>
