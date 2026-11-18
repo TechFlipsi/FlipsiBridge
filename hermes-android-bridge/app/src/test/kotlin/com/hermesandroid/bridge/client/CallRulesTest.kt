@@ -109,10 +109,12 @@ class CallRulesTest {
     }
 
     @Test
-    fun invite_während_active_ist_busy_unabhängig_von_callId() {
+    fun invite_duplikat_während_active_ist_invalid_statt_busy() {
+        // J1-Fix (e50a59b): ein Spool-Re-Invite der EIGENEN call_id während ACTIVE
+        // darf den laufenden Call nicht als Busy+decline töten → Invalid (verwerfen).
         val current = active(ringing(), 1_000_500L)
         assertEquals(
-            CallRules.InviteDecision.Busy,
+            CallRules.InviteDecision.Invalid,
             CallRules.inviteDecision(
                 current,
                 CallRules.InviteSpec("call-abc12345", "alpha", "chat-aaaa-1111", "voice", "x"),
