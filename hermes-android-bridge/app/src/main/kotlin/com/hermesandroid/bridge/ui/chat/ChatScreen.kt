@@ -210,6 +210,9 @@ fun ChatScreen(
     // (chatEvents/chatMedia-Einpflege unten). Kein Beispiel-Verlauf mehr.
     var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(listOf<ChatMessage>()) }
     var inputText by rememberSaveable { mutableStateOf("") }
+    // Drill-3-Fix (M8): wartender Share-/Panel-Prompt (wird unten vom
+    // Zustell-Poller gefüllt; Composer-Öffnungs-Wipes übernehmen ihn).
+    var pendingSharePrompt by remember { mutableStateOf<String?>(null) }
 
     // PH-FIX-CHAT-A (F1/J1): Bereits in `messages` übernommene chatEvents als
     // SCHLÜSSEL (chatId|ts) — NICHT als Positionszähler. Grund (Jäger J1):
@@ -756,7 +759,10 @@ fun ChatScreen(
         if (openAgentId != null) {
             agents.firstOrNull { it.agentId == openAgentId }?.let { match ->
                 selectedAgentId = match.id
-                inputText = ""
+                // Drill-3-Fix (M8): ein wartender Share-Prompt überlebt die
+                // Öffnung — der Wipe übernimmt ihn statt zu leeren.
+                inputText = pendingSharePrompt ?: ""
+                pendingSharePrompt = null
                 replyQuote = null
                 onOpenedAgent()
             }
@@ -1196,14 +1202,31 @@ fun ChatScreen(
         }
     }
     // ── W22 MERGE-2 (B-Hook 1): Share-/Panel-Zustellung verbrauchen ──────────
-    // AssistantShareBus.consume() beim Kompositionsaufbau (pendingVoice-
-    // Muster): der Prompt landet als Vorlage im Komposer (inputText) — KEIN
-    // Auto-Send, der Nutzer prüft und sendet selbst (ehrlich, der Screen
-    // hat die Zustellung sichtbar übernommen). chipLabel/Kontext-Chip: die
-    // Composer-Chip-Platzierung ist eigenes Verband — Grenze im Report.
-    LaunchedEffect(selectedAgentId, agents) {
-        val delivery = AssistantShareBus.consume() ?: return@LaunchedEffect
-        inputText = delivery.prompt
+    // Drill-3-Fund (M8): der alte Effect hängt an (selectedAgentId, agents)
+    // — eine Zustellung bei OFFENEM Chat feuerte nie (Keys unverändert) und
+    // die beiden Composer-Wipes (onOpen/openAgentId-Effekt) fraßen den Prompt
+    // im Warm-Start. Fix: zustellungspollierender Effect (2 Hz, billig) +
+    // pendingSharePrompt-Merker, den die Wipes übernehmen statt zu leeren.
+    // KEIN Auto-Send: der Nutzer prüft und sendet selbst (ehrlich).
+    // chipLabel/Kontext-Chip im Composer: eigenes Verband — Grenze im Report.
+    LaunchedEffect(Unit) {
+        while (true) {
+            val delivery = AssistantShareBus.consume()
+            if (delivery != null) {
+                inputText = delivery.prompt
+                pendingSharePrompt = delivery.prompt
+            }
+            delay(500)
+        }
+    }
+    // Merker abbauen, sobald der Prompt im Feld steht und die Wipe-Wellen
+    // derselben Interaktion durchgelaufen sind — sonst würde ein alter
+    // Prompt beim nächsten Conversation-Wechsel wiederauferstehen.
+    LaunchedEffect(inputText, pendingSharePrompt) {
+        if (pendingSharePrompt != null && inputText == pendingSharePrompt) {
+            delay(400)
+            if (inputText == pendingSharePrompt) pendingSharePrompt = null
+        }
     }
     LaunchedEffect(chatMedia, historyRestored) {
         if (!historyRestored) return@LaunchedEffect
@@ -1775,7 +1798,10 @@ fun ChatScreen(
                 selectedAgentId = id
                 // Eingabe beginnt je Conversation neu (Entwurf je Agent
                 // bewusst nicht — ein Feld reicht, State bleibt minimal).
-                inputText = ""
+                // Drill-3-Fix (M8): ein wartender Share-Prompt überlebt die
+                // Öffnung — der Wipe übernimmt ihn statt zu leeren.
+                inputText = pendingSharePrompt ?: ""
+                pendingSharePrompt = null
                 // W4-B (Zitieren): Zitier-Modus ebenfalls je Conversation neu.
                 replyQuote = null
             },
