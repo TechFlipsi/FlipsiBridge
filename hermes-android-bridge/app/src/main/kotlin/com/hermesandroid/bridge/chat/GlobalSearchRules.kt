@@ -57,13 +57,18 @@ object GlobalSearchRules {
         val msgId: String?,     // = Broker-msg_id (null bei Alt-Daten)
     )
 
-    /** Agent-Gruppe der Ergebnis-Form: Treffer-Liste (gekappt) + ehrliche
-     *  Gesamtzahl + Rest-Anzeige „+n weitere“. */
+    /** Agent-Gruppe der Ergebnis-Form: Treffer-Liste (gekappt) + Gesamtzahl
+     *  aus der Engine-Ausgabe + Rest-Anzeige „+n weitere“. */
     data class AgentGroup(
         val agentId: String,
         val hits: List<SearchIndex.Hit>,
         val totalForAgent: Int,
         val moreInAgent: Int,
+        /** true = die Engine-Ausgabe kam am Suchlauf-Cap an
+         *  ([SearchIndex.DEFAULT_RESULT_LIMIT]) — [totalForAgent]/[moreInAgent]
+         *  sind dann nur UNGRENZEN; Anzeige offen („n+“), keine falsch-exakte
+         *  Differenz. (Zähler-Ehrlichkeit, W22-C.) */
+        val totalGecappt: Boolean = false,
     )
 
     /** Ergebnis-Form: Gruppen in Treffer-Erst-Reihenfolge (+score), gesamt-
@@ -105,13 +110,22 @@ object GlobalSearchRules {
         limitTotal: Int = MAX_TOTAL_RESULTS,
         perAgent: Int = MAX_PER_AGENT,
     ): Result {
-        if (nothingGroupable(hits)) return Result(emptyList(), 0, false)
+        // Blank-agentId-Treffer (Alt-Daten, gson-Null-Härtung im Store)
+        // wandern VOR der Gruppierung raus — keine Fake-Gruppe „“; wenn
+        // ALLE blank/leer → ehrlich leer.
+        val groupable = hits.filterNot { it.agentId.isBlank() }
+        if (groupable.isEmpty()) return Result(emptyList(), 0, false)
         // 1) je Agent kappen — Reihenfolge der Treffer bleibt (score ↓).
         val totals = HashMap<String, Int>()
-        for (hit in hits) totals[hit.agentId] = (totals[hit.agentId] ?: 0) + 1
+        for (hit in groupable) totals[hit.agentId] = (totals[hit.agentId] ?: 0) + 1
+        // Zähler-Ehrlichkeit: der Engine-Suchlauf selbst kappt die Ausgabe
+        // ([SearchIndex.DEFAULT_RESULT_LIMIT], ChatHistoryStore.searchAll
+        // nutzt ihn) — kommt die gesamt Liste am Cap an, sind die je-Agent-
+        // Totals nur UNGRENZEN → Flag für eine offene Anzeige („n+“).
+        val atEngineCap = hits.size >= SearchIndex.DEFAULT_RESULT_LIMIT
         val perAgentCapped = totals.values.any { it > perAgent }
         val perAgentFirst = LinkedHashMap<String, MutableList<SearchIndex.Hit>>()
-        for (hit in hits) {
+        for (hit in groupable) {
             val list = perAgentFirst.getOrPut(hit.agentId) { ArrayList() }
             if (list.size < perAgent) list.add(hit)
         }
@@ -137,6 +151,7 @@ object GlobalSearchRules {
                     hits = shown.toList(),
                     totalForAgent = totalForAgent,
                     moreInAgent = totalForAgent - shown.size,
+                    totalGecappt = atEngineCap,
                 ),
             )
         }
@@ -146,11 +161,6 @@ object GlobalSearchRules {
             capped = capped || perAgentCapped,
         )
     }
-
-    /** Hart-Gate: Treffer mit BLANKEM agentId (Alt-Daten, gson-Null-Härtung
-     *  im Store) werden NICHT gruppiert (keine Fake-Gruppe „“). */
-    private fun nothingGroupable(hits: List<SearchIndex.Hit>): Boolean =
-        hits.all { it.agentId.isBlank() }
 
     /** Snippet-Kürzung auf [max] Zeichen — Kürzung NUR hinten („…“), das
      *  Trefferfenster steht vorn (Engine-Snippet-Fenster ist schon schmal). */
@@ -163,8 +173,13 @@ object GlobalSearchRules {
         return cut.trimEnd() + suffix
     }
 
-    /** Case-insensitive Treffer-Streubereiche der [terms] im Snippet (mit
-     *  Wort-Grenzen: kein Querschuss in Nachbarwörtern). Reihenfolge aufsteigend. */
+    /** Case-insensitive Treffer-Spannen der [terms] im Snippet. Grenze = der
+     *  Engine-Vertrag ([SearchIndex.search]: Token exakt ODER Token mit Term
+     *  als PRÄFIX — „hal“ trifft „hallo“): das Vorkommen muss am TOKEN-Beginn
+     *  liegen (Wort-START-Grenze; „…“-Rand des Engine-Snippets zählt als
+     *  Grenze — kein Buchstabe), nach dem Term darf weiters Wort laufen — der
+     *  Span deckt NUR das Term-Präfix-Fenster ab. Mitten-im-Wort bleibt ohne
+     *  Span („allo“ in „hallo“). Reihenfolge aufsteigend. */
     fun highlightSpans(snippet: String, terms: List<String>): List<IntRange> {
         if (terms.isEmpty()) return emptyList()
         val lower = snippet.lowercase(java.util.Locale.ROOT)
@@ -175,12 +190,10 @@ object GlobalSearchRules {
             while (true) {
                 val at = lower.indexOf(term, from)
                 if (at < 0) break
-                // Wort-Grenzen: Nachbarzeichen KEIN Buchstabe/Ziffer („…“-Rand
-                // des Engine-Snippets zählt als Grenze — kein Buchstabe).
+                // Wort-START-Grenze reicht (Präfix ist erlaubt — Engine-
+                // Vertrag): das Nachbarzeichen DAVOR KEIN Buchstabe/Ziffer.
                 val beforeIsWord = at > 0 && lower[at - 1].isLetterOrDigit()
-                val end = at + term.length
-                val afterIsWord = end < lower.length && lower[end].isLetterOrDigit()
-                if (!beforeIsWord && !afterIsWord) out.add(at until end)
+                if (!beforeIsWord) out.add(at until (at + term.length))
                 from = at + term.length
             }
         }

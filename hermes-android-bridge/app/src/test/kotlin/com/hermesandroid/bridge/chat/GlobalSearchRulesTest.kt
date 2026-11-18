@@ -76,6 +76,24 @@ class GlobalSearchRulesTest {
     }
 
     @Test
+    fun gemischteBlankTrefferRausfiltertVorGruppierung() {
+        // KDoc-Vertrag: blank agentId (Alt-Daten) wird VOR der Gruppierung
+        // rausgefiltert — bei Mischliste entsteht KEINE Fake-Gruppe „“.
+        val hits = listOf(
+            hit(1L, agentId = "alpha"),
+            hit(2L, agentId = "", text = "Alt-Daten ohne Agent"),
+            hit(3L, agentId = "alpha"),
+        )
+        val result = GlobalSearchRules.shapeResults(hits)
+        assertEquals(1, result.groups.size)
+        assertEquals("alpha", result.groups[0].agentId)
+        assertEquals(2, result.groups[0].hits.size)
+        assertEquals(2, result.groups[0].totalForAgent)
+        assertFalse(result.groups[0].totalGecappt)
+        assertEquals(2, result.total)
+    }
+
+    @Test
     fun jeAgentMax10MitEhrlichemRest() {
         val hits = (1L..15L).map { seq -> hit(seq, agentId = "alpha") }
         val result = GlobalSearchRules.shapeResults(hits)
@@ -136,6 +154,46 @@ class GlobalSearchRulesTest {
         assertFalse(result.capped)
     }
 
+    @Test
+    fun engineCapAnkunftMachtGruppenZaehlerOffen() {
+        // 60 echte Treffer, der Engine-Suchlauf kappt auf 50: die Liste kommt
+        // beschnitten an → totalForAgent/moreInAgent sind nur UNGRENZEN →
+        // Flag „offen“ (UI zeigt „n+“, keine falsch-exakte Differenz).
+        val index = SearchIndex()
+        for (n in 1L..60L) {
+            index.index(
+                SearchIndex.Indexable(
+                    agentId = "alpha",
+                    seq = n,
+                    msgId = null,
+                    fromAgent = true,
+                    text = "Münzen zählen klappt $n",
+                    time = "08:00",
+                ),
+            )
+        }
+        val hits = index.search("münzen", limit = SearchIndex.DEFAULT_RESULT_LIMIT)
+        assertEquals(GlobalSearchRules.MAX_TOTAL_RESULTS, hits.size)
+        val result = GlobalSearchRules.shapeResults(hits)
+        val group = result.groups[0]
+        assertTrue(group.totalGecappt)
+        assertEquals(10, group.hits.size)
+        assertEquals(50, group.totalForAgent)
+        assertEquals(40, group.moreInAgent)
+    }
+
+    @Test
+    fun zaehlerBleibtExaktOhneEngineCap() {
+        // Liste unterm Cap (hier: je-Agent-Kappung only): Zahlen exakt,
+        // kein offen-Marker.
+        val hits = (1L..15L).map { seq -> hit(seq, agentId = "alpha") }
+        val result = GlobalSearchRules.shapeResults(hits)
+        val group = result.groups[0]
+        assertFalse(group.totalGecappt)
+        assertEquals(15, group.totalForAgent)
+        assertEquals(5, group.moreInAgent)
+    }
+
     // ── Snippet-Kürzung + Highlight ──────────────────────────────────────────
 
     @Test
@@ -154,8 +212,14 @@ class GlobalSearchRulesTest {
 
     @Test
     fun vorhandeneEndEllipseWirdNichtGedoppelt() {
-        val cut = GlobalSearchRules.truncateSnippet("a".repeat(80) + "…")
+        // Eingabe-Ellipse liegt INNERHALB des Kürz-Fensters (take(72) endet
+        // auf „…“) → endsWith-Zweig greift: kein zweites „…“ am Schnitt.
+        val input = "x".repeat(71) + "…" + "tail"
+        val cut = GlobalSearchRules.truncateSnippet(input)
         assertEquals(1, cut.count { it == '…' })
+        assertTrue(cut.endsWith("…"))
+        assertEquals(GlobalSearchRules.MAX_SNIPPET_CHARS, cut.length)
+        assertFalse(cut.contains("tail"))
     }
 
     @Test
@@ -165,22 +229,55 @@ class GlobalSearchRulesTest {
             listOf("münzen", "korb"),
         )
         assertEquals(2, spans.size)
-        assertEquals(1, spans[0].first) // „…"-Rand zählt NICHT mit, Treffer bei m
+        assertEquals(1, spans[0].first) // „…“-Rand zählt NICHT mit, Treffer bei m
         assertTrue(spans[0].last > spans[0].first)
-        // Case-insensitive: Original-Schreibweise „Korb" getroffen.
+        // Case-insensitive: Original-Schreibweise „Korb“ getroffen.
         assertEquals("münzen".length + 1 + " im ".length, spans[1].first)
-        // Wort-Grenze: „bunt" enthält kein „b"-Querschuss in Nachbarwörter —
-        // Term „b" trifft im Snippet KEINEN eigenständigen Treffer.
+        // Wort-START-Grenze: Term „b“ in „Korb“ startet MITTEN im Token
+        // (davor Buchstabe) → kein Span, kein Querschuss in Nachbarwörter.
         val single = GlobalSearchRules.highlightSpans("…münzen im Korb.", listOf("b"))
         assertTrue(single.isEmpty())
     }
 
     @Test
+    fun praefixTrefferBekommtSpanUndMitteImWortBleibtOhne() {
+        // Engine-Vertrag: „hal“ trifft „hallo“ als Wort-Präfix → Span über
+        // das Term-Präfix-Fenster (vorher: kein Span → 2-Zeichen-Queries
+        // beleuchteten fast ihren ganzen Trefferbestand nicht mehr).
+        val spans = GlobalSearchRules.highlightSpans("hallo welt", listOf("hal"))
+        assertEquals(1, spans.size)
+        assertEquals(0, spans[0].first)
+        assertEquals(2, spans[0].last)
+        assertEquals("hal", "hallo welt".substring(spans[0].first, spans[0].last + 1))
+        // Case-insensitive: Original-Schreibweise bleibt getroffen.
+        val caps = GlobalSearchRules.highlightSpans("Hallo Verlauf", listOf("hal"))
+        assertEquals(1, caps.size)
+        assertEquals(0, caps[0].first)
+        assertEquals(2, caps[0].last)
+        // Wort-START-Grenze bleibt hart: mitten im Wort kein Span.
+        assertTrue(GlobalSearchRules.highlightSpans("hallo", listOf("allo")).isEmpty())
+    }
+
+    @Test
     fun highlightSpansMergKeineOverlappe() {
         val spans = GlobalSearchRules.highlightSpans("hallo hallo", listOf("hallo", "hall"))
-        // Beide Terme treffen dieselben Stellen — gemerged, keine Doppel.
+        // Beide Terme (Präfix + Volltoken) treffen dieselben Stellen — je
+        // Vorkommen zu EINEM gemergten Span, keine Doppel-Spannen.
         assertEquals(2, spans.size) // 2 Vorkommen, je 1 gemergter Span
         assertFalse(spans[0].intersects(spans[1]))
+        assertEquals(4, spans[0].last) // Superset aus „hall“ + „hallo“
+        assertEquals(10, spans[1].last)
+    }
+
+    @Test
+    fun ueberlappendePraefixSpansAmSelbenVorkommenMergen() {
+        // „hal“ und „hall“ (beide Präfix) treffen dieselbe Stelle im selben
+        // Wort — ECHTE Überlappung → Merge-Zweig greift (1 Span = Superset).
+        val spans = GlobalSearchRules.highlightSpans("hallo", listOf("hal", "hall"))
+        assertEquals(1, spans.size)
+        assertEquals(0, spans[0].first)
+        assertEquals(3, spans[0].last)
+        assertEquals("hall", "hallo".substring(spans[0].first, spans[0].last + 1))
     }
 
     // ── Agent-Anzeige + Sprung-Fähigkeit ─────────────────────────────────────

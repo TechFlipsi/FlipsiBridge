@@ -79,8 +79,11 @@ internal object GlobalSearchUiText {
     // STRING: chat_global_search_empty — de "Keine weiteren Treffer", en "No further matches"
     const val EMPTY = "Keine weiteren Treffer"
 
-    // STRING: chat_global_search_capped — de "Gekürzt — nur die besten Treffer je Agent", en "Trimmed — best matches per agent"
-    const val CAPPED = "Gekürzt — nur die besten Treffer je Agent"
+    // STRING: chat_global_search_capped — de "Gekürzt — beste Treffer zuerst", en "Trimmed — best matches first"
+    const val CAPPED = "Gekürzt — beste Treffer zuerst"
+
+    // STRING: chat_global_search_building_partial — de "Suchindex wird noch aufgebaut — Treffer können unvollständig sein", en "Index is still building — results may be incomplete"
+    const val BUILDING_PARTIAL = "Suchindex wird noch aufgebaut — Treffer können unvollständig sein"
 
     // STRING: chat_global_search_unknown_agent — de "Unbekannter Agent", en "Unknown agent"
     const val UNKNOWN_AGENT = "Unbekannter Agent"
@@ -210,6 +213,11 @@ fun GlobalSearchResultsSection(
                 if (result.capped) {
                     SectionNote(GlobalSearchUiText.CAPPED)
                 }
+                // 10-s-Fenster (Index-Aufbau läuft): Treffer können aus einem
+                // TEIL-Index stammen — dezente Ein-Zeilen-Erklärung, kein Fake.
+                if (indexBuilding) {
+                    SectionNote(GlobalSearchUiText.BUILDING_PARTIAL)
+                }
             }
         }
     }
@@ -269,10 +277,13 @@ private fun AgentGroupBlock(
                 modifier = Modifier.weight(1f),
             )
             Spacer(Modifier.width(8.dp))
-            val countText = if (group.moreInAgent > 0) {
-                "${group.totalForAgent} (+${group.moreInAgent})"
-            } else {
-                "${group.totalForAgent}"
+            // Zähler-Ehrlichkeit: am Engine-Suchlauf-Cap (Liste beschnitten)
+            // ist totalForAgent nur Untergrenze → offene Anzeige „n+“, keine
+            // falsch-exakte „(+n)“-Differenz; unterm Cap bleibt es exakt.
+            val countText = when {
+                group.totalGecappt -> "${group.totalForAgent}+"
+                group.moreInAgent > 0 -> "${group.totalForAgent} (+${group.moreInAgent})"
+                else -> "${group.totalForAgent}"
             }
             Text(
                 countText,
