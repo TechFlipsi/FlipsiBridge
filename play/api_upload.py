@@ -187,8 +187,18 @@ def main():
         rel_name = f"FlipsiBridge {m.group(1)} ({version})" if m else f"FlipsiBridge ({version})"
         rel_notes = [
             {"language": "de-DE", "text":
-             "Fehlerbehebungen und Detailverbesserungen: FP-Abgleich im Chat-Menü, "
-             "Mittelige Textausrichtung im Composer, Rechtliches an einem Ort."}
+             "Großes Update — Anrufe (Freihand-Sprechen auf dem Gerät, "
+             "Anruf-Verlauf), Assistenten-Blase mit Seiten-Frage, "
+             "Multi-Gerät-Kopplung, globale Volltextsuche über alle Verläufe, "
+             "offene Quellcode-Lizenzen im Info-Einsatz, Rechtliches beim "
+             "Erststart. Dutzende Fehlerbehebungen, darunter die Stabilität "
+             "der Verlaufs-Wiederherstellung."},
+            {"language": "en-US", "text":
+             "Major update — calls (on-device speech recognition, call "
+             "history), assistant bubble with page questions, multi-device "
+             "pairing, global search across all chats, open-source licenses "
+             "in the info sheet, first-launch legal step. Dozens of fixes, "
+             "including chat-history restore stability."},
         ]
         edits.tracks().update(
             editId=eid,
