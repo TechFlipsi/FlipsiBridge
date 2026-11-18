@@ -21,14 +21,15 @@ class ChatSyncRulesTest {
 
     private fun payload(vararg fields: Any): JsonObject {
         val obj = JsonObject()
-        for (field in fields) {
-            @Suppress("UNCHECKED_CAST")
-            val (key, value) = field as Pair<String, Any>
-            when (value) {
+        var i = 0
+        while (i + 1 < fields.size) {
+            val key = fields[i] as String
+            when (val value = fields[i + 1]) {
                 is String -> obj.addProperty(key, value)
                 is Boolean -> obj.addProperty(key, value)
                 is Number -> obj.addProperty(key, value)
             }
+            i += 2
         }
         return obj
     }

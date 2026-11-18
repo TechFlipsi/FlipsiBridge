@@ -20,14 +20,15 @@ class ChatBackfillRulesTest {
 
     private fun json(vararg fields: Any): JsonObject {
         val obj = JsonObject()
-        for (field in fields) {
-            @Suppress("UNCHECKED_CAST")
-            val (key, value) = field as Pair<String, Any>
-            when (value) {
+        var i = 0
+        while (i + 1 < fields.size) {
+            val key = fields[i] as String
+            when (val value = fields[i + 1]) {
                 is String -> obj.addProperty(key, value)
                 is Boolean -> obj.addProperty(key, value)
                 is Number -> obj.addProperty(key, value)
             }
+            i += 2
         }
         return obj
     }
@@ -73,7 +74,7 @@ class ChatBackfillRulesTest {
 
     // ── B6: Ingest ───────────────────────────────────────────────────────────
 
-    private fun entryJson(vararg fields: Pair<String, Any>): JsonObject = json(*fields)
+    private fun entryJson(vararg fields: Any): JsonObject = json(*fields)
 
     @Test
     fun entries_tolerante_aliases_und_role() {
