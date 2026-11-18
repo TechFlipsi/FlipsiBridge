@@ -111,6 +111,12 @@ class _RelayState:
         self.device_registry: dict[str, dict] = {}
         self.devices: dict[str, _PhoneSlot] = {}
         self.device_outbox: dict[str, deque] = {}
+        # B4 Revoke: je bekanntem Gerät ein EPHEMERES Rückgabe-Handle (request_id)
+        # für den device_revoke-Frame (App kennt NUR maskierte Kennungen — PII-
+        # Regeln). Lebt nur bis zum Restart (Neu-Mint je _send_phone_state-Lese-
+        # zugriff); Revok entbindet es. Kein Persistenz-Bedarf (App liest den
+        # Stand je Connect frisch).
+        self.device_revoke_ids: dict[str, str] = {}
         self.fallback_outbox: deque = _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN)
         self.broker_lock: Optional[asyncio.Lock] = None
         # Sticky-Default für den Tool-Weg (Befehls-Hüllposten): das zuletzt
@@ -400,6 +406,12 @@ _DEVICE_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,64}")
 # mehr möglich — hier spricht das Relay denselben Sachverhalt als Close-Code;
 # Bereich 4000-4999 = private use, von aiohttp/OkHttp sauber transportiert).
 _WS_CLOSE_CODE_IN_USE = 4403
+# ── B4 Revoke (Multi-Gerät, Kap. 4.2): 4403-FAMILIE (44xx App-Bereich) — die
+# App klassifiziert 4403 als code-in-use (PairingHandshakePolicy), daher trägt
+# der Revoke-Kick einen EIGENEN Familiencode + die Vertrags-Reason 'device-revoked'
+# (App-Log zeigt sie; Reconnect des revokten Geräts landet fail-closed im Tor).
+_WS_CLOSE_CODE_DEVICE_REVOKED = 4404
+_WS_CLOSE_REASON_DEVICE_REVOKED = b"device-revoked"
 
 
 def _parse_device_id(request: web.Request) -> Optional[str]:
@@ -855,6 +867,230 @@ async def _handle_pairing_admin_frame(state: "_RelayState", sender_device_id: st
         "ANMELDE-TOR: Freigabe für %s erteilt (Admin %s, TTL %d s, einmalig) — "
         "der NÄCHSTE Kopplungs-Handshake dieses Geräts enrollt",
         _mask_id(device_id), _mask_id(sender_device_id), _PAIRING_TTL_SECONDS)
+
+
+async def _handle_phone_backfill_request(state: "_RelayState", sender_device_id: str,
+                                         data: dict) -> None:
+    """B4: chat.backfill_request (Phone→Agent, Klar-Steuer-Frame ids-only).
+
+    Der App-Vertrag (ChatBackfillRules.requestFrame) sendet {type, v, chat_id,
+    gateway_chat, limit} OHNE request_id — heute (VOR B4) still verworfen.
+    Router-Kette: chat_owner (Konversations-Wahrheit am Relay) → Agent-WS, mit
+    device_id-Stempel des ANFORDERNDEN Geräts (das Adapter-Pin-/Session-Routing
+    kann die Antwort-Session sonst nicht auflösen). Fail-closed: unbekannte
+    chat_id (kein Owner) = verworfen; EIGENER Rate-Bucket je Gerät (der
+    Adapter-Verband trägt zusätzlich das B3_BACKFILL_RATE_S-Schild je Session)."""
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    if chat_id is None:
+        logger.warning("Backfill-Request von Gerät %s ohne gültiges chat_id — verworfen",
+                       _mask_id(sender_device_id))
+        return
+    sender_key = _normalize_registry_device_id(sender_device_id)
+    if not _chat_rate_allow(f"backfillreq:{sender_device_id}", 2):
+        logger.info("Backfill-Request von Gerät %s über Rate-Cap — verworfen",
+                    _mask_id(sender_device_id))
+        return
+    gateway_chat = data.get("gateway_chat")
+    if not isinstance(gateway_chat, str) or not gateway_chat.strip() \
+            or len(gateway_chat) > 128 or not _utf8_encodable(gateway_chat):
+        # Tolerant wie der App-Parser: fehlender/ungültiger Feldname → fallback
+        # auf chat_id (identischer Handle laut Plan Kap. 4.1).
+        gateway_chat = chat_id
+    else:
+        gateway_chat = gateway_chat.strip()
+    try:
+        limit = int(data.get("limit"))
+    except (TypeError, ValueError):
+        limit = 200
+    limit = max(1, min(200, limit))
+    async with state.broker_lock:
+        owner = state.chat_owner.get(chat_id)
+    agent_id = owner[0] if owner else None
+    if agent_id is None:
+        # Kap. 2.3-Fallback (frisches Gerät): chat_owner existiert für eine
+        # NIE gepostete Wire-chat_id NICHT — der SESSION-BROKER kennt die
+        # (device → agent)-Gegenstelle über das HELLO des anfragenden Geräts.
+        # Bei mehreren Agenten-Gegenständen gewinnt die FRISCHESTE Session
+        # (das Hello kurz vor dem Backfill-Request ist die Chat-Wahl).
+        async with state.broker_lock:
+            stale_sessions = [
+                (entry.get("ts") or 0.0, entry.get("agent_id"))
+                for entry in state.crypto_sessions.values()
+                if isinstance(entry, dict) and entry.get("device_id") == sender_key
+            ]
+        if stale_sessions:
+            agent_id = max(stale_sessions)[1]
+        if not agent_id:
+            logger.warning(
+                "Backfill-Request für unbekannte chat_id %s (Gerät %s) — verworfen "
+                "(fail-closed: kein Konversations-Owner, keine Geräte-Session)",
+                _log_id(chat_id), _mask_id(sender_device_id))
+            return
+        logger.info(
+            "Backfill-Request ohne chat_owner — Router-Fallback über den "
+            "Session-Broker (Gerät %s → Agent %s)",
+            _mask_id(sender_device_id), agent_id)
+    frame = {
+        "type": "chat.backfill_request", "v": 1,
+        "chat_id": chat_id,
+        "gateway_chat": gateway_chat,
+        "limit": limit,
+        # Stempel: WELCHES Gerät fragt (Antwort-Session-Auflösung am Adapter).
+        "device_id": _normalize_registry_device_id(sender_device_id),
+        "ts": int(time.time() * 1000),
+    }
+    delivered = await _deliver_to_agent(state, agent_id, frame)
+    if not delivered:
+        logger.info("Agent %s offline — chat.backfill_request von Gerät %s gespoolt",
+                    agent_id, _mask_id(sender_device_id))
+
+
+def _device_revoke_id(state: "_RelayState", device_id: str) -> str:
+    """B4: EPHEMERES Revoke-Handle je bekanntem Gerät (in-memory request_id).
+    Die App kennt NUR maskierte Kennungen — das relay.state devices[]-Feld
+    'request_id' ist der Antwortträger des device_revoke-Frames (Parität
+    pairing.approve-Norm: request_id ODER raw device_id). Mint faul je Lese-
+    Zugriff; Revok entbindet das Handle. Verwaiste Handles werden lazily
+    geräumt (Cap = 2× Registry-Größe, kein ungebundenes Wachstum)."""
+    handle = state.device_revoke_ids.get(device_id)
+    if handle is None:
+        handle = uuid.uuid4().hex[:16]
+        state.device_revoke_ids[device_id] = handle
+        while len(state.device_revoke_ids) > max(1, len(state.device_registry)) * 2 \
+                and state.device_revoke_ids:
+            first = next(iter(state.device_revoke_ids))
+            # Nur verwaiste Handles (Gerät nicht mehr registriert) räumen.
+            if first in state.device_registry:
+                break
+            state.device_revoke_ids.pop(first)
+    return handle
+
+
+async def _handle_phone_device_revoke(state: "_RelayState", sender_device_id: str,
+                                      data: dict) -> None:
+    """B4: device_revoke (Kap. 4.2) — Gerät entfernen via request_id (Revoke-
+    Handle ODER offene Kopplungs-Anfrage) oder raw device_id; OHNE Ziel = das
+    EIGENE Gerät (Abmelden, für JEDES Gerät erlaubt). Fail-closed:
+    - Fremd-Gerät entfernen darf NUR der ADMIN-Slot (kein 'kein Admin
+      vorhanden'-Fallback — das Anmelde-Tor hat seine eigene Norm).
+    - Unauflösbare/unbekannte Ziele = verworfen (LOUD-Log, keine Wirkung).
+    Verband: Registry-Eintrag weg (+persist), Session-Broker-Einträge des
+    Geräts weg, je-Agent-Adapter via device.revoked-Frame benachrichtigt
+    (Session + Pin-Kappung dort), WS des Zielgeräts close (4404/Familie,
+    reason 'device-revoked'), Outbox-Bucket entleert, Rest-Geräte bekommen
+    den neuen relay.state-Stand."""
+    sender_key = _normalize_registry_device_id(sender_device_id)
+    body_device_id = str(data.get("device_id") or "").strip()
+    request_id = str(data.get("request_id") or "").strip()
+    target_ws: Optional[web.WebSocketResponse] = None
+    registry_changed = False
+    async with (state.devices_lock or _NoAsyncLock()):
+        sender_slot = state.devices.get(sender_key)
+        if sender_slot is None or sender_slot.ws is None or sender_slot.ws.closed:
+            logger.warning("device_revoke von unbekanntem/totem Slot %s — verworfen",
+                           _mask_id(sender_key))
+            return
+        target = None
+        # (a) Revoke-Handle je bekanntem Gerät (relay.state devices[].request_id).
+        if request_id:
+            for candidate, handle in state.device_revoke_ids.items():
+                if handle == request_id:
+                    target = candidate
+                    break
+            if target is None:
+                # Fallback: offene Kopplungs-Anfrage desselben Handle-Konzepts.
+                _pairing_requests_prune(state)
+                for candidate, entry in state.pairing_requests.items():
+                    if str(entry.get("request_id") or "") == request_id:
+                        target = candidate
+                        break
+        # (b) raw device_id (Admin-/Tool-Weg; App trägt bewusst NIE rohe ids).
+        if target is None and body_device_id:
+            candidate = _normalize_registry_device_id(body_device_id)
+            if _device_known(state, candidate) \
+                    or (candidate == sender_key and sender_key in state.devices):
+                target = candidate
+        # (c) ohne Ziel = eigenes Gerät abmelden.
+        if target is None:
+            target = sender_key
+        if target != sender_key and not sender_slot.admin:
+            logger.warning(
+                "device_revoke: NON-ADMIN Gerät %s wollte %s entfernen — ABGEWIESEN "
+                "(fail-closed Kap. 4.2: nur Admin-Slots entfernen; eigenes Abmelden bleibt frei)",
+                _mask_id(sender_key), _mask_id(target))
+            return
+        if not _device_known(state, target) and target not in state.devices:
+            logger.warning(
+                "device_revoke: Ziel %s weder Registry noch Slot — verworfen",
+                _mask_id(target))
+            return
+        was_known = state.device_registry.pop(target, None)
+        registry_changed = was_known is not None
+        state.device_revoke_ids.pop(target, None)
+        state.pairing_requests.pop(target, None)
+        state.pairing_approvals.pop(target, None)
+        state.device_outbox.pop(target, None)  # kein Spool-Bestand für tote Geräte
+        target_slot = state.devices.get(target)
+        if target_slot is not None and target_slot.ws is not None \
+                and not target_slot.ws.closed:
+            target_ws = target_slot.ws
+        _loud_revoke_log(state, sender_key, target, was_known, bool(was_known))
+
+    # Session-Broker: alle E2E-Session-Entries des Zielgeräts entbinden (kein
+    # Routing mehr an das revokte Gerät; der Adapter kappet die Sessions/Pins
+    # selbst via device.revoked-Frame).
+    async with state.broker_lock:
+        stale = [sid for sid, entry in state.crypto_sessions.items()
+                 if isinstance(entry, dict) and entry.get("device_id") == target]
+        for sid in stale:
+            state.crypto_sessions.pop(sid, None)
+        if stale:
+            logger.info("DEVICE-REVOKE: %d Session-Broker-Einträge von Gerät %s entbunden",
+                        len(stale), _mask_id(target))
+    if registry_changed:
+        try:
+            _store_device_registry(state.device_registry)
+        except OSError as exc:
+            logger.error("DEVICE-REGISTRY: Revoke-Persist fehlgeschlagen (%s)", exc)
+    if target_ws is not None:
+        try:
+            await target_ws.close(code=_WS_CLOSE_CODE_DEVICE_REVOKED,
+                                  message=_WS_CLOSE_REASON_DEVICE_REVOKED)
+        except Exception as exc:
+            logger.debug("Revoke-Close fehlgeschlagen (%s) — Slot stirbt mit dem Socket", exc)
+    # Adapter benachrichtigen (Session/Pin-Kappung je Agent, fire-and-forget).
+    await _notify_agents_device_revoked(state, target)
+    # Rest-Geräte: frischer relay.state-Stand (DevicesCard verliert das Gerät).
+    await _broadcast_agent_presence(state)
+
+
+def _loud_revoke_log(state, sender_key, target, was_known_entry, was_known: bool) -> None:
+    """LOUD-Revoke-Log (Kap. 4.2: kein stilles Entfernen). Kennungen IMMER
+    maskiert (PII-Regel, _mask_id); was_known_entry = ggf. gephoppte
+    Registry-Zeile (nur für den Verbleib-Zähler von Interesse)."""
+    del was_known_entry
+    logger.warning(
+        "DEVICE-REVOKE: Gerät %s von Slot %s entfernt (Registry=%s, %d Geräte "
+        "verbleiben) — WS-Kick (4404 device-revoked) + Adapter-Sessions/Pins kappen",
+        _mask_id(target), _mask_id(sender_key), was_known,
+        len(state.device_registry))
+
+
+async def _notify_agents_device_revoked(state: "_RelayState", device_id: str) -> None:
+    """device.revoked an alle verbundenen Agent-WS (Adapter kappet dort die
+    E2E-Session(s) + Pin-Eintrag(e) des Geräts je Agent). Raw device_id ist hier
+    Legitimität an den Backend-Bein (die Session-Map des Adapters trägt sie
+    bereits aus dem Hello-Verband); die LOG-Ausgabe bleibt _mask_id."""
+    frame = {"type": "device.revoked", "v": 1, "device_id": device_id,
+             "ts": int(time.time() * 1000)}
+    async with state.agent_ws_lock:
+        sockets = [ws for ws in state.agent_ws.values()
+                   if ws is not None and not ws.closed]
+    for ws in sockets:
+        try:
+            await ws.send_json(frame)
+        except Exception as exc:
+            logger.warning("device.revoked-Zustellung fehlgeschlagen: %s", exc)
 
 
 class _NoAsyncLock:
@@ -2739,16 +2975,37 @@ async def _send_phone_state(state: _RelayState, ws: web.WebSocketResponse) -> No
             for agent_id, entry in state.agents.items()
         ]
     async with (state.devices_lock or _NoAsyncLock()):
-        devices = [
-            {
-                "device_id": _mask_id(device_id),
-                "alias": str((state.device_registry.get(device_id) or {}).get("alias") or ""),
-                "online": True,
-                "admin": bool((state.device_registry.get(device_id) or {}).get("admin")),
-            }
+        # B4 (Kap. 4.2): devices[] liest Registry ∪ Slots — OFFLINE Geräte
+        # bleiben sichtbar (online=False + last_seen), nicht nur Live-Slots.
+        # Kennungen bleiben maskiert (PII-Regel, _mask_id); last_seen = Unix-ms
+        # der letzten Registrierungs-/Slot-Pflege (0 = unbekannt, ehrlich).
+        live = {
+            device_id: slot
             for device_id, slot in state.devices.items()
             if slot.ws is not None and not slot.ws.closed
-        ]
+            and isinstance(device_id, str) and _DEVICE_ID_RE.fullmatch(device_id)
+        }
+        ordered_ids = list(state.device_registry.keys())
+        for device_id in live:
+            if device_id not in state.device_registry:
+                ordered_ids.append(device_id)
+        devices = []
+        for device_id in ordered_ids:
+            slot = live.get(device_id)
+            entry = state.device_registry.get(device_id) or {}
+            last_seen = int(entry.get("last_seen") or 0)
+            if not last_seen and slot is not None:
+                last_seen = int(slot.last_seen * 1000)
+            devices.append({
+                "device_id": _mask_id(device_id),
+                "alias": str(entry.get("alias") or ""),
+                "online": slot is not None,
+                "admin": bool(entry.get("admin")),
+                "last_seen": max(0, last_seen),
+                # B4 Revoke-Handle: Antwortträger des device_revoke-Frames
+                # (App kennt NUR die Maske — Parität pairing.approve-Norm).
+                "request_id": _device_revoke_id(state, device_id),
+            })
     try:
         await ws.send_json({"type": "relay.state", "v": 1, "agents": agents,
                             "devices": devices})
@@ -2820,6 +3077,25 @@ async def _on_phone_message(state: _RelayState, raw: str,
         await _guard_phone_frame(
             _handle_pairing_admin_frame, state, device_id, data,
             "_handle_pairing_admin_frame")
+        return
+
+    # ── B4 Backfill-Request (Phone→Agent, Klar-Steuer-Frame ids-only) ────────
+    # FRÜHER stille verworfen („missing request_id“): der App-Vertrag
+    # (ChatBackfillRules.requestFrame) trägt KEIN request_id — der Frame geht
+    # je Connect eines frischen Geräts und braucht den Router zum Agenten
+    # (chat_owner = Konversations-Wahrheit). Rate: EIGENER Bucket (nie im
+    # heißen chat-Bucket — FLIPSI-Frame-Guard-Verband).
+    if msg_type == "chat.backfill_request" and device_id:
+        await _guard_phone_frame(
+            _handle_phone_backfill_request, state, device_id, data,
+            "_handle_phone_backfill_request")
+        return
+
+    # ── B4 Revoke (Gerät entfernen / eigenes Abmelden) ───────────────────────
+    if msg_type == "device_revoke" and device_id:
+        await _guard_phone_frame(
+            _handle_phone_device_revoke, state, device_id, data,
+            "_handle_phone_device_revoke")
         return
 
     request_id = data.get("request_id")
@@ -2956,6 +3232,19 @@ async def _cleanup_phone(
                     targets.append(expected_ws)
                     del state.devices[device_id]
                     log_target = _mask_id(device_id)
+                    # B4 last_seen-Pflege: der Registry-Eintrag stirbt mit dem
+                    # Slot NICHT — letzte Sichtung stempeln (offline-Geräte
+                    # bleiben damit ehrlich in relay.state devices[] sichtbar)
+                    # und fail-soft persistieren (Registry-Pflege, kein
+                    # Spool-/Slot-Verband berührt).
+                    entry = state.device_registry.get(device_id)
+                    if isinstance(entry, dict):
+                        entry["last_seen"] = int(time.time() * 1000)
+                        try:
+                            _store_device_registry(state.device_registry)
+                        except OSError as exc:
+                            logger.warning(
+                                "DEVICE-REGISTRY: last_seen-Persist fehlgeschlagen (%s)", exc)
                     break
             if not targets:
                 # Replaced/Rotiert-WS: der frische Inhaber ist längst drin —
@@ -3265,6 +3554,11 @@ _AGENT_FRAME_TYPES = frozenset(
      # Material, ct wird nie geöffnet); Validierung = Struktur + Session.
      "crypto.hello_ack", "crypto.session_reset",
      "chat.reply.enc", "chat.read.enc", "chat.activity.enc",
+     # B4 (Multi-Gerät): Sync-Echo + Backfill-Verlauf (je Geräte-Session enc,
+     # der Relay fächert session_id→device und bleibt opak) + Status-Snapshot
+     # (KLAR — ids-only, kein Chat-Inhalt; Form-Contract Parität App-Parser
+     # ChatBackfillRules.parseStatusSnapshot: Array- UND Map-Form toleriert).
+     "chat.sync.enc", "chat.backfill.enc", "chat.status_snapshot",
      # W16 (Fixliste 14): Session-Meta eigenständig (klar + enc) — Sub-Agent
      # / Plattform-Update MITTEN im Turn; Relay = opaker Pass-Through.
      "chat.session_meta", "chat.session_meta.enc",
@@ -3325,9 +3619,15 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
             logger.debug(
                 "Agent %s: Junk-Frame über Cap — verworfen (Log-Drossel)", agent_id)
             return
+        # SEC-W2 W2-2 + B4-Grenze: die Allowlist wächst je Frame-Welle — die
+        # LISTE im Log ist deshalb GEKAPPT (Vorschau < 400 Zeichen, kein
+        # Log-Amplification-Rückschlag je neuem Frame-Typ).
+        preview = sorted(_AGENT_FRAME_TYPES)
+        if len(preview) > 14:
+            preview = preview[:14] + [f"…(+{len(preview) - 14} weitere)"]
         logger.warning(
             "Agent %s: Frame type=%r verworfen (Allowlist: %s)",
-            agent_id, _log_id(msg_type, 64), sorted(_AGENT_FRAME_TYPES),
+            agent_id, _log_id(msg_type, 64), preview,
         )
         return
     # SEC-W1 W1C-9: Flut-Schutz je Agent — keepalive/ping/presence/agent.register
@@ -3380,6 +3680,20 @@ async def _on_agent_message(state: _RelayState, agent_id: str, raw: str) -> None
         return
     if msg_type == "chat.media.chunk_ack":
         await _guard_agent_frame(_handle_agent_media_ack, state, agent_id, data, "_handle_agent_media_ack")
+        return
+    # ── B4 (Multi-Gerät): Sync-Echo / Backfill-Batch / Status-Snapshot ───────
+    # Sync+Backfill = E2E-enc opak (Guards wie chat.reply.enc, EIGENE Rate-
+    # Buckets — FLIPSI-Frame-Guard: ein neuer Handler klingt NIE den heißen
+    # chat.reply-Pfad ab), Snapshot = Klar (ids-only, Chat-Status-Transition-
+    # Klasse: kein Spool, kein Rate-Bucket — wie chat.status PH2-T10).
+    if msg_type == "chat.sync.enc":
+        await _guard_agent_frame(_handle_agent_chat_sync_enc, state, agent_id, data, "_handle_agent_chat_sync_enc")
+        return
+    if msg_type == "chat.backfill.enc":
+        await _guard_agent_frame(_handle_agent_chat_backfill_enc, state, agent_id, data, "_handle_agent_chat_backfill_enc")
+        return
+    if msg_type == "chat.status_snapshot":
+        await _guard_agent_frame(_handle_agent_chat_status_snapshot, state, agent_id, data, "_handle_agent_chat_status_snapshot")
         return
     if msg_type == "chat.reply":
         await _guard_agent_frame(_handle_agent_chat_reply, state, agent_id, data, "_handle_agent_chat_reply")
@@ -3783,6 +4097,202 @@ async def _handle_agent_chat_activity_enc(state: _RelayState, agent_id: str,
     delivered = await _deliver_to_phone(state, frame)
     if not delivered:
         logger.debug("Agent %s: chat.activity.enc gespoolt (Phone offline)", agent_id)
+
+
+# ── B4 (Multi-Gerät): chat.sync.enc / chat.backfill.enc / chat.status_snapshot┘
+# Der Adapter verschließt je Geräte-Session (eigene Chiffre, AAD-Bindung); der
+# Relay bleibt opaker Pass-Through mit Session-Routing (session_id → Ziel-
+# Gerät) und prüft NUR Struktur + bestätigte Session + Replay-Fenster. KEIN
+# Klartext-Verlauf, KEIN Key-Material am Relay (Kap. 2.2/7: Sirs Verbot).
+
+
+def _enc_frame_valid_chat_id(value) -> Optional[str]:
+    """B4: chat_id-Form-Gate für die neuen enc-Frames — Rückgabe = normalisierte
+    chat_id oder None (verwerfen). Parität zum /chat-enc-Pfad (8..128, UTF-8,
+    Strip)."""
+    if not isinstance(value, str):
+        return None
+    chat_id = value.strip()
+    if not (8 <= len(chat_id) <= 128) or not _utf8_encodable(chat_id):
+        return None
+    return chat_id
+
+
+async def _handle_agent_chat_sync_enc(state: _RelayState, agent_id: str,
+                                      data: dict) -> None:
+    """chat.sync.enc → ECHO des NUTZER-Texts einer Nachricht (Gerät A) an die
+    ANDEREN Geräte-Slots (je Ziel-Session eigene Chiffre, Adapter erzeugt je
+    Empfänger EINEN Frame). Der Relay fächert über session_id → Gerät und
+    spoolt offline Ziele in die EIGENE Bucket (Verbands-Parität chat.reply.enc:
+    ein Gerät, das die Nachricht verpasst, holt sie beim Reconnect nach).
+    Guards: EIGENER Rate-Bucket (verdrängt nie chat.reply), chat_id-Form,
+    Struktur, bestätigte Session, Replay-Fenster, Owner-Claim — fail-closed."""
+    config = _load_relay_config()
+    if not _chat_rate_allow(f"agentsync:{agent_id}", _chat_rate_per_second(config)):
+        logger.info("Agent %s: chat.sync.enc verworfen — Sync-Rate-Limit (Eigener-Bucket)", agent_id)
+        return
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    if chat_id is None:
+        logger.warning("Agent %s: chat.sync.enc ohne gültiges chat_id — verworfen", agent_id)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: chat.sync.enc ungültig (%s) — verworfen", agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: chat.sync.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Agent %s: chat.sync.enc Replay/Fenster-Verletzung — verworfen", agent_id)
+        return
+    frame = {
+        "type": "chat.sync.enc", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    # Klare Metadaten (msg_id) durchreichen — CHIPS-Kette: echo-Blase trägt
+    # DENSELBE Ursprungs-msg_id (Kap. 2.3 #1): der chat.status-Frame trifft
+    # die Blase auf JEDEM Gerät. Nie Inhalt/Klartext im Klartext-Feld.
+    msg_id = data.get("msg_id")
+    if isinstance(msg_id, str) and msg_id.strip() and len(msg_id) <= 128 \
+            and _utf8_encodable(msg_id):
+        frame["msg_id"] = msg_id
+    elif msg_id is not None:
+        logger.warning("Agent %s: chat.sync.enc mit ungültigem msg_id-Feld — Feld verworfen", agent_id)
+    delivered = await _deliver_to_phone(state, frame, claim=(agent_id, chat_id))
+    if delivered is None:
+        return
+    if not delivered:
+        logger.info("Agent %s: chat.sync.enc gespoolt (Ziel-Gerät offline)", agent_id)
+
+
+async def _handle_agent_chat_backfill_enc(state: _RelayState, agent_id: str,
+                                          data: dict) -> None:
+    """chat.backfill.enc → Verlaufs-Batch (Gateway-Verlauf je Geräte-Session
+    enc) an das ANFORDERNDE Gerät. Session-Routing (requesting Session →
+    Gerät); offline = EIGENE Outbox-Bucket (spool — Kap-Guard im Adapter:
+    K je Anfrage, Batches ≤ 64; der Spool bleibt dadurch klein). Guards:
+    EIGENER Rate-Bucket + chat_id + Struktur + Session + Replay (fail-closed)."""
+    if not _chat_rate_allow(f"agentbackfill:{agent_id}", 6):
+        logger.info("Agent %s: chat.backfill.enc verworfen — Backfill-Rate-Limit", agent_id)
+        return
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    if chat_id is None:
+        logger.warning("Agent %s: chat.backfill.enc ohne gültiges chat_id — verworfen", agent_id)
+        return
+    reason = _validate_enc_frame(data)
+    if reason is not None:
+        logger.warning("Agent %s: chat.backfill.enc ungültig (%s) — verworfen", agent_id, reason)
+        return
+    if await _enc_session_active(state, agent_id, data) is None:
+        logger.warning(
+            "Agent %s: chat.backfill.enc ohne bestätigte E2E-Session — verworfen (fail-closed)",
+            agent_id)
+        return
+    if not _relay_replay_allow(state, data["session_id"], "a2p",
+                               data["hdr"]["n"], data.get("ts"),
+                               data["hdr"]["rk"]):
+        logger.warning("Agent %s: chat.backfill.enc Replay/Fenster-Verletzung — verworfen", agent_id)
+        return
+    frame = {
+        "type": "chat.backfill.enc", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "session_id": data["session_id"],
+        "hdr": data["hdr"],
+        "nonce": data["nonce"],
+        "ct": data["ct"],
+        "ts": int(time.time() * 1000),
+    }
+    delivered = await _deliver_to_phone(state, frame)
+    if not delivered:
+        logger.info("Agent %s: chat.backfill.enc gespoolt (Ziel-Gerät offline)", agent_id)
+
+
+# B4: bekannte Chat-Status-Werte (ids-only Snapshot) — Parität zur App-Sicht
+# ChatStatusRank.KNOWN {queued, delivered, read, failed} + Relay-_CHAT_STATUS_ORDER.
+_STATUS_SNAPSHOT_KNOWN = frozenset({"queued", "delivered", "read", "failed"})
+_STATUS_SNAPSHOT_CAP = 500          # Parität App ChatBackfillRules.STATUS_SNAPSHOT_CAP
+_STATUS_SNAPSHOT_MSG_CAP = 128      # msg_id-Längen-Parität zum chat.read.msg_id
+
+
+def _snapshot_statuses_ok(statuses) -> Optional[list]:
+    """Struktur-Gate für chat.status_snapshot (ids-only, Klar). Erlaubt die
+    BEIDEN App-tolerierten Formen: A) Array von {msg_id|messageId, status|state}
+    B) Map {msg_id: status}. Rückgabe = normalisierte Array-Form (Liste von
+    {msg_id, status}) oder None (verwerfen). KEIN Chat-Inhalt hier — nur ids."""
+    if isinstance(statuses, dict):
+        pairs = []
+        for msg_id, value in statuses.items():
+            if not isinstance(msg_id, str) or not msg_id.strip() \
+                    or len(msg_id) > _STATUS_SNAPSHOT_MSG_CAP \
+                    or not _utf8_encodable(msg_id):
+                continue
+            if not isinstance(value, str) or value not in _STATUS_SNAPSHOT_KNOWN:
+                continue
+            pairs.append({"msg_id": msg_id.strip(), "status": value})
+        return pairs
+    if not isinstance(statuses, list) or len(statuses) > _STATUS_SNAPSHOT_CAP:
+        return None
+    pairs = []
+    for entry in statuses:
+        if not isinstance(entry, dict):
+            continue
+        msg_id = entry.get("msg_id", entry.get("messageId"))
+        value = entry.get("status", entry.get("state"))
+        if not isinstance(msg_id, str) or not msg_id.strip() \
+                or len(msg_id) > _STATUS_SNAPSHOT_MSG_CAP \
+                or not _utf8_encodable(msg_id):
+            continue
+        if not isinstance(value, str) or value not in _STATUS_SNAPSHOT_KNOWN:
+            continue
+        pairs.append({"msg_id": msg_id.strip(), "status": value})
+    return pairs
+
+
+async def _handle_agent_chat_status_snapshot(state: _RelayState, agent_id: str,
+                                             data: dict) -> None:
+    """chat.status_snapshot (KLAR, ids-only: msg_id→delivered/read/failed, Cap
+    500) → an das anfordernde Gerät (session_id-Routing) bzw. bei fehlender
+    session_id an JEDES bekannte Gerät (Broadcast-Verband _deliver_to_phone).
+    Transition-Klasse wie chat.status PH2-T10: KEIN Spool (Live-Zustand, kein
+    Verlauf), KEIN Rate-Bucket; Adapter-Cap + Relay-Cap gegen RAM-Flut."""
+    chat_id = _enc_frame_valid_chat_id(data.get("chat_id"))
+    if chat_id is None:
+        logger.warning("Agent %s: chat.status_snapshot ohne gültiges chat_id — verworfen", agent_id)
+        return
+    pairs = _snapshot_statuses_ok(data.get("statuses"))
+    if pairs is None:
+        logger.warning("Agent %s: chat.status_snapshot mit ungültiger statuses-Form — verworfen", agent_id)
+        return
+    session_id = data.get("session_id")
+    if session_id is not None and (not isinstance(session_id, str)
+                                   or not session_id.strip()
+                                   or not _utf8_encodable(session_id)):
+        session_id = None
+    frame = {
+        "type": "chat.status_snapshot", "v": 1,
+        "chat_id": chat_id,
+        "agent_id": agent_id,
+        "ts": int(time.time() * 1000),
+        "statuses": pairs,
+    }
+    if isinstance(session_id, str) and session_id.strip():
+        frame["session_id"] = session_id.strip()
+    # spool=False: Snapshot ist Zustands-Fenster (kein Verlauf) — ein offline
+    # Gerät holt den Stand beim NÄCHSTEN Backfill frisch (Adapter sendet dann).
+    delivered = await _deliver_to_phone(state, frame, spool=False)
+    if not delivered:
+        logger.info("Agent %s: chat.status_snapshot verworfen (kein lebender Ziel-Slot)", agent_id)
 
 
 def _session_meta_ok(value) -> bool:

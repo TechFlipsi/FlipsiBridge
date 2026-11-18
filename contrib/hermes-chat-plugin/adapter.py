@@ -60,7 +60,10 @@ _INBOUND_ENVELOPE_ALLOWLIST = frozenset(
     {"chat.send", "chat.deliver", "chat.ack", "roster", "presence", "pong",
      "crypto.hello", "chat.send.enc", "chat.event.enc",
      # MEDIA-T1: chunked Media-Versand (E2E-only) — Daten NUR im Ratchet-ct.
-     "chat.media.enc"}
+     "chat.media.enc",
+     # B4 (Multi-Gerät): Backfill-Router-Frame des Relays (ids-only, Klar-
+     # Steuer) + Revoke-Verband (Session/Pin-Kappung je Agent).
+     "chat.backfill_request", "device.revoked"}
 )
 _PROTOCOL_VERSION = 1
 
@@ -207,6 +210,11 @@ B3_ECHO_FIELD = "sync"        # eindeutiges Echo-Feld im ct-Payload ("fremd-eige
 B3_SYNC_OF_FIELD = "sync_of"  # msg_id-Bezug: die Echo-Blase trägt die Ursprungs-msg_id
 B3_BACKFILL_BATCH_MAX = 64    # Entries je backfill.enc-Frame (ct-Cap-Schutz)
 B3_BACKFILL_BYTES_MAX = 96 * 1024  # Raw-Payload-Deckel je Backfill-Frame (< ct-Cap)
+B3_BACKFILL_ENTRY_TEXT_CAP = 24_000  # je Entry hart (B batches bleiben < Bytes-Max)
+B3_STATUS_SNAPSHOT_FRAME = "chat.status_snapshot"  # ids-only (App-Parser-Form)
+B3_STATUS_SNAPSHOT_CAP = 500  # Parität App ChatBackfillRules.STATUS_SNAPSHOT_CAP
+B3_STATUS_KNOWN = frozenset({"queued", "delivered", "read", "failed"})
+B3_DEVICE_REVOKED_FRAME = "device.revoked"  # Revoke-Verband (Relay→Adapter)
 
 _SYNC_ENC_FRAME = B3_SYNC_ENC_FRAME
 # Live-Adapter-Registry: Modul-Level-Hooks fannen je Callback an alle
@@ -1768,6 +1776,31 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         if etype in {"chat.ack", "roster", "presence", "pong"}:
             logger.debug("FlipsiBridge: %s-Frame empfangen", etype)
             return
+
+        # ── B4 (Multi-Gerät): Relay-Steuer-Frames VOR der Namespace-Prüfung ────
+        # chat.backfill_request: Router-Frame des Relays (der Owner-Verband ist
+        # am RELAY geprüft; der Frame trägt den device_id-Stempel des
+        # anfragenden Geräts). device.revoked: Revoke-Verband (Session/Pin-
+        # Kappung) — je Agent-Ziel ohne chat_id (Broadcast-Semantik).
+        if etype == "device.revoked":
+            self._handle_device_revoked(envelope)
+            return
+        if etype == "chat.backfill_request":
+            claim_agent = str(envelope.get("agent_id") or "").strip()
+            if claim_agent and claim_agent != self.agent_id:
+                self.rejected_frames.append({"type": etype,
+                                             "reason": "fremde agent_id (Backfill-Router)"})
+                logger.warning("FlipsiBridge: chat.backfill_request für fremde agent_id %s abgelehnt",
+                               _log_id(claim_agent, 24))
+                return
+            try:
+                self._handle_backfill_request(envelope)
+            except Exception:
+                # Guard-Aufrufer-Parität (_guard_agent_frame-Verband): eine
+                # Exception im Backfill-Pfad reißt die Agent-WS nie mit.
+                logger.warning("FlipsiBridge: chat.backfill_request-Verarbeitung fehlgeschlagen",
+                               exc_info=True)
+            return
         # chat.send/chat.deliver: Namespace-Prüfung (fremde agent_id = fremdes Gerät/Backend)
         target = str(envelope.get("agent_id", "")).strip()
         if target != self.agent_id:
@@ -1900,17 +1933,24 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         return None
 
     def _enc_fanout_frames(self, frame_type: str, chat_id: str, payload: dict,
-                           clear: Optional[dict] = None) -> Optional[list]:
+                           clear: Optional[dict] = None,
+                           exclude: Optional[Any] = None) -> Optional[list]:
         """B3-FAN-OUT (Plan Kap. 2.2 (b1)): je offener Geräte-Session EIGENES
         encrypt_frame — NIE dieselbe Chiffre an alle Geräte (je Session eigene
         Ratchet-Kette + AAD session_id|chat_id|agent_id). Rückgabe:
         None = keine Session (Legacy-Klartext-Weg bleibt Aufrufersache);
-        sonst Liste: Frame[0] = Primär-Session (Alt-Verband), Rest fail-soft."""
+        sonst Liste: Frame[0] = Primär-Session (Alt-Verband), Rest fail-soft.
+
+        B4: exclude = eine Session-Instanz, die BEWusst NICHT bedient wird —
+        der Sync-Echo schließt das SENDENDE Gerät aus (dessen Blase existiert
+        schon lokal; das Echo geht an die NEBENgeräte)."""
         sessions = self._device_sessions()
         if not sessions:
             return None
         frames = []
         for sess in sessions:
+            if exclude is not None and sess is exclude:
+                continue
             # WIRE-chat_id JEGERÄT: AAD bindet die Relay-chat_id der Session —
             # ein fremdes Chat-Routing würde der App-Platte ein falsches Feld
             # geben (Plan 2.3 #1). Ohne eigene Chat-ID (Gerät ohne Post) fällt
@@ -1919,6 +1959,435 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             wire = getattr(sess, "chat_id", None) or chat_id
             frames.append(sess.encrypt_frame(frame_type, wire, payload, clear=clear))
         return frames
+
+    # ────────────────────────────────── B4 (Multi-Gerät): Verdrahtung ────────
+    # Kap. 2.3 #1/#2: msg_id = globaler Einheitsschlüssel; Nutzer-Post von
+    # Gerät A → Gateway-Weg wie bisher + Sync-Echo chat.sync.enc an ALLE
+    # ANDEREN offenen Geräte-Slots (je Empfänger eigene Chiffre); Backfill-
+    # Antwort aus dem Gateway-Verlauf; Revoke kappet Session+Pin des Geräts.
+
+    def _session_for_backfill_request(self, chat_id: str, device_id: str):
+        """Ziel-Session eines chat.backfill_request auflösen — bevorzugt über
+        den device_id-Stempel des Relays (Session-MAP je Gerät), fallback über
+        die Wire-chat_id (Session-Kontext). None = fail-closed (keine Session
+        → keinen Verlauf in die Luft versenden)."""
+        device_id = str(device_id or "").strip()
+        chat_id = str(chat_id or "").strip()
+        for key, sess in list(self._crypto_sessions.items()):
+            if sess is None or sess.expired():
+                continue
+            if device_id and (key == device_id
+                              or str(getattr(sess, "device_id", "") or "").strip() == device_id):
+                return sess
+        if chat_id:
+            for sess in list(self._crypto_sessions.values()):
+                if sess is None or sess.expired():
+                    continue
+                if getattr(sess, "chat_id", None) == chat_id:
+                    return sess
+        return None
+
+    def _handle_backfill_request(self, envelope: dict) -> None:
+        """chat.backfill_request (Phone→Relay→Adapter, ids-only Klar) →
+        Verlaufs-Antwort an das ANFORDERNDE Gerät. Rate-Schild je Geräte-
+        Session (B3_BACKFILL_RATE_S, 1 Request / 30 s, DoS-Schild — die App
+        sendet bewusst nur EINEN Request je Connect × Agent)."""
+        chat_id = str(envelope.get("chat_id") or "").strip()
+        if not chat_id:
+            self.rejected_frames.append({"type": "chat.backfill_request",
+                                         "reason": "chat_id fehlt"})
+            logger.warning("FlipsiBridge: chat.backfill_request ohne chat_id — verworfen")
+            return
+        gateway_chat = str(envelope.get("gateway_chat") or "").strip() or chat_id
+        device_id = str(envelope.get("device_id") or "").strip()
+        try:
+            limit = int(envelope.get("limit"))
+        except (TypeError, ValueError):
+            limit = B3_BACKFILL_MAX
+        limit = max(1, min(B3_BACKFILL_MAX, min(limit, self.backfill_k)))
+        target = self._session_for_backfill_request(chat_id, device_id)
+        if target is None:
+            logger.warning(
+                "FlipsiBridge: chat.backfill_request (device %s) ohne passende "
+                "Geräte-Session — verworfen (fail-closed)", _log_id(device_id, 24))
+            return
+        rate_key = str(getattr(target, "device_key", "") or target.session_id)
+        now = time.time()
+        last = self._backfill_last.get(rate_key)
+        if last is not None and (now - last) < B3_BACKFILL_RATE_S:
+            logger.info(
+                "FlipsiBridge: chat.backfill_request über Rate-Schild (%.1fs < %.0fs, "
+                "device %s) — verworfen", now - last, B3_BACKFILL_RATE_S,
+                _log_id(device_id, 24))
+            return
+        self._backfill_last[rate_key] = now
+        while len(self._backfill_last) > 8:
+            self._backfill_last.pop(next(iter(self._backfill_last)))
+        self._schedule(self._send_backfill_response(
+            target, chat_id, gateway_chat, limit))
+
+    def _backfill_gateway_chat_candidates(self, sess, wire_chat_id: str,
+                                          gateway_chat: str) -> list:
+        """Verlaufs-Kandidaten je Request (geordnet, ohne Dubletten):
+        (1) die je GERÄT abgeleitete stabile Gateway-ID (Session-ik — B3-Norm,
+            'flipsi-phone-<ik8>'), (2) das bekannte Wire→GW-Mapping, (3) der
+            vom App-Vertrag übertragene gateway_chat-Wert, (4) die Wire-chat_id
+            selbst (Legacy-Form 'chat-…' vor dem Identity-Verband)."""
+        candidates: list = []
+
+        def add(value: Any) -> None:
+            value = str(value or "").strip()
+            if value and value not in candidates:
+                candidates.append(value)
+
+        ik = str(getattr(sess, "device_ik", "") or "").strip().lower()
+        if ik:
+            add(self._STABLE_CHAT_PREFIX + ik[:8])
+        add(self._gw_chat_by_relay.get(wire_chat_id))
+        add(gateway_chat)
+        add(wire_chat_id)
+        return candidates
+
+    def _backfill_entries(self, candidates: list, limit: int) -> tuple:
+        """Verlauf-Einträge (ids+Text) über die Quelle sammeln — Kandidaten
+        bis zum ERSTEN Ergebnis (None = kein Bestand für diesen Kandidaten).
+        Rückgabe: (entries_ASC, truncated). Die Quelle liefert {text,
+        from_agent, msg_id?, time?|ts?} (Injektion) oder den Prod-Reader. KEIN
+        Klartext außerhalb dieses Prozesses — die Frames verschließt der
+        Ratchet (siehe _send_backfill_response)."""
+        raw: Optional[list] = None
+        if self._backfill_history_fn is not None:
+            for candidate in candidates:
+                try:
+                    raw = self._backfill_history_fn(candidate)
+                except Exception:
+                    logger.warning("FlipsiBridge: Backfill-Quelle fehlgeschlagen (Kandidat %s)",
+                                   _log_id(candidate, 32), exc_info=True)
+                    raw = None
+                if raw is not None:
+                    break
+        else:
+            for candidate in candidates:
+                raw = self._gateway_history_entries(candidate, limit)
+                if raw is not None:
+                    break
+        if raw is None:
+            # Ehrliche Antwort OHNE Verlauf zu behaupten (B3-Verband: keine
+            # Quelle = leer mit truncated=True, kein stiller Verlaufs-Anspruch).
+            return [], True
+        entries: list = []
+        seen_ids: set = set()
+        truncated = False
+        for row in raw:
+            if not isinstance(row, dict):
+                continue
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            msg_id = str(row.get("msg_id") or "").strip()
+            if msg_id:
+                if msg_id in seen_ids:
+                    continue  # msg_id-Idempotenz (erstes Auftreten gewinnt)
+                seen_ids.add(msg_id)
+            timestamp = row.get("ts", row.get("time"))
+            try:
+                ts = int(float(timestamp) * 1000)
+            except (TypeError, ValueError):
+                ts = int(time.time() * 1000)
+            if len(text) > B3_BACKFILL_ENTRY_TEXT_CAP:
+                text = text[:B3_BACKFILL_ENTRY_TEXT_CAP]
+            status = row.get("status")
+            entries.append({
+                "text": text,
+                "from_agent": bool(row.get("from_agent")),
+                "msg_id": msg_id or None,
+                "ts": ts,
+                # Status nur DURCHSCHLEIFEN (ids-only Snapshot-Quelle); der
+                # Snapshot-Filter nimmt NUR bekannte Werte (kein erfundener Chip).
+                "status": status if isinstance(status, str) else None,
+            })
+        if len(entries) > limit:
+            entries = entries[-limit:]  # BEHÄLT die neuesten K (Chronologie ASC)
+            truncated = True
+        return entries, truncated
+
+    @staticmethod
+    def _backfill_batches(entries: list) -> list:
+        """Batches à ≤ 64 Entries (ct-Cap-Schutz, Parität B3_BACKFILL_BATCH_MAX)
+        mit Bytes-Deckel je Batch (B3_BACKFILL_BYTES_MAX): ein Einzel-Entry
+        über dem Deckel wird TRUNCATED (kurzer Text schlägt einen am Relay
+        verworfenen Frame — ehrlich statt stiller Verlust)."""
+        batches: list = []
+        current: list = []
+        estimated = 64.0  # json-Overhead-Basis
+
+        def weight_of(item: dict) -> int:
+            try:
+                return len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+            except (TypeError, ValueError):
+                return len(str(item).encode("utf-8"))
+
+        for entry in entries:
+            weight = weight_of(entry)
+            if current and (len(current) >= B3_BACKFILL_BATCH_MAX
+                            or estimated + weight > B3_BACKFILL_BYTES_MAX):
+                batches.append({"entries": current, "truncated": False})
+                current = []
+                estimated = 64.0
+            if not current and weight > B3_BACKFILL_BYTES_MAX:
+                # Einzel-Entry unverhältnismäßig groß → Text kapppen (der
+                # Batch bleibt zustellbar; kein Frame fällt am Relay).
+                entry = dict(entry)
+                entry["text"] = entry.get("text", "")[:B3_BACKFILL_BYTES_MAX // 3]
+                weight = weight_of(entry)
+            current.append(entry)
+            estimated += weight
+        if current:
+            batches.append({"entries": current, "truncated": False})
+        return batches
+
+    async def _send_backfill_response(self, sess: Any, wire_chat_id: str,
+                                      gateway_chat: str, limit: int) -> None:
+        """chat.backfill.enc-Batches an DAS anfordernde Gerät (JE eigene
+        Session-Chiffre — NIE an alle Geräte) + abschließend ids-only
+        chat.status_snapshot (Form-Verband App-Parser: Array {msg_id,status})."""
+        candidates = self._backfill_gateway_chat_candidates(sess, wire_chat_id, gateway_chat)
+        entries, truncated = self._backfill_entries(candidates, limit)
+        wire = getattr(sess, "chat_id", None) or wire_chat_id
+        batches = self._backfill_batches(entries)
+        if not batches:
+            # Ehrlich „Verlauf leer/unbekannt" — die App endet die Fortschritt-
+            # Zeile (ChatBackfillRules: leere Batch = ehrliches Ende).
+            batches = [{"entries": [], "truncated": truncated}]
+        last = len(batches) - 1
+        sent_any = False
+        for index, payload in enumerate(batches):
+            if index == last:
+                payload["truncated"] = truncated
+            try:
+                frame = sess.encrypt_frame(B3_BACKFILL_ENC_FRAME, wire, payload)
+                await self._send_json(frame)
+                sent_any = True
+            except Exception as exc:
+                logger.warning("FlipsiBridge: chat.backfill.enc-Send fehlgeschlagen (Batch %d/%d): %s",
+                               index + 1, last + 1, exc)
+                return  # ratchet-Fortschritt am Ziel bleibt konsistent (Header-n-Skip)
+        if sent_any:
+            logger.info("FlipsiBridge: chat.backfill.enc — %d Batch(es), %d Entries "
+                        "(truncated=%s) an device %s",
+                        last + 1, len(entries), truncated, _log_id(str(getattr(sess, "device_key", "") or sess.session_id), 24))
+        statuses = self._backfill_snapshot_statuses(entries)
+        if not statuses:
+            return
+        try:
+            await self._send_json({
+                "type": B3_STATUS_SNAPSHOT_FRAME, "v": _PROTOCOL_VERSION,
+                "agent_id": self.agent_id, "chat_id": wire,
+                "session_id": sess.session_id,
+                "ts": int(time.time() * 1000),
+                "statuses": statuses,
+            })
+        except Exception as exc:
+            logger.warning("FlipsiBridge: chat.status_snapshot-Send fehlgeschlagen: %s", exc)
+
+    @staticmethod
+    def _backfill_snapshot_statuses(entries: list) -> list:
+        """ids-only Status-Snapshot aus dem Verlauf (msg_id→ queued/delivered/
+        read/failed, Parität ChatStatusRank.KNOWN; KEIN erfundener Stand —
+        Entries ohne msg_id/stdstatus landen NICHT im Snapshot). Cap = 500,
+        BEHÄLT die neuesten (Chronologie ASC)."""
+        out: list = []
+        for entry in entries:
+            msg_id = str(entry.get("msg_id") or "")
+            status = entry.get("status")
+            if not msg_id or status not in B3_STATUS_KNOWN:
+                continue
+            out.append({"msg_id": msg_id, "status": status})
+        return out[-B3_STATUS_SNAPSHOT_CAP:]
+
+    def _gateway_history_entries(self, gw_chat_id: str, limit: int) -> Optional[list]:
+        """B6-PROD-Verband: Gateway-Verlaufs-Zug für den Backfill (der Adapter
+        läuft IM Gateway-Prozess — der Session-Broker der eigenen Plattform-
+        Quelle ist die Turn-Wahrheit, Kap. 2.3 #3). FAIL-SOFT: hermes_state/
+        Session/DB-Fehler → None (ehrlich OHNE Verlauf zu behaupten); die
+        Sitzungs-Datenbank wird ONLY-READ geöffnet (nie Schreiben am Live-DB)."""
+        if not isinstance(gw_chat_id, str) or not gw_chat_id.strip():
+            return None
+        try:
+            from hermes_state import SessionDB, _default_db_path  # noqa (lazy)
+        except Exception:
+            return None
+        db = getattr(self, "_backfill_state_db", None)
+        if db is None:
+            try:
+                db = SessionDB(_default_db_path(), read_only=True)
+                # Nur-Read-Zugriff: keine append-/maintenance-Pfade; Instance
+                # wird je Adapter gecacht (Rate-Schild = max 1 Request/30 s).
+                self._backfill_state_db = db
+            except Exception as exc:
+                logger.warning(
+                    "FlipsiBridge: Gateway-Verlaufs-DB nicht lesbar (%s) — Backfill ehrlich ohne Verlauf",
+                    type(exc).__name__)
+                return None
+        try:
+            session_id = db.find_session_by_origin(
+                platform=_STATUS_PLATFORM_ID, chat_id=gw_chat_id.strip())
+            if not session_id:
+                return None
+            rows = db.get_messages(
+                session_id, latest=True,
+                limit=max(1, min(int(limit or 0) or self.backfill_k, B3_BACKFILL_MAX)))
+        except Exception as exc:
+            logger.warning(
+                "FlipsiBridge: Gateway-Verlaufs-Zug fehlgeschlagen (%s) — Backfill ehrlich ohne Verlauf",
+                type(exc).__name__)
+            return None
+        entries: list = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            role = str(row.get("role") or "")
+            content = row.get("content")
+            if role not in ("user", "assistant") or not isinstance(content, str) \
+                    or not content.strip():
+                continue
+            try:
+                ts = float(row.get("timestamp") or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            entries.append({
+                "text": content,
+                "from_agent": role == "assistant",
+                "time": ts,
+            })
+        return entries
+
+    def _send_sync_echo_frames(self, chat_id: str, text: str, envelope: dict) -> None:
+        """B4 ECHO (Kap. 2.3): Nutzer-Post von Gerät A → chat.sync.enc an ALLE
+        ANDEREN offenen Geräte-Slots (je Empfänger eigene Chiffre — Fan-out
+        über die B3-Session-MAP, das SENDENDE Gerät ausgeschlossen). Der
+        Echo trägt sync:true + sync_of=<Ursprungs-msg_id> (App-Kaskade
+        ChatSyncRules.originMsgId → Chip-Bindung + Dedup je msg_id).
+        Fail-soft: Echo-Verlust schadet nicht (Backfill-Norm, Kap. 4.1)."""
+        if not isinstance(text, str) or not text.strip():
+            return
+        origin = str(envelope.get("msg_id") or "").strip()
+        if origin:
+            if origin in self._sync_echo_dedup:
+                logger.debug("FlipsiBridge: Sync-Echo für msg %s bereits gesendet — übersprungen",
+                             _log_id(origin, 12))
+                return
+            self._sync_echo_dedup[origin] = time.time()
+            while len(self._sync_echo_dedup) > B3_SYNC_ECHO_DEDUP:
+                self._sync_echo_dedup.pop(next(iter(self._sync_echo_dedup)))
+        sender = self._session_for_frame(envelope)
+        payload: dict = {"text": text, "sync": True}
+        clear: Optional[dict] = None
+        if origin:
+            payload["msg_id"] = origin
+            payload["sync_of"] = origin
+            clear = {"msg_id": origin}
+        frames = self._enc_fanout_frames(_SYNC_ENC_FRAME, chat_id, payload,
+                                         clear=clear, exclude=sender)
+        if not frames:
+            return
+
+        async def _send() -> None:
+            for frame in frames:
+                try:
+                    await self._send_json(frame)
+                except Exception as exc:
+                    logger.warning("FlipsiBridge: chat.sync.enc-Send fehlgeschlagen: %s", exc)
+
+        self._schedule(_send())
+        logger.info("FlipsiBridge: Sync-Echo geplant — %d Neben-Gerät(e) (msg %s)",
+                    len(frames), _log_id(origin, 12) or "<neu>")
+
+    def _handle_device_revoked(self, envelope: dict) -> None:
+        """B4 REVOKE-Verband (Kap. 4.2): das Relay hat ein Gerät entfernt —
+        die je-Agent-Verbande kappen: E2E-Session(s) der SESSION-MAP (device_id
+        Anker) + Pin-Eintrag(e) des Geräts (TOFU je ik_pub). Fail-soft gegen
+        unbekannte Geräte (nichts zu kappen ist legitim)."""
+        device_id = str(envelope.get("device_id") or "").strip()
+        if not device_id:
+            logger.warning("FlipsiBridge: device.revoked ohne device_id — verworfen")
+            return
+        ik_pubs: list = []
+        touched = 0
+        for key, sess in list(self._crypto_sessions.items()):
+            match = (key == device_id
+                     or str(getattr(sess, "device_id", "") or "").strip() == device_id)
+            if not match:
+                continue
+            ik = str(getattr(sess, "device_ik", "") or "").strip().lower()
+            if ik:
+                ik_pubs.append(ik)
+            was_primary = self._crypto_session is sess
+            self._crypto_sessions.pop(key, None)
+            touched += 1
+            if was_primary:
+                self._crypto_session = None
+        if not touched:
+            logger.info(
+                "FlipsiBridge: device.revoked für %s ohne offene Geräte-Session — "
+                "nichts zu kappen", _log_id(device_id, 24))
+            return
+        removed_pins = self._remove_phone_pin_iks(ik_pubs)
+        if self._pin_warned_ik and self._pin_warned_ik in ik_pubs:
+            self._pin_warned_ik = ""
+        logger.warning(
+            "FlipsiBridge: DEVICE-REVOKED %s — %d Geräte-Session(s) gekappt, "
+            "%d Pin-Eintrag(e) entfernt (Revoke-Verband Kap. 4.2)",
+            _log_id(device_id, 24), touched, removed_pins)
+
+    def _remove_phone_pin_iks(self, ik_pubs: list) -> int:
+        """Pin-Einträge aus der Pin-MAP entfernen (B4 Revoke) — atomar wie
+        _write_phone_pin (mkstemp + os.replace), fail-soft: unlesbare Datei =
+        0 Entfernungen (Pin bleibt, die Prüfung toleriert wie bisher)."""
+        raw = self._read_phone_pin()
+        pins = self._pin_entries(raw)
+        if not isinstance(pins, dict):
+            return 0
+        targets = [ik for ik in ik_pubs if isinstance(ik, str) and ik]
+        remaining = dict(pins)
+        removed = 0
+        for ik in targets:
+            if remaining.pop(ik, None) is not None:
+                removed += 1
+        if not removed:
+            return 0
+        legacy_anchor = str((raw or {}).get("ik_pub") or "").strip().lower()
+        if legacy_anchor not in remaining:
+            legacy_anchor = ""
+        payload_dict = {"v": 2, "pins": remaining}
+        if legacy_anchor:
+            top = remaining.get(legacy_anchor)
+            if isinstance(top, dict):
+                payload_dict["ik_pub"] = legacy_anchor
+                payload_dict["pinned"] = str(top.get("pinned") or "")
+        payload = json.dumps(payload_dict, indent=2) + "\n"
+        directory = os.path.dirname(os.path.abspath(self.phone_pin_file)) or "."
+        os.makedirs(directory, exist_ok=True)
+        import tempfile as _tempfile
+        try:
+            fd, tmp_path = _tempfile.mkstemp(prefix=".phone-pin-", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    try:
+                        os.fchmod(fh.fileno(), 0o600)
+                    except AttributeError:
+                        pass
+                    fh.write(payload)
+                os.replace(tmp_path, self.phone_pin_file)
+            except BaseException:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            logger.warning("FlipsiBridge: Pin-Kappung konnte nicht geschrieben werden: %s", exc)
+        return removed
 
     def _schedule(self, coro) -> None:
         """Coroutine als Hintergrund-Task (kein Loop → verwerfen, nie crashen)."""
@@ -2582,6 +3051,15 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # Identity-Präfix) laufen unverändert durch die Gateway-Pairing-
         # Schiene.
         self._ensure_phone_auto_approved(gw_chat_id)
+        # ── B4 ECHO-VERBAND (Kap. 2.3): der Nutzer-Post dieses Geräts geht
+        # PARALLEL als chat.sync.enc an ALLE ANDEREN offenen Geräte-Slots
+        # (je Empfänger eigene Chiffre; sync_of = Ursprungs-msg_id). Die
+        # Zustellung zum Gateway läuft exakt wie bisher — das Echo ist ein
+        # NEBENAUSGANG (fail-soft, kein Fan-out-Verlust hängt den Turn auf).
+        # Nur E2E-Frames spiegeln (Legacy-Klartext-Posts haben keine Geräte-
+        # Session-Wahrheit — ein Echo an den SENDER selbst wäre Unsinn).
+        if str(envelope.get("type") or "").endswith(".enc"):
+            self._send_sync_echo_frames(chat_id, text, envelope)
         if _UNDER_HERMES:
             try:  # Echter Gateway-Pfad: MessageEvent → handle_message (Session je chat_id)
                 source = self.build_source(chat_id=gw_chat_id,
