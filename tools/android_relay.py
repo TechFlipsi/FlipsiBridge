@@ -485,6 +485,13 @@ def _pairing_slot_locked(state: "_RelayState", device_id: Optional[str]) -> bool
     if holder is None or holder.closed:
         return False
     holder_id = state.phone_device_id
+    # W22-FIX (18.11.): Agenten (/agent_ws Direct) belegen KEINEN Phone-Code-
+    # Slot — die phone_ws-Fassade zeigt sie als lebendes Fenster, deshalb
+    # darf der Slot-Lock keinen Agenten als Holder behandeln (sperrt sonst
+    # jede App, sobald Agent-Adapter verbunden sind; im Drill ohne Adapter
+    # unsichtbar geblieben).
+    if holder_id is not None and holder_id in (getattr(state, "agents", None) or {}):
+        return False
     if holder_id is None and device_id is None:
         # Legacy-Parität: beide Seiten ohne Kennung = bisheriges Replace-
         # Verhalten (bestehende Suite hängt daran — und ein Alt-Client kann
