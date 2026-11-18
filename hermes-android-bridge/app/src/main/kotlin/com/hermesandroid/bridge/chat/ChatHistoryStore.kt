@@ -179,19 +179,21 @@ object ChatHistoryStore {
         // W4-FIX-JAG2 (C4): Adoption + Read unter EINEM Lock-Sprung (siehe
         // append) — sonst konkurrierte die Adoption mit einem parallelen
         // append/load auf dieselbe Agent-Datei.
-        val (file, lines) = synchronized(fileLock) {
+        // J3-FIX: Lesen + Kürzen + Neu-Siegel in EINEM Lock-Fenster — ein
+        // append zwischen zwei getrennten Locks ging sonst beim Stale-Write
+        // der gekürzten Zeilen dauerhaft verloren (TOCTOU-Datenverlust).
+        val (file, capped) = synchronized(fileLock) {
             val f = adoptLegacyFile(root, agentId, fileFor(root, agentId))
             guardSealedRead(f) // P24: fail-closed/fail-loud je Verlauf-Datei
-            f to readLines(f).toMutableList()
-        }
-        val capped = capLines(lines)
-        if (capped.size < lines.size) {
-            runCatching {
-                synchronized(fileLock) {
-                    writeAtomic(file, capped)
-                    sealAfterWrite(file) // P24: Kürzung = Neu-Siegel
+            val lines = readLines(f).toMutableList()
+            val capped = capLines(lines)
+            if (capped.size < lines.size) {
+                runCatching {
+                    writeAtomic(f, capped)
+                    sealAfterWrite(f) // P24: Kürzung = Neu-Siegel
                 }
             }
+            f to capped
         }
         val entries = parse(capped)
         // PH-6: Agent-Scheibe = Disk-Wahrheit (Restore/Lese-Pfad, Replace).

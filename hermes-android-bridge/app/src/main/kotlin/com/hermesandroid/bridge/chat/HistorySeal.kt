@@ -112,10 +112,15 @@ object HistorySeal {
         val tmp = File(target.parentFile, "." + seal.name + ".part")
         tmp.writeText(formatSeal(digest))
         if (!tmp.renameTo(seal)) {
-            // rename kann plattformbedingt über existierende Datei scheitern —
-            // klassischer Fallback (Alt-Siegel bleibt bis zum Schluss lesbar).
-            seal.writeText(tmp.readText())
-            tmp.delete()
+            // J3-FIX: delete-then-rename statt truncating writeText — ein
+            // Crash im Fenster lässt das Siegel FEHLEN (ehrliche UNSEALED-
+            // Migration beim nächsten Load) statt TORN (falscher TAMPERED-
+            // Alarm). Letzter Strohhalm bleibt die Text-Kopie.
+            seal.delete()
+            if (!tmp.renameTo(seal)) {
+                seal.writeText(tmp.readText())
+                tmp.delete()
+            }
         }
         return true
     }

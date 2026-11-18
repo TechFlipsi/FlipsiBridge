@@ -1582,6 +1582,10 @@ fun ChatScreen(
             // (IdentityStore/relay-keys) bleiben unangetastet.
             onClearHistory = {
                 messages = messages.filterNot { it.agentId == agent.id }
+                // J3-FIX: Siegel-Breach-Banner gehört zum gelöschten Verlauf —
+                // mit ihm weg, sonst bleibt das rote Banner nach dem Recovery
+                // dauerhaft stehen und unterdrückt den Suchindex-Hinweis.
+                historySealBreach = false
                 if (agent.agentId.isNotBlank()) {
                     mediaScope.launch(Dispatchers.IO) {
                         ChatHistoryStore.clearAgent(
