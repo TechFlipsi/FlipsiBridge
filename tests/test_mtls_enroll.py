@@ -14,6 +14,7 @@ from tools.mtls_enroll import (
     _sign_csr,
     _registry_load,
     _registry_save,
+    _registry_devices,
     reset_epoch,
     init,
     _tls_dir,
@@ -249,9 +250,80 @@ def test_secfix17_code_once_holds_under_parallel_enrolls(tls_env, monkeypatch):
     assert not errors
     assert sorted(statuses.values()) == [200, 403], (
         "Code-Einmaligkeit muss unter Parallelen halten: ein 200, ein 403")
-    enrolled = m._registry_load()["enrolled"]
+    enrolled = m._registry_devices(m._registry_load())  # B2: v2-Leser
     assert len(enrolled) == 1, "genau EIN Neugerät durfte enrollen"
     assert set(enrolled) <= {"devpar1", "devpar2"}
+
+
+# ── B2 (Multi-Gerät): Registry v2 ({v:2, devices:{...}} je Gerät) ────────────
+
+def test_b2_enroll_writes_v2_per_device_fields(tls_env, monkeypatch):
+    """Enroll schreibt v2: {"v":2, "epoch":n, "devices":{id: {cn, cert_path,
+    enrolled_at, epoch_of_enroll}}} — die Zehn-Finger-Felder je Gerät."""
+    import asyncio
+
+    m = _patch_relay_auth(monkeypatch)
+    m._registry_save({"epoch": 2, "enrolled": {}})
+    d = str(_tls_dir())
+    k, csr = _device_key_and_csr(d, "devv2")
+    nonce = m._open_challenge("devv2")
+    assert nonce
+    req = _FakeRequest({"device_id": "devv2",
+                        "csr": base64.b64encode(csr).decode(),
+                        "sig": _sign(k, nonce.encode()), "nonce": nonce},
+                       headers=_AUTH_HDR)
+    resp = asyncio.run(m.enroll_handler(req))
+    assert resp.status == 200, resp.text
+    reg_path = _tls_dir() / "mtls_devices.json"
+    raw = json.loads(reg_path.read_text(encoding="utf-8"))
+    assert raw["v"] == 2 and raw["epoch"] == 2
+    entry = raw["devices"]["devv2"]
+    assert entry["cn"] == "flipsibridge-devv2"
+    assert entry["cert_path"] == "devices/devv2.pem"
+    assert entry["epoch_of_enroll"] == 2
+    assert entry["enrolled_at"] == entry["ts"] > 0
+
+
+def test_b2_v1_read_fallback_and_enroll_migration(tls_env, monkeypatch):
+    """Legacy v1-Registry ({epoch, enrolled}) bleibt LESBAR (Lesefallback, aktuelles
+    Verhalten intakt) und wird beim ERSTEN Enroll ohne Verlust nach v2 migriert:
+    Alt-Zeilen wandern unter 'devices' (Felder bleiben, enrolled_at aus ts)."""
+    import asyncio
+
+    m = _patch_relay_auth(monkeypatch)
+    legacy = {"epoch": 7, "enrolled": {
+        "devOld1": {"cn": "flipsibridge-devOld1", "ts": 123, "epoch_of_enroll": 3},
+        "devOld2": {"cn": "flipsibridge-devOld2", "ts": 555, "epoch_of_enroll": 4}}}
+    m._registry_save(legacy)
+    # Lesefallback: die Geräte-Map ist über beide Formen erreichbar.
+    assert m._registry_devices(m._registry_load()) == legacy["enrolled"]
+    # Fenster-Reset (set_pairing_code-Pfad): Epoch 7→8, enrolled bleibt v1.
+    data = m.reset_epoch()
+    assert data["epoch"] == 8
+    # RENEWAL des Alt-Geräts (Code-Einmaligkeit erlaubt Wiederaufnahme desselben
+    # device_id; ein NEUGERÄT braucht den Registry-Reset — P22/P44-Semantik
+    # bleibt unangetastet).
+    d = str(_tls_dir())
+    k, csr = _device_key_and_csr(d, "devOld1")
+    nonce = m._open_challenge("devOld1")
+    assert nonce
+    req = _FakeRequest({"device_id": "devOld1",
+                        "csr": base64.b64encode(csr).decode(),
+                        "sig": _sign(k, nonce.encode()), "nonce": nonce},
+                       headers=_AUTH_HDR)
+    resp = asyncio.run(m.enroll_handler(req))
+    assert resp.status == 200, resp.text
+    raw = json.loads((_tls_dir() / "mtls_devices.json").read_text(encoding="utf-8"))
+    assert raw["v"] == 2 and "enrolled" not in raw
+    old = raw["devices"]["devOld1"]
+    assert old["cn"] == "flipsibridge-devOld1"
+    assert old["epoch_of_enroll"] == 8, "Renewal hebt die Epoche des Geräts"
+    assert old["enrolled_at"] == old["ts"] > 0, "je-Gerät-Felder geschrieben"
+    # Der NICHT-erneuerte Alt-Eintrag kommt im Migrations-Save ohne Verlust mit:
+    survivor = raw["devices"]["devOld2"]
+    assert survivor["cn"] == "flipsibridge-devOld2"
+    assert survivor["enrolled_at"] == 555, "Alt-Zeile: enrolled_at aus ts"
+    assert survivor["epoch_of_enroll"] == 4, "P43-Wert je Gerät bleibt"
 
 
 def test_secfix17_challenge_store_cap_fifo(tls_env, monkeypatch):
@@ -389,7 +461,8 @@ def test_p43_rotation_serialized_with_running_enroll(tls_env, monkeypatch):
     assert resp.status == 200
     threads[0].join(15)
     assert bumps and bumps[0]["epoch"] == 2, "Bump war in den Enroll eingehängt"
-    reg = _registry_load()
-    assert reg["epoch"] == 2, "Bump darf vom Enroll-Save nicht zurückgesetzt werden"
-    assert "devRace" in reg["enrolled"], \
+    raw = m._registry_load()
+    assert raw["epoch"] == 2, "Bump darf vom Enroll-Save nicht zurückgesetzt werden"
+    reg = _registry_devices(raw)  # B2: v2-Leser (auch v1-Form)
+    assert "devRace" in reg, \
         "Enroll-Eintrag darf vom Bump-Save nicht verloren gehen"

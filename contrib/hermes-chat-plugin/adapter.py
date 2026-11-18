@@ -186,6 +186,29 @@ _STATUS_SUB_SLOTS_CAP = 16             # FIFO-RAM-Schutz der Sub-Slot-Map
 _STATUS_SEND_TIMEOUT_S = 0.5           # Status-Send-Gate (fail-soft, nie Chat-kritisch)
 _STATUS_WEB_TOOLS = frozenset({"web_search", "web_extract", "browser_exec"})
 _STATUS_WEB_LABEL = "Sucht im Web"     # web-Verband-Label (fester Vertrag an die App)
+
+# ── B3 (Multi-Gerät, Plan roadmap-multigeraete.md Kap. 1/2/3/4/5): ────────────
+# Session-Map je Gerät (je Geräte-ik eine eigene X3DH/Ratchet-Session), Pin-Map
+# je ik_pub (TOFU-TOFU je Gerät), Antwort-Fan-out je Geräte-Session,
+# chat.sync.enc-Echo an NEBENgeräte (Loop-sicher), chat.backfill.enc aus dem
+# Adapter-Verlaufs-Spool (K je Agent, Deckel), alles E2E je Geräte-Session.
+# KEINE neuen Krypto-Primitives: die bestehenden X3DH/Ratchet-Bausteine werden
+# je (Gerät × Agent) instanziert (Plan Kap. 3.1, Empfehlung (I)).
+B3_SYNC_ENC_FRAME = "chat.sync.enc"          # Echo des NUTZER-Texts an NEBENgeräte
+B3_BACKFILL_ENC_FRAME = "chat.backfill.enc"  # Gateway-Verlauf als E2E an das Anfragt-Gerät
+B3_BACKFILL_REQUEST_FRAME = "chat.backfill_request"  # Klar-Steuer-Frame (ids-only)
+B3_HISTORY_K = 200            # K je Agent-Chat (Plan Kap. 4.1: K = 200, env-tunbar)
+B3_BACKFILL_MAX = 200         # Backfill-K je Anfrage (Deckel, Parität zum Plan-K)
+B3_BACKFILL_RATE_S = 30.0     # je Session max 1 Backfill-Request je 30 s (DoS-Schild)
+B3_DEVICE_PIN_CAP = 8         # Pin-Map je Agent (Plan Kap. 3.1: Cap 8 Pins/Agent)
+B3_SESSIONS_CAP = 8           # Session-Map je Agent (DoS-Schild; Parität Pin-Cap)
+B3_SYNC_ECHO_DEDUP = 256      # FIFO-Dedupe je Echo (kein Doppel-/Re-Echo je msg_id)
+B3_ECHO_FIELD = "sync"        # eindeutiges Echo-Feld im ct-Payload ("fremd-eigenes")
+B3_SYNC_OF_FIELD = "sync_of"  # msg_id-Bezug: die Echo-Blase trägt die Ursprungs-msg_id
+B3_BACKFILL_BATCH_MAX = 64    # Entries je backfill.enc-Frame (ct-Cap-Schutz)
+B3_BACKFILL_BYTES_MAX = 96 * 1024  # Raw-Payload-Deckel je Backfill-Frame (< ct-Cap)
+
+_SYNC_ENC_FRAME = B3_SYNC_ENC_FRAME
 # Live-Adapter-Registry: Modul-Level-Hooks fannen je Callback an alle
 # verbundenen Adapter-Instanzen (WeakSet → kein Leak bei Plugin-Reload).
 STATUS_ADAPTERS: "weakref.WeakSet" = weakref.WeakSet()
@@ -677,6 +700,14 @@ class _CryptoSessionBase:
 class AgentCryptoSession(_CryptoSessionBase):
     """Agent-Seite (X3DH-Responder): crypto.hello → hello_ack + Ratchet."""
 
+    # ── B3: Geräte-Verband je Session (Routing-Metadaten, ids-only) —
+    # device_key = Registry-Anker (device_id des Relays oder "ik:<pub>"),
+    # chat_id = letzter gesehener Wire-Chat_id dieses Geräts (Fan-out-Kontext).
+    device_key: str = ""
+    device_id: str = ""
+    device_ik: str = ""
+    chat_id: Optional[str] = None
+
     @classmethod
     def respond_to_hello(cls, hello: dict, identity: dict, psk: bytes = b"",
                          rotate_every: int = _RATCHET_ROTATE_EVERY
@@ -960,6 +991,27 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             self.ratchet_rotate = _RATCHET_ROTATE_EVERY
         self._identity: Optional[dict] = None
         self._crypto_session: Optional[AgentCryptoSession] = None
+        # ── B3 Session-MAP (Plan Kap. 3.1 Option (I)): je GERÄT eine eigene
+        # X3DH/Ratchet-Session (key = device_id mit Relay-Registry-Wahrheit,
+        # Fallback ik_pub bei Legacy-Hellos). `self._crypto_session` bleibt als
+        # Primär-Referenz (freshestes Hello) für Alt-Pfade bestehen — Antwort-/
+        # Broadcast-Pfade fächern über _device_sessions() auf.
+        self._crypto_sessions: dict[str, AgentCryptoSession] = {}
+        # B3 Sync-Echo-Dedupe je Ursprungs-msg_id (kein Doppel-/Re-Echo; FIFO).
+        self._sync_echo_dedup: dict[str, float] = {}
+        # B3 Backfill-Rate je Geräte-Session (1 Request / 30 s, DoS-Schild).
+        self._backfill_last: dict[str, float] = {}
+        # B3 Backfill-Verlaufs-Quelle: injizierbar (Tests; Prod-Wiring → B6).
+        # Signatur: (gw_chat_id) → [ {text, from_agent, msg_id?, time?, status?} ].
+        # None = ehrliche Antwort mit truncated=True, OHNE Verlauf zu behaupten.
+        self._backfill_history_fn: Optional[Callable[[str], list]] = None
+        # B3 K je Agent-Chat (Plan Kap. 4.1: K = 200, env-tunbar, Deckel 1000).
+        try:
+            self.backfill_k: int = max(
+                1, min(1000, int(_cfg(extra, "FLIPSI_BACKFILL_K",
+                                      default=str(B3_HISTORY_K)) or B3_HISTORY_K)))
+        except (ValueError, TypeError):
+            self.backfill_k = B3_HISTORY_K
         self._session_reset_pending: bool = False
         self._bg_tasks: list = []  # geplante Sends (Ack/FP-Antwort) — Test-Hook
 
@@ -1372,15 +1424,22 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         received_ms = self._received_at.get(wire_chat_id)
         started_at = received_ms if received_ms is not None else int(time.time() * 1000)
         await self._send_activity(wire_chat_id, working=True, started_at=started_at)
-        # PH-3: aktive E2E-Session → chat.reply.enc (Text NUR im AES-GCM-ct).
-        session = self._active_session()
-        if session is not None:
-            payload = {"text": content, "msg_id": msg_id}
-            if reply_to:
-                payload["reply_to"] = reply_to
-            envelope = session.encrypt_frame(
-                "chat.reply.enc", wire_chat_id, payload, clear={"msg_id": msg_id})
+        # PH-3: aktive E2E-Sessions → chat.reply.enc je GERÄT (B3-FAN-OUT:
+        # je Geräte-Session eigene Chiffre; Text ist NUR im AES-GCM-ct).
+        payload = {"text": content, "msg_id": msg_id}
+        if reply_to:
+            payload["reply_to"] = reply_to
+        extra_meta = {"elapsed_ms": max(0, int(time.time() * 1000) - received_ms),
+                      "metadata": metadata} if received_ms is not None else \
+            ({"metadata": metadata} if metadata else {})
+        fanout = self._enc_fanout_frames("chat.reply.enc", wire_chat_id,
+                                         payload, clear={"msg_id": msg_id})
+        envelopes: list[dict]
+        if fanout:
+            envelope = fanout[0]
+            envelopes = list(fanout)
         else:
+            envelopes = []
             envelope = {
                 "type": "chat.reply", "v": _PROTOCOL_VERSION, "msg_id": msg_id,
                 "route": self.chat_route,  # Relay routet den Payload an /chat
@@ -1393,14 +1452,30 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                 # Klartext-Antwort ging stillos verloren.
                 "text": content,
                 "body": {"text": content}}  # Alt-Kompatibilität (Leser, die body nutzen)
-        if received_ms is not None:
-            envelope["elapsed_ms"] = max(0, int(time.time() * 1000) - received_ms)
-        if metadata:
-            envelope["metadata"] = metadata
+        for key, value in extra_meta.items():
+            if value is None:
+                continue
+            for env_i in (envelopes or [envelope]):
+                env_i[key] = value
         try:
             try:
                 await self._send_json(envelope)
+                # B3-FAN-OUT: Rest-Geräte je EIGENER Session-Chiffre (fail-soft:
+                # ein toter Slot bricht nie die Antwort an die offenen Geräte).
+                for extra_env in envelopes[1:] if fanout else []:
+                    try:
+                        await self._send_json(extra_env)
+                    except Exception as exc:
+                        logger.warning("FlipsiBridge: chat.reply.enc Fan-out-Send "
+                                       "fehlgeschlagen (Gerät): %s", exc)
             except Exception as exc:
+                # Fan-out-Extras trotzdem zustellen (Primär-Verband getrennt).
+                if fanout and len(envelopes) > 1:
+                    for extra_env in envelopes[1:]:
+                        try:
+                            await self._send_json(extra_env)
+                        except Exception:
+                            pass
                 logger.warning("FlipsiBridge: send fehlgeschlagen: %s", exc)
                 return SendResult(success=False, error=str(exc), retryable=True, message_id=msg_id)
             # FIX-WELLE-2 B3: erst nach ERFOLGREICHEM Zustellen zählt der
@@ -1547,23 +1622,24 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: agent.models-Katalog unlesbar — Broadcast übersprungen",
                            exc_info=True)
             return False
-        session = self._active_session()
-        if session is not None:
-            envelope = session.encrypt_frame(
-                AGENT_MODELS_ENC_FRAME, "",
-                {"models": models, "current": current, "effort": effort})
-        else:
-            envelope = {
+        model_frames = self._enc_fanout_frames(
+            AGENT_MODELS_ENC_FRAME, "",
+            {"models": models, "current": current, "effort": effort})
+        if model_frames is None:
+            model_frames = [{
                 "type": AGENT_MODELS_FRAME, "v": _PROTOCOL_VERSION,
                 "agent_id": self.agent_id,
                 "models": models, "current": current, "effort": effort,
-            }
-        try:
-            await self._send_json(envelope)
-            return True
-        except Exception as exc:
-            logger.warning("FlipsiBridge: agent.models-Broadcast fehlgeschlagen: %s", exc)
-            return False
+            }]
+        sent = False
+        # B3-FAN-OUT: Katalog je Geräte-Session (fail-soft; Rückgabe = Primär).
+        for models_env in model_frames:
+            try:
+                await self._send_json(models_env)
+                sent = True
+            except Exception as exc:
+                logger.warning("FlipsiBridge: agent.models-Broadcast fehlgeschlagen: %s", exc)
+        return sent
 
     async def _models_refresh_loop(self) -> None:
         """agent.models je 60 s nachsenden — spät verbindende Geräte kriegen
@@ -1729,7 +1805,7 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
 
         # PH-3-T3: chat.*.enc — entschlüsseln (Klartext NUR intern, nie geloggt).
         if etype in ("chat.send.enc", "chat.event.enc"):
-            text = self._decrypt_inbound(envelope, etype)
+            text = self._decrypt_inbound(envelope, etype, chat_id=chat_id)
             if text is None:
                 return
             # Sirs Revision (iii): Fingerprint-Chat-Abgleich — reine Protokoll-
@@ -1787,6 +1863,63 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             return None
         return sess
 
+    def _device_sessions(self) -> list:
+        """B3: ALLE offenen (nicht abgelaufenen) Geräte-Sessions — Primär-Session
+        zuerst (Alt-Pfad-Parität), dann Rest in Etablierungs-Reihenfolge.
+        Abgelaufene Entries werden ausgesondert (24-h-Cap je Gerät)."""
+        out: list = []
+        primary = self._crypto_session
+        for key in list(self._crypto_sessions.keys()):
+            sess = self._crypto_sessions.get(key)
+            if sess is None:
+                self._crypto_sessions.pop(key, None)
+                continue
+            if sess.expired():
+                self._crypto_sessions.pop(key, None)
+                if primary is sess:
+                    primary = None
+                    self._crypto_session = None
+                continue
+            if out and sess in out:
+                continue
+            out.append(sess)
+        if primary is not None and primary not in out and not primary.expired():
+            out.insert(0, primary)
+        return out
+
+    def _session_for_frame(self, envelope: dict):
+        """B3: Geräte-Session über die KLARE session_id des Envelopes suchen —
+        Cross-Session-Replay bleibt blockiert (decrypt_frame prüft session_id
+        zusätzlich gegen den Ratchet-Header; hier nur die Routing-Meta)."""
+        frame_session = str(envelope.get("session_id") or "").strip()
+        if not frame_session:
+            return None
+        for sess in self._crypto_sessions.values():
+            if sess.session_id == frame_session:
+                return sess
+        return None
+
+    def _enc_fanout_frames(self, frame_type: str, chat_id: str, payload: dict,
+                           clear: Optional[dict] = None) -> Optional[list]:
+        """B3-FAN-OUT (Plan Kap. 2.2 (b1)): je offener Geräte-Session EIGENES
+        encrypt_frame — NIE dieselbe Chiffre an alle Geräte (je Session eigene
+        Ratchet-Kette + AAD session_id|chat_id|agent_id). Rückgabe:
+        None = keine Session (Legacy-Klartext-Weg bleibt Aufrufersache);
+        sonst Liste: Frame[0] = Primär-Session (Alt-Verband), Rest fail-soft."""
+        sessions = self._device_sessions()
+        if not sessions:
+            return None
+        frames = []
+        for sess in sessions:
+            # WIRE-chat_id JEGERÄT: AAD bindet die Relay-chat_id der Session —
+            # ein fremdes Chat-Routing würde der App-Platte ein falsches Feld
+            # geben (Plan 2.3 #1). Ohne eigene Chat-ID (Gerät ohne Post) fällt
+            # der Frame auf die Primary/Envelope-Kontext-ID — Decrypt bleibt
+            # valid, Merge-Vertrag der App übernimmt als msg_id-Schlüssel.
+            wire = getattr(sess, "chat_id", None) or chat_id
+            frames.append(sess.encrypt_frame(frame_type, wire, payload, clear=clear))
+        return frames
+
     def _schedule(self, coro) -> None:
         """Coroutine als Hintergrund-Task (kein Loop → verwerfen, nie crashen)."""
         try:
@@ -1823,6 +1956,44 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: crypto.hello ungültig — keine Session (%s)", exc)
             return
         self._crypto_session = session
+        # ── B3 Session-MAP: je GERÄT eine eigene Session (Plan Kap. 3.1 (I)).
+        # Registry-Anker ist die device_id, die der Relay (B2: Registry-Wahrheit,
+        # WS-authentifiziert) im hello-Pfad durchreicht — BEKANNTE Geräte
+        # verdrängen NIEMALS fremde Slots (Plan 0.1 #3 / Kap. 4.2 B7: kein
+        # Takeover-Fehlalarm pro echtem Zweitgerät). Legacy-Hellos OHNE
+        # device_id (Alt-App/Klartext-Probe) behalten die Ein-Gerät-Semantik:
+        # der frische Slot verdrängt die Map (SIRS-01/B8-Modell unverändert).
+        _ik_pub_b3 = str(envelope.get("ik_pub") or "").strip().lower()
+        device_key = (str(envelope.get("device_id") or "").strip()
+                      or ("ik:" + _ik_pub_b3 if _ik_pub_b3 else session.session_id))
+        if not envelope.get("device_id"):
+            self._crypto_sessions.clear()
+        else:
+            # Cap-Schild je Agent (B3_SESSIONS_CAP, Parität Pin-Cap): ein
+            # NEUES Gerät verdrängt die älteste ANDERE Session (der Primär-/
+            # ankommende Slot ist nie Opfer). Fail-loud, kein Stillschweigen.
+            while (len(self._crypto_sessions) >= B3_SESSIONS_CAP
+                   and device_key not in self._crypto_sessions):
+                oldest = next(iter(self._crypto_sessions))
+                if self._crypto_sessions[oldest] is session:
+                    break
+                evicted = self._crypto_sessions.pop(oldest)
+                logger.warning(
+                    "FlipsiBridge: Session-MAP voll (Cap %d) — älteste Geräte-"
+                    "Session %s (device %s) evicted (B3-Neu-Gerät)",
+                    B3_SESSIONS_CAP, evicted.session_id[:8], _log_id(oldest, 24))
+        if device_key in self._crypto_sessions:
+            old = self._crypto_sessions[device_key]
+            if old is not session:
+                logger.info("FlipsiBridge: Session-Rotate je Gerät %s (%s → neu %s)",
+                            _log_id(device_key, 24), old.session_id[:8],
+                            session.session_id[:8])
+        self._crypto_sessions[device_key] = session
+        # Geräte-Metadaten je Session (B3-Fan-out/Backfill-Routing, ids-only).
+        session.device_key = device_key
+        session.device_id = str(envelope.get("device_id") or "")
+        session.device_ik = _ik_pub_b3
+        session.chat_id = getattr(session, "chat_id", None)
         self._session_reset_pending = False
         # FIX-WELLE-2 B1: Phone-Identity-Key dieser Session merken — Basis
         # für die STABILE Gateway-chat_id ('flipsi-phone-<ik8>') und für die
@@ -1847,6 +2018,9 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             await self._send_json(ack)
         except Exception as exc:
             logger.warning("FlipsiBridge: hello_ack-Send fehlgeschlagen: %s", exc)
+            for key in list(self._crypto_sessions.keys()):
+                if self._crypto_sessions.get(key) is session:
+                    self._crypto_sessions.pop(key, None)
             if self._crypto_session is session:
                 self._crypto_session = None
             return
@@ -1916,8 +2090,28 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                 os.path.basename(self.phone_pin_file))
             return None
 
+    def _pin_entries(self, pin: Optional[dict]) -> Optional[dict]:
+        """B3 Pin-MAP-Normalisierung (Plan Kap. 3.1/5): v2 {"pins": {ik: entry}}
+        ODER Legacy v1 {"ik_pub": …} → {ik_pub: entry}. MIGRATION: der bestehende
+        Einzel-Pin bleibt als Pin des ERSTEN adoptierten Geräts gültig (er wird
+        beim nächsten Schreiben als v2-Map mitgeschleppt — kein Pin-Verlust).
+        None = unlesbar (Prüfung überspringen wie bisher)."""
+        if not isinstance(pin, dict):
+            return None
+        pins: dict = {}
+        raw = pin.get("pins")
+        if isinstance(raw, dict):
+            for ik, entry in raw.items():
+                ik_s = str(ik or "").strip().lower()
+                if ik_s:
+                    pins[ik_s] = entry if isinstance(entry, dict) else {"pinned": str(entry)}
+        legacy_ik = str(pin.get("ik_pub") or "").strip().lower()
+        if not pins and legacy_ik:
+            pins[legacy_ik] = {"pinned": str(pin.get("pinned") or ""), "src": "legacy"}
+        return pins
+
     def _check_phone_identity_pin(self, hello: dict) -> None:
-        """SEC-W1 W1A-5: TOFU-Bindung der Phone-Identity.
+        """SEC-W1 W1A-5 + FIX-WELLE-2 B2 + B3: Pin-MAP je ik_pub.
 
         relay-keys.json (vom Relay gepublishte Phone-Device-Keys) hat am
         Agenten NULL Consumer — `respond_to_hello` validierte nur die Hex-
@@ -1926,72 +2120,95 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         Agent). Fix: Der ERSTE Handshake pint ik_pub des Phones lokal
         (0600, neben dem Identity-File); ein WECHSEL ist ein lautes
         Warn-Ereignis (Neu-Gerät ODER Übernahme — klärt der FP-Abgleich).
-        Bewusst Warnung statt Blockade (echtes Gerät-Wechseln bleibt
-        möglich); Datei unlesbar = Warnung + Prüfung übersprungen.
+
+        B3 (Multi-Gerät, Plan Kap. 3.1): die Pin-Datei wird zur PIN-MAP je
+        ik_pub (Cap je Agent = B3_DEVICE_PIN_CAP). BEKANNTE Geräte (ik in
+        der Map) sind der Normalzustand — sie erzeugen KEINE Wechsel-Warnung
+        mehr (Parität Plan Kap. 4.2 B7: kein Dauer-Fehlalarm pro echtem
+        Zweitgerät). JE NEUEM ik bleibt EIN LOUD-Ereignis (B2-Dedupe), die
+        Adoption passiert erst nach BESTÄTIGTEM FP-Abgleich
+        (_confirm_phone_pin). Datei unlesbar = Warnung + Prüfung übersprungen.
 
         FIX-WELLE-2 B2 (P3, HERZ-Befund 2): Der Pin erneuerte sich NIE —
         JEDE Reconnect-Wiederholung desselben Identity-Wechsels warnte
         erneut (Warn-Spam, Alarm-Fatigue: eine echte Übernahme ging in der
         Flut unter). Jetzt: (a) je NEUEM ik_pub genau EINE Warnung
         (_pin_warned_ik-Dedupe je Adapter-Lebenszeit), (b) nach BESTÄTIGTEM
-        FP-Abgleich pint der Adapter die neue Identity persistent um
+        FP-Abgleich pint der Adapter die neue Identity persistent
         (_confirm_phone_pin) — danach ist der neue Key der gepinnte
         Normalzustand, keine weitere Warnung."""
         ik_pub = str(hello.get("ik_pub") or "").strip().lower()
         if not ik_pub:
             return
-        pin = self._read_phone_pin()
-        if pin is None:
+        pin_raw = self._read_phone_pin()
+        if pin_raw is None:
             return
-        pinned = pin.get("ik_pub")
-        if not isinstance(pinned, str) or not pinned:
+        pins = self._pin_entries(pin_raw)
+        if pins is None:
+            return
+        if ik_pub in pins:
+            return
+        if not pins:
             try:
-                self._write_phone_pin(ik_pub)
+                self._write_phone_pin(ik_pub, src="tofu")
                 logger.info("FlipsiBridge: Phone-Identity gepinnt (TOFU, erste Sichtung)")
             except OSError as exc:
                 logger.warning("FlipsiBridge: Phone-Pin konnte nicht gespeichert werden: %s", exc)
-            return
-        if pinned == ik_pub:
             return
         if ik_pub == self._pin_warned_ik:
             # B2: für DIESEN Key wurde bereits gewarnt — Wiederholungs-/
             # Reconnect-Spam unterdrücken, bis ein ANDERER Key auftaucht.
             logger.info("FlipsiBridge: PHONE-IDENTITY-WECHSEL (gepinnt %s… → neu %s…) "
                         "bereits gemeldet — Wiederholungswarnung unterdrückt (B2)",
-                        pinned[:8], ik_pub[:8])
+                        next(iter(pins))[:8], ik_pub[:8])
             return
         self._pin_warned_ik = ik_pub
         logger.warning(
             "FlipsiBridge: PHONE-IDENTITY-WECHSEL erkannt (gepinnt %s… → neu %s…) — "
             "neues Gerät ODER Übernahme-Versuch (weiterer Paarungs-Code-Inhaber). "
-            "Fingerprint-Abgleich am NEUEN Phone prüfen!",
-            pinned[:8], ik_pub[:8])
+            "Fingerprint-Abgleich am NEUEN Phone prüfen! (B3: nach bestätigtem "
+            "Abgleich wird die Identity in die Pin-MAP je Gerät adoptiert)",
+            next(iter(pins))[:8], ik_pub[:8])
 
-    def _confirm_phone_pin(self) -> None:
-        """FIX-WELLE-2 B2: FP-Abgleich BESTANDEN = die neue Phone-Identity
-        ist vom User bestätigt → Pin persistent auf den Session-Key des
-        Phones umstellen. Nur wenn der aktuelle Pin wirklich abweicht; ein
-        Schreibfehler bricht nichts (nächster Handshake warnt erneut)."""
-        ik_pub = self._active_phone_ik
+    def _confirm_phone_pin(self, ik_pub: str = "") -> None:
+        """FIX-WELLE-2 B2 + B3: FP-Abgleich BESTANDEN = die Phone-Identity
+        ist vom User bestätigt → Pin in der Pin-MAP je GERÄT adoptieren.
+
+        B3 (Plan Kap. 3.1): der bestehende Pin-Verband bleibt (Migration:
+        Legacy-Einzel-Pin = zuerst adoptiertes Gerät); die NEUE Identity wird
+        ZUSÄTZLICH eingetragen (Top-Level 'ik_pub' trägt für Legacy-Leser den
+        zuletzt bestätigten Key). Nur wenn der Pin wirklich fehlt; der
+        Cap-Schutz (B3_DEVICE_PIN_CAP) verweigert die Adoption ab dem
+        Cap je Agent (LOUD, kein stiller Pin-Verlust).
+        """
+        ik_pub = str(ik_pub or self._active_phone_ik).strip().lower()
         if not ik_pub:
             return
-        pin = self._read_phone_pin()
-        if pin is None:
+        pins = self._pin_entries(self._read_phone_pin())
+        if pins is None:
             return
-        pinned = pin.get("ik_pub")
-        if isinstance(pinned, str) and pinned == ik_pub:
+        if ik_pub in pins:
+            return
+        if len(pins) >= B3_DEVICE_PIN_CAP:
+            logger.warning(
+                "FlipsiBridge: Pin-Cap je Agent (%d) erreicht — Identity %s… NICHT "
+                "adoptiert (B3-Cap-Schild; Gerät in der App entfernen/Revoke und "
+                "wieder koppeln)", B3_DEVICE_PIN_CAP, ik_pub[:8])
             return
         try:
-            self._write_phone_pin(ik_pub)
+            self._write_phone_pin(ik_pub, src="fp-confirm")
             self._pin_warned_ik = ""
             logger.info("FlipsiBridge: Phone-Identity nach BESTÄTIGTEM Fingerprint-"
-                        "Abgleich übernommen (Pin aktualisiert: %s…) — künftige "
-                        "Handshakes dieses Geräts warnen nicht mehr (B2)", ik_pub[:8])
+                        "Abgleich in die Pin-MAP je Gerät übernommen (%s…, %d Pins) — "
+                        "künftige Handshakes dieses Geräts warnen nicht mehr (B2/B3)",
+                        ik_pub[:8], len(self._pin_entries(self._read_phone_pin()) or {}))
         except OSError as exc:
             logger.warning("FlipsiBridge: Phone-Pin-Aktualisierung fehlgeschlagen: %s", exc)
 
-    def _write_phone_pin(self, ik_pub: str) -> None:
-        """Phone-ik_pub-Pin schreiben — 0600, ATOMAR (SEC-W2 W2-3).
+    def _write_phone_pin(self, ik_pub: str, src: str = "tofu") -> None:
+        """Phone-Identity-Pin(s) schreiben — B3 PIN-MAP v2 (je ik_pub ein Eintrag,
+        Top-Level 'ik_pub' = Legacy-Anker für Alt-Leser), Cap je Agent; 0600,
+        ATOMAR (SEC-W2 W2-3).
 
         SEC-W2 W2-3: das alte O_TRUNC auf der Bestandsdatei konnte den
         Phone-Pin bei Absturz MITTLERES Schreibens leeren/korruptieren
@@ -1999,8 +2216,18 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         nächster Handshake pint den Angreifer-Key als 'erstes Gerät'.
         Jetzt: Temp-Datei (mkstemp = 0600) + atomares os.replace; der
         Alt-Bestand bleibt bei JEDEM Fehler unangetastet."""
+        ik_pub = str(ik_pub or "").strip().lower()
+        if not ik_pub:
+            raise ValueError("ik_pub fehlt")
+        pins = self._pin_entries(self._read_phone_pin()) or {}
+        pins[ik_pub] = {"pinned": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "src": src}
+        entry = pins.pop(ik_pub)
+        ordered = {ik: pins[ik] for ik in list(pins.keys())[:B3_DEVICE_PIN_CAP - 1]}
+        ordered[ik_pub] = entry
         payload = json.dumps(
-            {"v": 1, "ik_pub": ik_pub, "pinned": time.strftime("%Y-%m-%dT%H:%M:%S%z")},
+            {"v": 2, "ik_pub": ik_pub,
+             "pinned": entry.get("pinned") or time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+             "pins": ordered},
             indent=2) + "\n"
         directory = os.path.dirname(os.path.abspath(self.phone_pin_file)) or "."
         os.makedirs(directory, exist_ok=True)
@@ -2021,10 +2248,41 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                 pass
             raise
 
-    def _decrypt_inbound(self, envelope: dict, etype: str) -> Optional[str]:
+    def _decrypt_inbound(self, envelope: dict, etype: str,
+                         chat_id: str = "") -> Optional[str]:
         """chat.*.enc entschlüsseln → Text (None = verworfen, Grund geloggt
-        OHNE Klartext). Cross-Session-Replay wird per session_id geblockt."""
-        sess = self._active_session()
+        OHNE Klartext). Cross-Session-Replay wird per session_id geblockt.
+        B3: Session-Suche in der Geräte-MAP (je Gerät eine Session) — der
+        Ratchet von B decodiert KEINE Frames von A (session_id-Bindung im
+        decrypt_frame bleibt zweite Verteidigungslinie).
+        B3-Strengung (PH-3/SIRS-01-Testvertrag, Alt-Pfad-Parität): die Geräte-
+        MAP autorisiert KEINE Zustellung ohne intakten Primär-Anchor — fehlt
+        die Primär-Session (`_crypto_session` None, Agent-Restart) oder ist die
+        getroffene Session abgelaufen, gilt der Frame als 'Session dem Agenten
+        nicht bekannt' → SIRS-01-Pfad unten (fail-closed + crypto.session_reset,
+        KEIN stilles Verwerfen). Takeover-Sonde nur bei intaktem Primär-Kontext."""
+        sess = self._session_for_frame(envelope)
+        _primary = self._active_session()
+        if sess is not None and (_primary is None or sess.expired()):
+            sess = None
+        if sess is None and _primary is not None and self._crypto_sessions:
+            # B3: Frame von einem Gerät, das der Adapter (noch) nicht führt —
+            # Takeover-/Replay-Sonde (B8-Verband: crypto.session_reset + Neu-
+            # Handshake; die legitimen Geräte-Slots bleiben unberührt).
+            frame_session = str(envelope.get("session_id") or "").strip()
+            self.rejected_frames.append({
+                "type": etype,
+                "reason": "fremde session_id (Cross-Session-Replay/-Takeover) — "
+                          "crypto.session_reset + Neu-Handshake angestoßen"})
+            logger.warning(
+                "FlipsiBridge: %s mit fremder session_id %s verworfen — Cross-Session-"
+                "Takeover-/Replay-Sonde; crypto.session_reset ans Relay, Neu-Handshake "
+                "angestoßen (FIX-WELLE-2 B8/B3-Map)", etype, _log_id(frame_session, 16))
+            if frame_session and not self._session_reset_pending:
+                self._session_reset_pending = True
+                self._schedule(self._send_session_reset(
+                    frame_session, "cross-session-takeover"))
+            return None
         if sess is None:
             # SIRS-01 (P0, Volltest 03.11.2026): Agent-Restart (Crash/Update/
             # Wartung) verliert die In-Memory-Session, das Phone sendet weiter
@@ -2054,35 +2312,6 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
                                         "reason": "enc-Frame ohne aktive E2E-Session"})
             logger.warning("FlipsiBridge: %s ohne aktive E2E-Session verworfen", etype)
             return None
-        if str(envelope.get("session_id") or "") != sess.session_id:
-            # FIX-WELLE-2 B8 (P3, HERZ-Befund 8): fremde session_id bei
-            # AKTIVER Session war ein STILLER Verwurf — Realtest-Szenario:
-            # eine zweite Pairing-Code-Inhaber-Session (Probe/zweites Gerät)
-            # hatte die Phone-Session am Adapter verdrängt; das echte Phone
-            # sendete weiter auf SEINER Session, der Adapter warf die Frames
-            # stumm weg (Chip blieb '✓✓ Zugestellt', Chat tot, kein Lebens-
-            # zeichen). Jetzt wirkt der fremde Frame als TAKEOVER-SONDE:
-            # crypto.session_reset für die FRAME-Session ans Relay (der Relay
-            # entfernt sie aus der Registry und informiert das Phone → Neu-
-            # Handshake) — derselbe Heilungspfad wie SIRS-01, Dedup über
-            # _session_reset_pending (nächstes crypto.hello hebt es auf).
-            # Replay-Altlasten (Session dem Relay schon unbekannt): Reset
-            # wird dort ignoriert, die AKTIVE Session bleibt unberührt
-            # (kein angreifbarer DoS-Hebel auf die legitime Session).
-            frame_session = str(envelope.get("session_id") or "").strip()
-            self.rejected_frames.append({
-                "type": etype,
-                "reason": "fremde session_id (Cross-Session-Replay/-Takeover) — "
-                          "crypto.session_reset + Neu-Handshake angestoßen"})
-            logger.warning(
-                "FlipsiBridge: %s mit fremder session_id %s verworfen — Cross-Session-"
-                "Takeover-/Replay-Sonde; crypto.session_reset ans Relay, Neu-Handshake "
-                "angestoßen (FIX-WELLE-2 B8)", etype, _log_id(frame_session, 16))
-            if frame_session and not self._session_reset_pending:
-                self._session_reset_pending = True
-                self._schedule(self._send_session_reset(
-                    frame_session, "cross-session-takeover"))
-            return None
         try:
             payload = sess.decrypt_frame(envelope)
         except CryptoFrameError as exc:
@@ -2090,12 +2319,20 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: %s-Entschlüsselung fehlgeschlagen (%s) — Frame verworfen",
                            etype, exc)
             return None
+        # B3: Wire-chat_id des Geräts je Session merken (Fan-out-Kontext —
+        # AAD der Antwort bindet die RELAY-chat_id des adressierten Geräts).
+        if chat_id:
+            sess.chat_id = chat_id
         # Komposer Welle 12: optionale Felder aus der inneren Map stashen
         # (modell/denken). Klartext nur im Prozess, nie in Logs.
+        # (B3-Nebenbefund: der Stash hielt chat_id ohne Parameter/Binding —
+        # jeder enc-Frame mit modell/effort wäre mit NameError gecrasht.)
         _cmodel = str(payload.get("model") or "").strip()
         _ceffort = str(payload.get("effort") or "").strip()
         if _cmodel or _ceffort:
-            self._composer_meta[chat_id] = {"model": _cmodel, "effort": _ceffort}
+            wire_chat = chat_id or str(envelope.get("chat_id") or "")
+            if wire_chat:
+                self._composer_meta[wire_chat] = {"model": _cmodel, "effort": _ceffort}
         return str(payload.get("text") or "")
 
     def _handle_fingerprint_check(self, envelope: dict, chat_id: str, text: str) -> bool:
@@ -2104,7 +2341,9 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         True = als Protokoll-Nachricht behandelt (kein Gateway-Push)."""
         if not text.startswith(_FP_PREFIX):
             return False
-        sess = self._active_session()
+        # B3: der ABGLEICH gehört je GERÄT — Session des FRAME-Sendes gesucht
+        # (Fallback: Primär-Session für Alt-Frames ohne session_id-Kontext).
+        sess = self._session_for_frame(envelope) or self._active_session()
         if sess is None:
             logger.info("FlipsiBridge: FP-ABGLEICH ohne aktive E2E-Session — als normale Nachricht behandelt")
             return False
@@ -2117,6 +2356,10 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # bereits existierte. Der Abgleich ist eine echte Lese-Verarbeitung →
         # Read-Receipt wie bei jeder zugestellten Nachricht (Chip → 'Gelesen').
         self._send_read_receipt(chat_id, str(envelope.get("msg_id", "") or ""))
+        # B3/FW2-B2-Parität: BESTÄTIGter Abgleich pint je GERÄT — der FP-Frame
+        # kennt dessen Identity über seine Session (keine aktive-Anchor-Falle).
+        if sess is not None and getattr(sess, "device_ik", ""):
+            self._active_phone_ik = sess.device_ik
         self._schedule(self._fp_reply(chat_id, matches, sess))
         return True
 
@@ -2266,13 +2509,19 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             logger.warning("FlipsiBridge: Fingerprint-Antwort fehlgeschlagen: %s", exc)
         if matches:
             # FIX-WELLE-2 B2: BESTANDENER FP-Abgleich = Bestätigung der
-            # Phone-Identity → TOFU-Pin persistent auf diesen Key umstellen
-            # (endet den Warn-Spam bei jedem Reconnect, HERZ-Befund 2).
-            self._confirm_phone_pin()
+            # Phone-Identity → TOFU-Pin persistent setzen (endet den Warn-
+            # Spam bei jedem Reconnect, HERZ-Befund 2). B3: je GERÄT in der
+            # Pin-MAP adoptieren (Rückwärtskompatibel ohne device_ik: Anchor).
+            self._confirm_phone_pin(getattr(session, "device_ik", "") or "")
             return
         session_id = session.session_id
         logger.warning("FlipsiBridge: Fingerprint-ABWEICHUNG in Session %s — Session invalidiert "
                        "(möglicher Man-in-the-Middle)", session_id[:8])
+        # B3: Map-Entry DESSELBEN Geräts mitwerfen (kein Zustand ohne Vertrauen);
+        # fremde Geräte-Slots bleiben unberührt (je-Gerät-Isolation).
+        for key in list(self._crypto_sessions.keys()):
+            if self._crypto_sessions.get(key) is session:
+                self._crypto_sessions.pop(key, None)
         if self._crypto_session is session:
             self._crypto_session = None
             self._session_reset_pending = True
@@ -2284,19 +2533,23 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         PH-3: aktive E2E-Session → chat.read.enc (msg_id bleibt klar für die
         PH2-Status-Logik des Relays, ct = verschlüsselter Spiegel).
         """
-        session = self._active_session()
-        if session is not None:
-            envelope = session.encrypt_frame(
-                "chat.read.enc", chat_id, {"msg_id": msg_id}, clear={"msg_id": msg_id})
-        else:
-            envelope = {
-                "type": "chat.read", "v": _PROTOCOL_VERSION,
-                "agent_id": self.agent_id, "chat_id": chat_id, "msg_id": msg_id,
-            }
+        read_frames = self._enc_fanout_frames(
+            "chat.read.enc", chat_id, {"msg_id": msg_id}, clear={"msg_id": msg_id})
 
         async def _send() -> None:
+            if read_frames is not None:
+                # B3-FAN-OUT: Read-Receipt je Geräte-Session (msg_id bleibt klar).
+                for read_env in read_frames:
+                    try:
+                        await self._send_json(read_env)
+                    except Exception as exc:
+                        logger.warning("FlipsiBridge: chat.read-Frame fehlgeschlagen: %s", exc)
+                return
             try:
-                await self._send_json(envelope)
+                await self._send_json({
+                    "type": "chat.read", "v": _PROTOCOL_VERSION,
+                    "agent_id": self.agent_id, "chat_id": chat_id, "msg_id": msg_id,
+                })
             except Exception as exc:
                 logger.warning("FlipsiBridge: chat.read-Frame fehlgeschlagen: %s", exc)
 
@@ -2441,18 +2694,23 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         PH-3: aktive E2E-Session → chat.activity.enc (working/started_at bleiben
         klar für die Relay-Dedup-Logik, ct = verschlüsselter Spiegel).
         """
-        session = self._active_session()
-        if session is not None:
-            envelope = session.encrypt_frame(
-                "chat.activity.enc", chat_id,
-                {"working": working, "started_at": started_at},
-                clear={"working": working, "started_at": started_at})
-        else:
-            envelope = {
-                "type": "chat.activity", "v": _PROTOCOL_VERSION,
-                "agent_id": self.agent_id, "chat_id": chat_id,
-                "working": working, "started_at": started_at,
-            }
+        # PH-3: aktive E2E-Sessions → chat.activity.enc je GERÄT (B3-Fan-out).
+        acts = self._enc_fanout_frames(
+            "chat.activity.enc", chat_id,
+            {"working": working, "started_at": started_at},
+            clear={"working": working, "started_at": started_at})
+        if acts is not None:
+            for activity_env in acts:
+                try:
+                    await self._send_json(activity_env)
+                except Exception as exc:
+                    logger.warning("FlipsiBridge: chat.activity-Frame fehlgeschlagen: %s", exc)
+            return
+        envelope = {
+            "type": "chat.activity", "v": _PROTOCOL_VERSION,
+            "agent_id": self.agent_id, "chat_id": chat_id,
+            "working": working, "started_at": started_at,
+        }
         try:
             await self._send_json(envelope)
         except Exception as exc:
@@ -2529,23 +2787,25 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
             mirror["sub"] = sub_ok
         if sub_ok is not None or end:
             mirror["end"] = bool(end)
-        session = self._active_session()
-        if session is not None:
-            envelope = session.encrypt_frame(
-                AGENT_STATUS_ENC_FRAME, "", dict(mirror), clear=dict(mirror))
-        else:
-            envelope = {
+        status_frames = self._enc_fanout_frames(
+            AGENT_STATUS_ENC_FRAME, "", dict(mirror), clear=dict(mirror))
+        if status_frames is None:
+            status_frames = [{
                 "type": AGENT_STATUS_FRAME, "v": _PROTOCOL_VERSION,
                 "agent_id": self.agent_id, **mirror,
-            }
-        try:
-            # Send-Gate 0,5 s: ein hängender WS-Schreiber darf den Status-
-            # Verband (und über die Coalesce-Drain den Hook-Pfad) nie festnageln.
-            await asyncio.wait_for(self._send_json(envelope), _STATUS_SEND_TIMEOUT_S)
-            return True
-        except Exception as exc:
-            logger.warning("FlipsiBridge: agent.status-Send fehlgeschlagen: %s", exc)
-            return False
+            }]
+        sent = False
+        # B3-FAN-OUT: Status je Geräte-Session (working bleibt klar je Frame —
+        # Relay-Dedup-Verband; Fehler brechen nie den Status-Verband).
+        for status_env in status_frames:
+            try:
+                # Send-Gate 0,5 s: ein hängender WS-Schreiber darf den Status-
+                # Verband (und über die Coalesce-Drain den Hook-Pfad) nie festnageln.
+                await asyncio.wait_for(self._send_json(status_env), _STATUS_SEND_TIMEOUT_S)
+                sent = True
+            except Exception as exc:
+                logger.warning("FlipsiBridge: agent.status-Send fehlgeschlagen: %s", exc)
+        return sent
 
     def _schedule_status_frames(self, frames: Optional[list[dict]]) -> None:
         """Hook-Them: Status-Frames auf den Adapter-WS-Loop legen (nie blockierend —
@@ -2876,8 +3136,30 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         ins Media-Dir schreiben, sha256 prüfen (fail-closed) und als Gateway-
         NACHRICHT liefern (Pfad + Art + Größe — Text bleibt der Chat-Weg).
         """
-        sess = self._active_session()
-        if sess is None or str(envelope.get("session_id") or "") != sess.session_id:
+        # B3: Media-Chunks laufen je Geräte-Session — Session über die KLARE
+        # session_id suchen (Map-Verband, nicht mehr nur die Primär-Session).
+        sess = self._session_for_frame(envelope)
+        # B3-Strengung (Parität _decrypt_inbound): ohne intakten Primär-Anchor
+        # (Agent-Restart) oder bei abgelaufener Session autorisiert der
+        # MAP-Eintrag KEINEN Chunk — fail-closed + crypto.session_reset
+        # (SIRS-01: kein stilles Verwerfen); der plain-MAP-Miss unten bleibt
+        # beim alt bewiesenen Reject.
+        if sess is not None and (self._active_session() is None or sess.expired()):
+            frame_session = str(envelope.get("session_id") or "").strip()
+            self.rejected_frames.append({
+                "type": "chat.media.enc",
+                "reason": "session dem Agenten nicht bekannt (Agent-Neustart) — "
+                          "crypto.session_reset + Neu-Handshake angestoßen"})
+            logger.warning(
+                "FlipsiBridge: chat.media.enc mit unbekannter session_id %s — "
+                "Primär-Session fort (Agent-Neustart) → fail-closed, "
+                "crypto.session_reset angestoßen", _log_id(frame_session, 16))
+            if frame_session and not self._session_reset_pending:
+                self._session_reset_pending = True
+                self._schedule(self._send_session_reset(
+                    frame_session, "agent-session-lost"))
+            return
+        if sess is None:
             self.rejected_frames.append({
                 "type": "chat.media.enc",
                 "reason": "enc-Frame ohne passende E2E-Session"})

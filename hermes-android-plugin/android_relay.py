@@ -56,6 +56,24 @@ _relay_lock = threading.Lock()
 _relay_instance: Optional["_RelayState"] = None
 
 
+class _PhoneSlot:
+    """B1 (Multi-Gerät): EIN Live-Slot je Gerät — das WS plus Verbindungs-
+    Metadaten. Der Slot stirbt mit der Verbindung; der REGISTRIERTE Gerätein-
+    trag (state.device_registry) + die je-Gerät-Outbox (state.device_outbox)
+    überleben sie (Spool-Erhaltung, Migration ohne Verlust)."""
+
+    __slots__ = ("ws", "device_id", "alias", "admin", "connected_at",
+                 "last_seen")
+
+    def __init__(self, ws, device_id: str, alias: str = "", admin: bool = False):
+        self.ws = ws
+        self.device_id = device_id
+        self.alias = alias or ""
+        self.admin = bool(admin)
+        self.connected_at = time.time()
+        self.last_seen = time.time()
+
+
 class _RelayState:
     """Holds all mutable state for one running relay instance."""
 
@@ -64,7 +82,7 @@ class _RelayState:
         self.port: int = port
         # FIN-T1 RED-02: Rotations-Epoche — wird bei JEDEM Code-WECHSEL unter
         # _relay_lock inkrementiert. Die Phone-WS-Registrierung liest die Epoche
-        # nach dem Token-Check und verifiziert sie unter phone_ws_lock erneut:
+        # nach dem Token-Check und verifiziert sie unter devices_lock erneut:
         # eine WS, die mit dem ALTEN Code authentifizierte, während die Rotation
         # zwischen Token-Check und Registrierung landete (await ws.prepare =
         # await-Punkt im Rennfenster), kann NIE die aktive Phone-WS werden.
@@ -79,12 +97,33 @@ class _RelayState:
         self.runner: Optional[web.AppRunner] = None
         self.site: Optional[web.TCPSite] = None
 
-        # The single connected phone WebSocket (or None)
-        self.phone_ws: Optional[web.WebSocketResponse] = None
+        # ── B1 (Multi-Gerät): Geräte-Registry statt phone_ws singular ────────
+        # device_registry = die BEKANNTEN Geräte (persistiert relay-devices.json
+        # v2: {v:2, devices:{device_id: {alias, admin, epoch_of_enroll,
+        # enrolled_at, last_seen}}}); devices = nur die LEBENDEN Slots eines
+        # je Geräts (ws + Metadaten); ein Reconnect ersetzt ausschließlich
+        # SEINEN eigenen Slot — fremde Slots bleiben unberührt (W17-Vertrag,
+        # jetzt Registry-Logik). device_outbox = JE Gerät eine eigene Agent→App-
+        # Spool-Queue (Parität zur alten Einheits-Outbox, _ByteBoundedDeque);
+        # frames ohne Geräte-Bezug (vor erstem Bekanntsein) landen im
+        # fallback_outbox und werden beim ersten Adopt-Gerät übernommen
+        # (Spool-Verlust ausgeschlossen, Migration ohne Verlust).
+        self.device_registry: dict[str, dict] = {}
+        self.devices: dict[str, _PhoneSlot] = {}
+        self.device_outbox: dict[str, deque] = {}
+        self.fallback_outbox: deque = _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN)
+        self.broker_lock: Optional[asyncio.Lock] = None
+        # Sticky-Default für den Tool-Weg (Befehls-Hüllposten): das zuletzt
+        # REGISTRIERTE Gerät (Plan Kap. 1.1, bewusst klein gehalten).
+        self.last_active_device: Optional[str] = None
+        # Gerätech-Cap (B1): wird in _serve aus relay-config ('max_devices')/
+        # env gebunden; None = _device_cap() rechnet je Aufruf (Tests).
+        self.device_cap: Optional[int] = None
         # K8-Fix (Kobold): KEINE eager Lock-Erzeugung hier — __init__ läuft OHNE
         # Event-Loop; der Lock wird in _run_loop (Z. ~220) gebunden, bevor der
         # Server laust. Der Alte eager-Init war ein totes Feld (wurde ersetzt).
-        self.phone_ws_lock: Optional[asyncio.Lock] = None
+        self.phone_ws_lock: Optional[asyncio.Lock] = None  # Legacy-Alias devices_lock
+        self.devices_lock: Optional[asyncio.Lock] = None
 
         # Pending requests: request_id -> asyncio.Future
         self.pending: dict[str, asyncio.Future] = {}
@@ -100,25 +139,22 @@ class _RelayState:
 
         # PH2-T1: Agent-Registry — agent_id -> {display_name, online, last_seen,
         # fingerprint}. fingerprint bleibt in der Phase-2-Basis leer (I1-Finger-
-        # abdruck kommt später). Locks lazy wie phone_ws_lock (in _run_loop).
+        # abdruck kommt später). Locks lazy wie devices_lock (in _run_loop).
         self.agents: dict[str, dict] = {}
         self.agent_ws: dict[str, web.WebSocketResponse] = {}
         self.agent_ws_lock: Optional[asyncio.Lock] = None
 
         # PH2-T1: Chat-Broker — je Agent eine Inbound-Queue (App→Agent) plus
-        # eine Phone-Outbox (Agent→App). Einträge: (timestamp, message-dict).
+        # eine je-Gerät-Outbox (Agent→App). Einträge: (timestamp, message-dict).
         # PH2-FIX (Jäger B2): beide Queues mit maxlen=500 (FIFO) — ein
         # Offline-Phone/Agent kann den Relay-Speicher NICHT unbegrenzt füllen
         # (älteste Frames fallen automatisch raus, Retention prune weiter).
         self.chat_inbound: dict[str, deque] = {}
-        # SEC-W1 B F-01: Bytes-aware Outbox (Frames UND Bytes begrenzt).
-        self.phone_outbox: deque = _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN)
-        self.broker_lock: Optional[asyncio.Lock] = None
 
         # PH2-T10 (F2-S1): Chat-Status je msg_id — {msg_id: {chat_id, agent_id,
         # status, ts}}. Übergänge: queued → delivered (Agent-WS-Send) → read
         # (chat.read-Frame des Agenten). Je Wechsel geht ein chat.status-Frame
-        # an die Phone-WS; Status-Frames sind NICHT rate-limited.
+        # an die Geräte-Slots; Status-Frames sind NICHT rate-limited.
         self.chat_status: dict[str, dict] = {}
 
         # PH2-T10 (F2-S3): Activity-Dedup je (agent_id, chat_id) — letzter
@@ -137,10 +173,13 @@ class _RelayState:
         # mehr an; RAM-Schutz = _cap_chat_owner-FIFO).
         self.chat_owner: dict[str, tuple[str, float]] = {}
 
-        # PH-3-T2: E2E-Session-Broker — {session_id: {agent_id, ts, acked}}
-        # (24-h-Gültigkeit, Fail-closed). Der Relay sieht NUR Metadaten: keine
-        # Keys, kein Klartext, ct bleibt opak. Zugriff ausschließlich im
-        # Event-Loop (alle Handler) → kein eigener Lock nötig.
+        # PH-3-T2: E2E-Session-Broker — {session_id: {agent_id, ts, acked,
+        # device_id}} (24-h-Gültigkeit, Fail-closed). B2: device_id = die
+        # Geräte-Identität des Session-Erzeugers (Session-Broker = Routing-
+        # Wahrheit: Agent→enc-Frames fächern über session_id→device_id auf;
+        # der Adapter je Gerät führt je Gerät eine eigene E2E-Session).
+        # Der Relay sieht NUR Metadaten: keine Keys, kein Klartext, ct bleibt
+        # opak. Zugriff ausschließlich im Event-Loop → kein eigener Lock nötig.
         self.crypto_sessions: dict[str, dict] = {}
         # PH-3: Grob-Replay-Tracking je (session_id, richtung, ratchet_pub) —
         # Fenster 100 + 10-min-Freshness (Defense-in-Depth; die GCM-Prüfung
@@ -148,13 +187,16 @@ class _RelayState:
         # P1c: hdr.n ist nur JE RATCHET-KETTE (hdr.rk) eindeutig.
         self.crypto_replay: dict[tuple[str, str, str], dict] = {}
 
-        # W17-F1 (Ein-Gerät-pro-Kopplungscode): Device-Kennung DES aktuellen
-        # Phone-Slot-Inhabers — beim ENDE des WS-Handshakes (Registrierung unter
-        # phone_ws_lock) gesetzt, bei Slot-Freigabe (_cleanup_phone / Rotation /
-        # Replacement durch ein ANDERES Gerät) wieder None. NIE geloggt (Log
-        # über _log_id-Maske): die Kennung ist per-Install stabil, aber kein
-        # Geheimnis — trotzdem maskiert (PII-Regel).
-        self.phone_device_id: Optional[str] = None
+        # ── B1 Anmelde-Tor (pairing.request/approve) ─────────────────────────
+        # pairing_requests: device_id → {request_id, ts, expires, ip} — die
+        # AUSSTEHenden Anmelde-Anfragen unbekannter Geräte (dem Admin-Gerät
+        # als pairing.request-Frame gemeldet; cap-Paarität zum Cap-Schild).
+        # pairing_approvals: device_id → {expires, used} — die erteilten Fre-
+        # gaben (TTL einmalig; eine verbrauchte/abgelaufene Freigabe öffnet
+        # NICHT — fail-closed). Beide Maps bewusst CAPPED + TTL (Kein Registry-
+        # Wachstum ohne Grenze, Kap. 8 #2).
+        self.pairing_requests: dict[str, dict] = {}
+        self.pairing_approvals: dict[str, dict] = {}
 
         # W17-F2 (Optionales Kopplungs-Passwort): NUR der Hash-Record
         # {"v", "method", "iter", "salt_hex", "hash_hex"} oder None (= Schutz
@@ -162,6 +204,57 @@ class _RelayState:
         # pairing_password.json (0600), gesetzt über die authentifizierte
         # Route /password_set (Bearer = Kopplungscode).
         self.pairing_pw: Optional[dict] = None
+
+    # ── Legacy-Kompatibilität (W17.1-Semantik + Bestands-Tests) ──────────────
+    # phone_ws/phone_device_id/phone_outbox spiegeln die EIN-Gerät-Welt auf die
+    # Geräte-Registry (Slot/Bucket des Legacy-Default-Geräts "phone" bzw. Fallback-
+    # Bucket vor dem ersten Bekanntsein). Innere Pfade nutzen NUR devices/
+    # device_registry — die Properties sind Test-/Tool-Fassade, keine zweite
+    # Zustandswahrheit.
+    @property
+    def phone_ws(self):
+        slot = self.devices.get("phone")
+        if slot is None:
+            for other in self.devices.values():
+                if other.ws is not None:
+                    slot = other  # erstes lebendiges fremdes Slot-Fenster
+                    break
+        return None if slot is None else slot.ws
+
+    @phone_ws.setter
+    def phone_ws(self, value):
+        if value is None:
+            slot = self.devices.pop("phone", None)
+            if slot is not None:
+                self.devices.pop("phone", None)
+            return
+        slot = self.devices.get("phone")
+        if slot is None:
+            slot = _PhoneSlot(value, "phone")
+            self.devices["phone"] = slot
+        else:
+            slot.ws = value
+            slot.connected_at = time.time()
+
+    @property
+    def phone_device_id(self):
+        if self.last_active_device:
+            return self.last_active_device
+        if self.devices:
+            return next(iter(self.devices))
+        return "phone" if self.device_registry else None
+
+    @property
+    def phone_outbox(self):
+        """Legacy-Fassade: die Outbox des Geräts "phone" — vor dem ersten
+        bekannten Gerät der Fallback-Bucket (Spool-Verlust ausgeschlossen)."""
+        if "phone" in self.device_registry or "phone" in self.device_outbox \
+                or "phone" in self.devices:
+            return self.device_outbox.setdefault(
+                "phone", _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN))
+        if self.device_outbox and self.last_active_device in self.device_outbox:
+            return self.device_outbox[self.last_active_device]
+        return self.fallback_outbox
 
 
 # ── Public API (called from sync code) ────────────────────────────────────────
@@ -228,12 +321,35 @@ def is_relay_running() -> bool:
 
 
 def is_phone_connected() -> bool:
+    """B1: irgendein Geräte-Slot ist lebendig (Legacy-Name erhalten — ein
+    einzelner Slot verhält sich exakt wie die alte Ein-Gerät-Welt)."""
     with _relay_lock:
         s = _relay_instance
         if s is None:
             return False
-        ws = s.phone_ws
-        return ws is not None and not ws.closed
+        for slot in s.devices.values():
+            ws = slot.ws
+            if ws is not None and not getattr(ws, "closed", True):
+                return True
+        return False
+
+
+def get_device_registry() -> dict[str, dict]:
+    """B1-Snapshot der Geräte-Registry (maskierte Kennungen — PII-Regel).
+    Je Gerät alias, admin, online (Slot?) + letze Kennung als Maske."""
+    with _relay_lock:
+        s = _relay_instance
+        if s is None:
+            return {}
+        snapshot = {}
+        for device_id, entry in s.device_registry.items():
+            items = dict(entry) if isinstance(entry, dict) else {}
+            snapshot[_mask_id(device_id)] = {
+                "alias": str(items.get("alias") or ""),
+                "admin": bool(items.get("admin")),
+                "online": bool(device_id in s.devices),
+            }
+        return snapshot
 
 
 def get_agent_registry() -> dict[str, dict]:
@@ -354,6 +470,438 @@ def _mask_id(value: Optional[str]) -> str:
     if not value:
         return "none"
     return f"<masked:{len(value)}>"
+
+
+# ── B1 (Multi-Gerät): Geräte-Registry v2 + Anmelde-Tor ─────────────────────────
+# EIN Kopplungscode = N Geräte (Sir-Order 02.11./17.11.): die REGISTRIERUNG der
+# Geräte lebt in relay-devices.json v2 ({v:2, devices:{device_id: entry}});
+# JEDES bekannte Gerät bekommt seinen EIGENEN WS-Slot, seine EIGENE Outbox und
+# kann ohne Tor (neu-)koppeln. Unbekannte Geräte passieren das ANMELDE-TOR
+# (pairing.request → Freigabe pairing.approve, TTL 10 min, einmalig; alternativ
+# das W17.2-Kopplungs-Passwort als Direkt-Enroll) — ohne Tor-Bestehen bleibt
+# der 403/4403-family "code-in-use" der W17.1-Sperre als Fehlton bestehen und
+# die IP-Rate-Chain zählt weiter.
+_DEVICE_REGISTRY_MAX_DEFAULT = 4   # Sir-Decision-Kern (Plan Kap. 6): 4 Geräte
+_DEVICE_CAP_HARD_MAX = 8           # hartes Maximum — Cap ist DoS-Schild
+_PAIRING_TTL_SECONDS = 600.0       # 10 min — Anfrage- UND Freigabe-Fenster
+_PAIRING_PENDING_MAX = 8           # cap-Paarigkeit der Tor-Maps (Kap. 8 #2)
+
+_DEVICE_REGISTRY_FILE = "relay-devices.json"
+
+
+def _device_registry_path() -> str:
+    """Pfad der Geräte-Registry (env ANDROID_RELAY_DEVICE_REGISTRY; Default =
+    State-Dir wie relay-keys.json / pairing_password.json)."""
+    return os.getenv(
+        "ANDROID_RELAY_DEVICE_REGISTRY",
+        os.path.join(_default_state_dir(), _DEVICE_REGISTRY_FILE))
+
+
+def _device_cap(config: Optional[dict] = None) -> int:
+    """Geräte-Cap: relay-config 'max_devices' überschreibt env
+    ANDROID_RELAY_DEVICE_CAP; hart begrenzt auf [1, 8], ungültig = Default 4."""
+    value = None
+    if config is not None:
+        value = config.get("max_devices")
+    if value is None:
+        env_value = os.getenv("ANDROID_RELAY_DEVICE_CAP")
+        value = env_value if env_value is not None else _DEVICE_REGISTRY_MAX_DEFAULT
+    try:
+        return max(1, min(_DEVICE_CAP_HARD_MAX, int(value)))
+    except (TypeError, ValueError):
+        return _DEVICE_REGISTRY_MAX_DEFAULT
+
+
+def _DEVICE_CAPACITY(state: "_RelayState") -> int:
+    """Effektive Kapazität je State (am Start aus der Config gebunden)."""
+    return int(state.device_cap) if state.device_cap else _device_cap()
+
+
+def _device_registry_entry_from_v1_row(row: dict, epoch: int,
+                                       admin: bool = False) -> dict:
+    """v1-Eintrag (mtls 'enrolled'-Zeile ODER keys-'device'-Zeile) → v2-Geräte-
+    Registry-Form (epoch_of_enroll je Gerät; epoch = Fallback ohne Feld)."""
+    try:
+        entry_epoch = int(row.get("epoch_of_enroll", epoch))
+    except (TypeError, ValueError):
+        entry_epoch = int(epoch)
+    ts = row.get("ts") or row.get("enrolled_at") or 0
+    try:
+        ts_ms = int(float(ts) * 1000) if float(ts) < 10_000_000_000 else int(float(ts))
+    except (TypeError, ValueError):
+        ts_ms = 0
+    return {
+        "alias": str(row.get("alias") or ""),
+        "admin": bool(row.get("admin", admin)),
+        "epoch_of_enroll": int(entry_epoch),
+        "enrolled_at": int(ts_ms),
+        "last_seen": int(row.get("last_seen") or 0),
+    }
+
+
+def _load_device_registry_file() -> dict:
+    """relay-devices.json lesen — v2 strikt, v1-tolerant (Lesefallback), fehlend
+    = {} (frische Registry). Beschädigte Datei = byte-genau als .corrupt-<ts>
+    Backup gerettet, dann {} (die Selbst-Adoption baut sie neu auf; kein stiller
+    Overwrite der Alt-Bytes)."""
+    path = Path(_device_registry_path())
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        logger.error(
+            "DEVICE-REGISTRY %s unlesbar — Alt-Bytes bleiben als Backup "
+            "erhalten, Registry startet LEER (Selbst-Adoption übernimmt)", path)
+        try:
+            path.with_name(path.name + ".corrupt-"
+                           + time.strftime("%Y%m%d-%H%M%S")).write_bytes(
+                path.read_bytes())
+        except OSError as exc:
+            logger.warning("DEVICE-REGISTRY: Corrupt-Backup fehlgeschlagen: %s", exc)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("DEVICE-REGISTRY: unerwartetes Format in %s — ignoriert", path)
+        return {}
+    if data.get("v") == 2 and isinstance(data.get("devices"), dict):
+        devices = {}
+        for key, row in data["devices"].items():
+            if not isinstance(key, str) or not _DEVICE_ID_RE.fullmatch(key) \
+                    or not isinstance(row, dict):
+                continue  # kaputte Zeilen: übersprungen (fail-closed Form)
+            devices[key] = _device_registry_entry_from_v1_row(row,
+                                                              int(data.get("epoch") or 1))
+        return devices
+    # v1-Lesefallback: ein {"devices": {...}} ohne v ODER das Einzel-Gerätein-
+    # trag {"v":1, "device": {...}} — beide lesen wir ehrlich (Rollback-Rückweg).
+    devices = {}
+    if isinstance(data.get("devices"), dict):
+        source = data["devices"]
+    elif isinstance(data.get("device"), dict):
+        source = {"phone": data["device"]}
+    else:
+        return {}
+    epoch = int(data.get("epoch") or 1)
+    for key, row in source.items():
+        row = row if isinstance(row, dict) else {"device_id": str(key)}
+        if not isinstance(key, str) or not _DEVICE_ID_RE.fullmatch(key):
+            continue
+        devices[key] = _device_registry_entry_from_v1_row(row, epoch, admin=True)
+    return devices
+
+
+# Ein Geräte-Registry-File-Write ist ein kurzer atomarer Block, der je aus dem
+# Event-Loop (Handshake-Thread) als aus Sync-Nachbarn (Tests) laufen kann —
+# derselbe threading.Lock hält die File-Schreibart seriell (RAM-Zugriffe
+# bleiben Event-Loop-gebunden).
+_DEVICE_REGISTRY_FILE_LOCK = threading.Lock()
+
+
+def _store_device_registry(entries: dict, keep_backup: bool = True) -> None:
+    """Geräte-Registry atomar (tmp + os.replace, 0600) als v2 schreiben.
+    Vor dem ERSTEN v2-Write über einem Nicht-v2-Bestand liegt ein byte-genauer
+    Backup (.v1.bak) nebenan — Rollback + Nachvollziehbarkeit (Parität zur
+    keys-Registry-Sicherung)."""
+    path = Path(_device_registry_path())
+    payload = {
+        "v": 2,
+        "ts": int(time.time() * 1000),
+        "devices": {
+            key: dict(entries[key]) for key in sorted(entries)
+            if isinstance(key, str) and _DEVICE_ID_RE.fullmatch(key)
+        },
+    }
+    with _DEVICE_REGISTRY_FILE_LOCK:
+        directory = path.parent
+        os.makedirs(directory, exist_ok=True)
+        if keep_backup and path.exists():
+            backup = path.with_name(path.name + ".v1.bak")
+            if not backup.exists():
+                try:
+                    backup.write_bytes(path.read_bytes())
+                except OSError as exc:
+                    logger.warning("DEVICE-REGISTRY: v1-Backup fehlgeschlagen: %s", exc)
+        fd, tmp = tempfile.mkstemp(prefix=".relay-devices-", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                try:
+                    os.fchmod(fh.fileno(), 0o600)
+                except AttributeError:
+                    pass
+                fh.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
+def _seed_device_registry_v1() -> tuple[dict, str]:
+    """v1-Bestand einlesen (MIGRATION, OHNE Verlust — die Quellen werden nur
+    GELESEN, nie verändert):
+      1. mtls_devices.json (mTLS-'enrolled'-Einträge: je Gerät ein Eintrag mit
+         epoch_of_enroll — die Zert-Geräte gelten als BEKANNT);
+      2. relay-keys.json v1 (der aktuelle Phone-Eintrag: das bestehende
+         Einzel-Gerät — es übernimmt als ADMIN, Sirs aktuelles Gerät).
+    Rückgabe: (entries, quellen-Notiz für das LOUD-Log)."""
+    entries: dict[str, dict] = {}
+    sources: list[str] = []
+    # 1) mTLS-Registry (nur LESEN — /etc/mtls_live-Daten werden nie berührt)
+    try:
+        from tools.mtls_enroll import _registry_load as _mtls_reg, _tls_paths as _mtp
+    except ImportError:
+        from mtls_enroll import _registry_load as _mtls_reg, _tls_paths as _mtp  # type: ignore[no-redef]
+    try:
+        reg = _mtls_reg() or {}
+        enrolled = reg.get("enrolled") or reg.get("devices") or {}
+        epoch = int(reg.get("epoch") or 1)
+        for device_id, row in enrolled.items():
+            if not isinstance(device_id, str) or not _DEVICE_ID_RE.fullmatch(device_id):
+                continue
+            if device_id in entries:
+                continue
+            entries[device_id] = _device_registry_entry_from_v1_row(
+                row if isinstance(row, dict) else {}, epoch, admin=False)
+        if entries:
+            sources.append(f"mtls_devices.json ({len(entries)})")
+    except Exception as exc:  # Registry-Verband bleibt beim Start reinlesend
+        logger.warning("DEVICE-REGISTRY-Migration: mtls-Quelle unlesbar (%s)", exc)
+    # 2) Key-Registry v1 — DER Device-Eintrag des bestehenden Bestands wird
+    #    ADMIN (das ist das Gerät, das heute koppelt).
+    try:
+        keys = _load_device_keys() or {}
+        single = keys.get("device") if isinstance(keys, dict) else None
+        if isinstance(single, dict):
+            device_id = str(single.get("device_id") or "phone").strip()[:64] or "phone"
+            if _DEVICE_ID_RE.fullmatch(device_id):
+                if device_id in entries:
+                    entries[device_id]["admin"] = True
+                else:
+                    entries[device_id] = _device_registry_entry_from_v1_row(
+                        single, 1, admin=True)
+                    sources.append("relay-keys.json (admin)")
+    except Exception as exc:
+        logger.warning("DEVICE-REGISTRY-Migration: keys-Quelle unlesbar (%s)", exc)
+    return entries, " + ".join(sources) if sources else "leer (frische Registry)"
+
+
+def _migrate_device_registry() -> dict:
+    """Start-Migration (nur LESEND gegenüberallen v1-Quellen): fehlt die v2-
+    Datei, wird der v1-Bestand ADOPTIERT (mtls-Geräte bekannt, Key-Device =
+    Admin), unter dem LOUD-Logzeile persistiert und die Registry geliefert.
+    Vorhandene v2-Datei = geladen (keine Migration)."""
+    path = Path(_device_registry_path())
+    if path.exists():
+        entries = _load_device_registry_file()
+        logger.info("DEVICE-REGISTRY v2 geladen (%d Gerät(e) bekannt)", len(entries))
+        return entries
+    entries, sources = _seed_device_registry_v1()
+    try:
+        _store_device_registry(entries)
+        logger.warning(
+            "DEVICE-REGISTRY v1→v2 MIGRATION: %d Gerät(e) adoptiert aus [%s] — "
+            "das bestehende Einzel-Gerät ist ADMIN, alle Geräte bleiben bekannt "
+            "(kein Zwangs-Kopplung). Datei: %s (+.v1.bak Backup)",
+            len(entries), sources, path)
+    except OSError as exc:
+        logger.error("DEVICE-REGISTRY: Migration-Persist fehlgeschlagen (fail-soft): %s", exc)
+    return entries
+
+
+def _normalize_registry_device_id(device_id) -> str:
+    """Kennung normalisieren (WS-Header None = Legacy ohne Header): "phone" ist
+    DER Legacy-Default (Parität /key_publish Z. ~3970); Form-Gate fail-closed."""
+    raw = str(device_id or "").strip()
+    if not raw:
+        raw = "phone"
+    return raw if _DEVICE_ID_RE.fullmatch(raw) else "phone"
+
+
+def _device_known(state: "_RelayState", device_id: str) -> bool:
+    entry = state.device_registry.get(device_id)
+    return entry is not None and isinstance(entry, dict)
+
+
+def _pairing_requests_prune(state: "_RelayState") -> None:
+    """Tor-Maps nach TTL räumen + hart cappen (Kap. 8 #2: kein ungebundenes
+    Anmelde-Pending). Aufruf NUR unter devices_lock."""
+    now = time.time()
+    for device_id in [k for k, v in state.pairing_requests.items()
+                      if float(v.get("expires") or 0) < now]:
+        state.pairing_requests.pop(device_id, None)
+    for device_id in [k for k, v in state.pairing_approvals.items()
+                      if float(v.get("expires") or 0) < now]:
+        state.pairing_approvals.pop(device_id, None)
+    while len(state.pairing_requests) > _PAIRING_PENDING_MAX:
+        oldest = min(state.pairing_requests,
+                     key=lambda k: state.pairing_requests[k].get("ts") or 0)
+        state.pairing_requests.pop(oldest, None)
+    while len(state.pairing_approvals) > _PAIRING_PENDING_MAX:
+        oldest = min(state.pairing_approvals,
+                     key=lambda k: state.pairing_approvals[k].get("expires") or 0)
+        state.pairing_approvals.pop(oldest, None)
+
+
+def _pairing_approval_valid(state: "_RelayState", device_id: str) -> bool:
+    """TTL-Gatter der Freigabe: nur ungenutzte, nicht abgelaufene Freigaben
+    öffnen (pairing.approve TTL-abgelaufen = abgelehnt, fail-closed)."""
+    entry = state.pairing_approvals.get(device_id)
+    if not isinstance(entry, dict) or entry.get("used"):
+        return False
+    return float(entry.get("expires") or 0) >= time.time()
+
+
+def _pairing_request_open(state: "_RelayState", device_id: str,
+                          remote_ip: str) -> tuple[Optional[dict], bool]:
+    """Anmelde-Anfrage anlegen (dedupe: dieselbe Kennung im TTL-Fenster erzeugt
+    KEINEN neuen Frame-Spam — der Rückkehr-Flag sagt, ob neu erzeugt); NUR
+    frische Anfragen werden als Frame an die Admin-Slots ausgeliefert.
+    Aufruf NUR unter devices_lock."""
+    now = time.time()
+    existing = state.pairing_requests.get(device_id)
+    if isinstance(existing, dict) and float(existing.get("expires") or 0) >= now:
+        return existing, False  # Dedupe: Anfrage steht, keine Re-Frame-Flut
+    request = {
+        "request_id": uuid.uuid4(),
+        "ts": int(now * 1000),
+        "expires": now + _PAIRING_TTL_SECONDS,
+        "ip": remote_ip,
+    }
+    state.pairing_requests[device_id] = request
+    _pairing_requests_prune(state)
+    return request, True
+
+
+async def _pairing_request_emit(state: "_RelayState", device_id: str,
+                                request: dict) -> None:
+    """pairing.request an die lebenden ADMIN-Slots (ohne Admin: an jeden
+    lebenden Slot — sonst verstummte das Tor). Kennung maskiert (PII-Regel)."""
+    async with (state.devices_lock or _NoAsyncLock()):
+        slots = [slot for slot in state.devices.values()
+                 if slot.ws is not None and not slot.ws.closed]
+        admins = [slot for slot in slots if slot.admin] or slots
+    if not admins:
+        logger.info(
+            "ANMELDE-TOR: kein lebender Slot — Anfrage von %s nur im Log",
+            _mask_id(device_id))
+        return
+    frame = {
+        "type": "pairing.request", "v": 1,
+        "request_id": str(request["request_id"]),
+        "device_id_masked": _mask_id(device_id),
+        "ip": request.get("ip") or "",
+        "ts": int(time.time() * 1000),
+        "ttl_s": _PAIRING_TTL_SECONDS,
+    }
+    for slot in admins:
+        try:
+            await slot.ws.send_json(frame)
+        except Exception as exc:
+            logger.warning("pairing.request-Zustellung fehlgeschlagen (%s): %s",
+                           _mask_id(device_id), exc)
+
+
+async def _handle_pairing_admin_frame(state: "_RelayState", sender_device_id: str,
+                                      data: dict) -> None:
+    """pairing.approve / pairing.deny vom Admin-Gerät (WS-Bein authentifiziert).
+    
+    approve: Anfrage (falls vorhanden) verbrauchen + Freigabe (TTL 10 min,
+    einmalig) je device_id anlegen — der NÄCHSTE Handshake dieses Geräts
+    enrollt. deny: Anfrage räumen (kein stiller Anschluss; Admin sieht nichts
+    mehr). Rechts-Norm: NUR der ADMIN-Slot verwaltet (PH5-T7); ein Non-Admin-
+    Gerät (falls je keins) wird abgewiesen — fail-closed."""
+    async with (state.devices_lock or _NoAsyncLock()):
+        slot = state.devices.get(sender_device_id)
+        if slot is None or slot.ws is None or slot.ws.closed:
+            logger.warning("pairing-Frame von unbekanntem Slot %s — verworfen",
+                           _mask_id(sender_device_id))
+            return
+        is_admin = bool(slot.admin) or not any(
+            other.admin for other in state.devices.values())
+    if not is_admin:
+        logger.warning(
+            "ANMELDE-TOR: approve/deny von NON-ADMIN-Gerät %s abgewiesen (PH5-T7)",
+            _mask_id(sender_device_id))
+        return
+    body_device_id = str(data.get("device_id") or "").strip()
+    request_id = str(data.get("request_id") or "").strip()
+    device_id = body_device_id
+    if not device_id and request_id:
+        for candidate, entry in state.pairing_requests.items():
+            if str(entry.get("request_id")) == request_id:
+                device_id = candidate
+                break
+    if not device_id or not _DEVICE_ID_RE.fullmatch(device_id):
+        logger.warning("pairing-Frame ohne gültige device_id/request_id — verworfen")
+        return
+    if data.get("type") == "pairing.deny":
+        state.pairing_requests.pop(device_id, None)
+        logger.info("ANMELDE-TOR: Anfrage von %s ABGEWIESEN (deny)",
+                    _mask_id(device_id))
+        return
+    now = time.time()
+    # Freigabe anlegen — eine BESTEHENDE (noch gültige) Freigabe wird frisch
+    # gestempelt (Admin kann neu freigeben, alter Stempel verfällt mit TTL).
+    state.pairing_requests.pop(device_id, None)
+    state.pairing_approvals[device_id] = {"expires": now + _PAIRING_TTL_SECONDS,
+                                          "used": False}
+    while len(state.pairing_approvals) > _PAIRING_PENDING_MAX:
+        oldest = min(state.pairing_approvals,
+                     key=lambda k: state.pairing_approvals[k].get("expires") or 0)
+        state.pairing_approvals.pop(oldest, None)
+    logger.warning(
+        "ANMELDE-TOR: Freigabe für %s erteilt (Admin %s, TTL %d s, einmalig) — "
+        "der NÄCHSTE Kopplungs-Handshake dieses Geräts enrollt",
+        _mask_id(device_id), _mask_id(sender_device_id), _PAIRING_TTL_SECONDS)
+
+
+class _NoAsyncLock:
+    """Fallback-Kontext für Pfad vor erster Lock-Bindung (keine Device-Aktionen
+    vor _run_loop existent — Anfragen/Tore sind dann leer)."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _device_gate_decide(state: "_RelayState", device_id_raw,
+                        remote_ip: str) -> tuple[str, str]:
+    """B1-Anmelde-Entscheidung (W17.1-Sperre → Tor):
+      - ("accepted", key)   : bekanntes Gerät (direkt, Reconnect ersetzt nur
+                              SEINEN Slot) — Cap gilt NICHT (bekannt bleibt).
+      - ("enroll", key)     : unbekannt, aber Tor BESTANDEN (gültige Freigabe
+                              ODER verifiziertes Kopplungs-Passwort) — das
+                              Enrollment passiert ATOMAR bei der Registrierung.
+      - ("device-cap", key) : unbekannt + Registry voll → 403 device-cap.
+      - ("rejected", key)   : unbekannt ohne Tor → 403/4403 code-in-use
+                              (bestehende Fehlton) + Rate-Chain.
+    Aufruf NUR unter devices_lock; EMIT des pairing.request-frames passiert
+    außerhalb (await-Punkt)."""
+    device_id = _normalize_registry_device_id(device_id_raw)
+    if _device_known(state, device_id):
+        return "accepted", device_id
+    if not state.device_registry:
+        # Erst-Annahme (MIGRATION Kap. 5): leere Registry → die erste Annahme
+        # ist Selbst-Adoption (Kein Zwangs-Kopplung; das Gerät wird als Admin
+        # übernommen, LOUD-Enroll-Log bei der Registrierung). Ab 1 Eintrag
+        # gilt Registry-Mode mit Tor.
+        return "enroll", device_id
+    cap = _DEVICE_CAPACITY(state)
+    if len(state.device_registry) >= cap:
+        return "device-cap", device_id
+    _pairing_requests_prune(state)
+    if _pairing_approval_valid(state, device_id):
+        return "enroll", device_id
+    if state.pairing_pw is not None:
+        # Kopplungs-Passwort am Relay konfiguriert → das W17.2-Tor ist DER
+        # Zugang: dieses Handshake hat das Passwort bereits verifiziert
+        # (W17.2-Gate oben) → Direkt-Enroll (Option b).
+        return "enroll", device_id
+    return "rejected", device_id
 
 
 # ── W17-F2: Optionales Kopplungs-Passwort (nur Hash) ─────────────────────────
@@ -973,22 +1521,88 @@ def _load_device_keys() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _store_device_keys(entry: dict) -> None:
-    """Phone-Device-Keys speichern — Datei 0600 (Muster relay-config.json),
-    Private Keys gibt es hier nie (nur Pubs).
+def _load_device_keys_map() -> dict:
+    """B2: v2-MAP der gerätegebundenen Key-Einträge — v2 {"v":2, "devices":
+    {...}} wird direkt gelesen; Legacy v1 = {"device": entry} → Map unter
+    dem Gerät-Schlüssel seines device_id (Default "phone"). Rollback-Lesefall-
+    back: BEIDE Formen bleiben lesbar; das v2-File trägt außerdem "device" =
+    Spiegel des letztenPublishes (alte Binary liest weiter)."""
+    raw = _load_device_keys() or {}
+    if not isinstance(raw, dict):
+        return {}
+    if raw.get("v") == 2 and isinstance(raw.get("devices"), dict):
+        return dict(raw["devices"])
+    single = raw.get("device")
+    if isinstance(single, dict):
+        device_id = str(single.get("device_id") or "phone").strip()[:64] or "phone"
+        return {device_id: single}
+    return {}
+
+
+def _store_device_keys(entries: dict, last_entry: Optional[dict] = None) -> None:
+    """B2: gerätegebundene Key-Registry als v2 speichern — Datei 0600 (Muster
+    relay-config.json), Private Keys gibt es hier nie (nur Pubs).
+
+    Format v2: {"v": 2, "ts": ms, "devices": {device_id: {device_id, ik_pub,
+    spk_pub, epoch_of_enroll, enrolled_at}}, "device": <letzter Publish>}.
+    Der "device"-Spiegel hält den V1-Lesefestpunkt: eine gerollte Back-ALT-
+    Binary (v1-Verband) liest ihn weiter (Plan Kap. 5, Invarianz (4)) — und
+    Bestands-Asserts bleiben ehrlich. Der ERSTE v2-Write über einem v1-Bestand
+    sichert die Alt-Bytes byte-genau als relay-keys.json.v1.bak nebenan.
 
     SEC-W1 D3a: Schreiben in Temp-Datei + atomares os.replace — das alte
     O_TRUNC auf der Bestandsdatei LEERTE die Registry physisch, wenn fchmod
-    danach einen OSError warf (Probe: Datei hinterher leer). Jetzt bleibt
-    der Alt-Bestand bei JEDEM Fehler unangetastet (fail-closed ohne
-    Datenverlust). fchmod unter Windows = Best-Effort (mkstemp legt die
-    Datei ohnehin 0600 an; AttributeError bewusst geschluckt).
+    danach einen OSError warf. fchmod unter Windows = Best-Effort.
     """
     path = _device_keys_path()
-    payload = json.dumps(
-        {"v": 1, "device": entry, "ts": int(time.time() * 1000)}, indent=2)
+    devices = {
+        str(key): dict(value) for key, value in (entries or {}).items()
+        if isinstance(key, str) and _DEVICE_ID_RE.fullmatch(key)
+        and isinstance(value, dict)
+    }
+    if last_entry is not None and isinstance(last_entry, dict):
+        mirror = dict(last_entry)
+    elif devices:
+        mirror = dict(next(iter(devices.values())))
+    else:
+        mirror = {}
+    payload = {
+        "v": 2,
+        "ts": int(time.time() * 1000),
+        "devices": devices,
+        "device": mirror,
+    }
     directory = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(directory, exist_ok=True)
+    # v1-Backup (einmalig): die Alt-Bytes (v1 {"v":1,"device":…}) bleiben
+    # byte-genau nebenan — Rollback + Migration-Nachvollziehbarkeit.
+    try:
+        with open(path, "rb") as fh:
+            existing = fh.read()
+    except FileNotFoundError:
+        existing = b""
+    except OSError:
+        existing = None
+    if existing:
+        parse_ok, parse_v2 = False, False
+        try:
+            parsed = json.loads(existing)
+            parse_ok = True
+            parse_v2 = parsed.get("v") == 2 if isinstance(parsed, dict) else False
+        except ValueError:
+            parse_ok = False
+        if parse_ok and not parse_v2:
+            backup = Path(path + ".v1.bak")
+            if not backup.exists():
+                try:
+                    backup.write_bytes(existing)
+                    logger.warning(
+                        "KEY-REGISTRY v1→v2 MIGRATION: Alt-Bytes nach %s gesichert "
+                        "(v1-Eintrag wandert beim nächsten /key_publish unter "
+                        "seinen device_id-Schlüssel; LOUD, kein stiller Doppeldatensatz)",
+                        backup)
+                except OSError as exc:
+                    logger.warning("KEY-REGISTRY: v1-Backup fehlgeschlagen: %s", exc)
     fd, tmp_path = tempfile.mkstemp(prefix=".relay-keys-", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -996,7 +1610,7 @@ def _store_device_keys(entry: dict) -> None:
                 os.fchmod(fh.fileno(), 0o600)  # POSIX; Windows: Best-Effort
             except AttributeError:
                 pass
-            fh.write(payload + "\n")
+            fh.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
         os.replace(tmp_path, path)
     except BaseException:
         try:
@@ -1212,6 +1826,12 @@ def set_pairing_code(code: str) -> None:
 
     def _kick() -> None:
         asyncio.ensure_future(_cleanup_phone(state, reason="pairing code rotated"))
+        # B1: Tor-Fenster gehören zur Code-Epoche — Anfragen/Freigaben der
+        # alten Epoche räumen (ein Stempel der Alt-Epoche öffnet unter dem
+        # NEUEN Code nichts mehr, fail-closed).
+        state.pairing_requests.clear()
+        state.pairing_approvals.clear()
+        logger.info("B1: Anmelde-Tor-Fenster nach Code-Rotation geräumt")
 
     try:
         loop.call_soon_threadsafe(_kick)
@@ -1227,7 +1847,8 @@ def _run_loop(state: _RelayState, ready: threading.Event) -> None:
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     state.loop = loop
-    state.phone_ws_lock = asyncio.Lock()
+    state.devices_lock = asyncio.Lock()
+    state.phone_ws_lock = state.devices_lock  # Legacy-Alias (gleiches Lock)
     state.pending_lock = asyncio.Lock()
     state.streams_lock = asyncio.Lock()
     state.agent_ws_lock = asyncio.Lock()
@@ -1404,7 +2025,9 @@ def _mtls_gate(request: "web.Request") -> Optional["web.Response"]:
                 from mtls_enroll import _registry_load as _rg, \
                         _registry_default as _rdef
             reg = _rg() or {}
-            enrolled = reg.get("enrolled") or {}
+            # B2: Registry v2 trägt die Geräte unter "devices" (Legacy v1 =
+            # "enrolled") — Lesefallback hält beide Formen lebendig.
+            enrolled = reg.get("enrolled") or reg.get("devices") or {}
             try:
                 reg_epoch = int(reg.get("epoch", 1))
             except (TypeError, ValueError):
@@ -1520,6 +2143,15 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
     state.pairing_pw = _load_pairing_password_record()
     if state.pairing_pw is not None:
         logger.info("W17-F2: Kopplungs-Passwortschutz AKTIV (Hash-Record geladen)")
+
+    # ── B1: Geräte-Registry laden / v1→v2-Migration (ohne Verlust) ───────────
+    # Vor dem ersten Handshake: vorhandene v2-Datei laden; fehlt sie, wird der
+    # v1-Bestand (mtls-'enrolled'-Einträge + der relay-keys-Eintrag) ADOPTIERT
+    # (nur LESEND gegenüber den Quellen; .v1.bak-Backup nebenan, LOUD-Log).
+    state.device_registry = _migrate_device_registry()
+    state.device_cap = _device_cap(agent_config)
+    logger.info("B1: Geräte-Cap = %d (relay-config max_devices / env / Default 4)",
+                state.device_cap)
 
     # W17-F2 (Sir-Direktive): Optionales Extra-Passwort für die KOPLUNG —
     # Set/Entfernen über die bestehende authentifizierte Verbindung (Bearer
@@ -1880,35 +2512,67 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
                 headers={"X-Bridge-Error": "password-invalid"},
             )
 
-    # ── W17-F1: Ein-Gerät-pro-Kopplungscode (Slot-Precheck) ──────────────────
-    # Der Kopplungs-Handshake trägt die stabile Gerätekennung (X-Device-Id);
-    # ist der Phone-Slot durch eine LEBENDE Verbindung eines ANDEREN Geräts
-    # gehalten, wird der Handshake SAUBER (HTTP 403 + JSON, bestehendes
-    # Fehler-Strukturmuster) abgewiesen — solange die erste Verbindung lebt.
-    # Tote Verbindungen sind keine Sperre: aiohttp heartbeat/receive_timeout
-    # schließt sie, _cleanup_phone gibt Slot + Kennung frei → normale Kopplung
-    # kehrt zurück (kein Dauer-Lock, HARTFEHLER-Auftrag für Sirs Reconnects).
+    # ── B1: Geräte-Registry-Tor (W17.1-Sperre → Anmelde-Tor) ─────────────────
+    # Der Kopplungs-Handshake trägt die stabile Gerätekennung (X-Device-Id;
+    # NONE = Legacy-Client → Legacy-Default "phone"). Bekannte Geräte
+    # (device_id in der Registry) koppeln DIREKT — ein Reconnect ersetzt
+    # ausschließlich SEINEN eigenen Slot. Unbekannte Geräte passieren das
+    # ANMELDE-TOR: gültige Freigabe (pairing.approve, TTL 10 min, einmalig)
+    # ODER verifiziertes Kopplungs-Passwort (W17.2, Option b) → Enroll;
+    # sonst 403/4403 "code-in-use" (bestehender Fehlton) + IP-Rate-Chain zählt
+    # weiter + EINE pairing.request-Anfrage an die Admin-Slots (dedupe im
+    # TTL-Fenster). Cap-voll bei NEUER Anmeldung → 403/4403 "device-cap".
     device_id = _parse_device_id(request)
-    slot_lock = state.phone_ws_lock
-    if slot_lock is None:
+    devices_lock = state.devices_lock or state.phone_ws_lock
+    if devices_lock is None:
         # Locks entstehen erst in _run_loop — vor dem Server-Start kann es
         # keinen Handshake geben (Robustheit-Guard wie beim broker_lock).
         raise web.HTTPServiceUnavailable(
             text=json.dumps({"error": "server warming up"}),
             content_type="application/json",
         )
-    async with slot_lock:
-        if _pairing_slot_locked(state, device_id):
+    enroll_requested = False
+    rejected_request = None
+    async with devices_lock:
+        decision, gate_device_id = _device_gate_decide(state, device_id, remote_ip)
+        if decision == "rejected":
+            # Kein Tor-Bestehen: Anfrage anlegen (dedupe); Frame-EMIT + Rate-
+            # Chain-Count laufen NICHT unter dem Lock (await-Punkte unten) und
+            # NUR bei frisch angelegter Anfrage (kein Spam im TTL-Fenster).
+            rejected_request, request_fresh = _pairing_request_open(
+                state, gate_device_id, remote_ip)
+            if not request_fresh:
+                rejected_request = None
             _slot_lock_reject_log(state, device_id, remote_ip, phase="pre-check")
-            raise web.HTTPForbidden(
-                text=json.dumps({
-                    "error": "code-in-use",
-                    "detail": "This pairing code is already connected to another device",
-                }),
-                content_type="application/json",
-                headers={"X-Bridge-Error": "code-in-use"},
-            )
-
+        elif decision == "device-cap":
+            logger.warning(
+                "Phone WS rejected — device cap reached (%s, ip=%s, phase=pre-check)",
+                _mask_id(gate_device_id), remote_ip)
+        elif decision == "enroll":
+            # Tor bestanden: das Enrollment passiert atomar in der Race-Sektion
+            # unten (Consumption der Freigabe + Registry-Write + Slot-Einheit).
+            enroll_requested = True
+    if decision == "rejected":
+        if rejected_request is not None:
+            await _pairing_request_emit(state, gate_device_id, rejected_request)
+        _auth_record_failure(remote_ip)
+        raise web.HTTPForbidden(
+            text=json.dumps({
+                "error": "code-in-use",
+                "detail": "This pairing code is already connected to another device",
+            }),
+            content_type="application/json",
+            headers={"X-Bridge-Error": "code-in-use"},
+        )
+    if decision == "device-cap":
+        raise web.HTTPForbidden(
+            text=json.dumps({
+                "error": "device-cap",
+                "detail": "Device limit reached for this pairing code",
+            }),
+            content_type="application/json",
+            headers={"X-Bridge-Error": "device-cap"},
+        )
     # 02.11.26 Security-Audit-Fix (REL-04/Skeptiker-P2): >4MB-Frames rissen die
     # WS-Verbindung (Journal-Beweis 04:08:41). Jetzt hartes Frame/Message-Limit
     # + receive_timeout, damit ein dekompressionsbomber-Frame stattdessen sauber
@@ -1920,16 +2584,15 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
     )
     await ws.prepare(request)
 
-    # Only one phone at a time — kick previous if any
-    async with state.phone_ws_lock:
+    # Registrierung in der Geräte-Registry (ein Slot je Gerät)
+    async with devices_lock:
         # FIN-T1 RED-02: Rotation-TOCTOU — eine Rotation, die ZWISCHEN dem
         # Token-Check oben und dieser Registrierung landet (Handshake noch in
         # der Luft, await ws.prepare = await-Punkt), wurde vom W2-1-Kick
-        # verfehlt (_cleanup_phone lief bei phone_ws=None → No-Op) und die
-        # Alt-Code-WS registrierte sich DANACH als aktive Phone-WS unter dem
-        # NEUEN Code. Verifizierung von Epoche UND Code in derselben kritischen
-        # Sektion wie die Registrierung: Alt-Code-WS wird geschlossen und kann
-        # NIE die aktive Phone-WS werden (fail-closed, W2-1-Vertrag).
+        # verfehlt und die Alt-Code-WS registrierte sich DANACH. Verifizierung
+        # von Epoche UND Code in derselben kritischen Sektion wie die
+        # Registrierung: Alt-Code-WS wird geschlossen und kann NIE die aktive
+        # WS werden (fail-closed, W2-1-Vertrag).
         if (state.pairing_epoch != pairing_epoch
                 or not _constant_time_eq(token, state.pairing_code)):
             logger.warning(
@@ -1938,30 +2601,79 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
             await ws.close(code=aiohttp.WSCloseCode.POLICY_VIOLATION,
                            message=b"pairing code rotated")
             return ws
-        # W17-F1 (Race-Slot): der Precheck oben lief OHNE Hold über den
-        # prepare-Await — zwischen Precheck und Registrierung kann die
-        # Konkurrenz-WS eingesprungen und eingetragen sein. Post-Prepare kann
-        # kein sauberer 403-JSON mehr laufen (Upgrade already done); dieselbe
-        # Abweisung läuft jetzt als WS-Close-Code (_WS_CLOSE_CODE_IN_USE —
-        # private-use 4403), die App behandelt ihn genau wie den 403-JSON.
-        if _pairing_slot_locked(state, device_id):
+        # B1-Race-Sektion: der Pre-Check oben lief OHNE Hold über den
+        # prepare-Await. Post-Prepare läuft dieselbe Abweisung als WS-Close-
+        # Code (4403-Familie), die App behandelt ihn wie den 403-JSON.
+        decision, gate_device_id = _device_gate_decide(state, device_id, remote_ip)
+        if decision == "rejected":
             _slot_lock_reject_log(state, device_id, remote_ip, phase="race-check")
             await ws.close(code=_WS_CLOSE_CODE_IN_USE, message=b"code-in-use")
             return ws
-        if state.phone_ws is not None and not state.phone_ws.closed:
-            # Reconnect DESSELBEN Geräts (Kennung gleich) ODER Legacy-Replace
-            # (beidseitig ohne Kennung): das bisherige Replace-Verhalten bleibt
-            # — genau er erlaubt den zuverlässigen Doze/WLAN-Reconnect ohne
-            # Neukopplung. Ein ANDERES Gerät kam nie hierher (Checks oben).
-            logger.info("Replacing previous phone connection")
-            await _fail_inflight(state, reason="phone connection replaced")
-            await state.phone_ws.close(
-                code=aiohttp.WSCloseCode.GOING_AWAY, message=b"replaced"
-            )
-        state.phone_ws = ws
-        # W17-F1: Kennung beim ENDE der Annahme serverseitig registrieren —
-        # in derselben kritischen Sektion wie der WS (atomare Slot-Einheit).
-        state.phone_device_id = device_id
+        if decision == "device-cap":
+            logger.warning(
+                "Phone WS rejected — device cap reached (%s, ip=%s, phase=race-check)",
+                _mask_id(gate_device_id), remote_ip)
+            await ws.close(code=_WS_CLOSE_CODE_IN_USE, message=b"device-cap")
+            return ws
+        if enroll_requested and decision == "enroll":
+            # Enrollment ATOMAR mit der Slot-Registrierung: Freigabe verbrauchen
+            # (einmalig), Registry-Eintrag schreiben (epoch_of_enroll = JETZIGE
+            # Code-Epoche je Gerät), Datei persistieren — ein zweiter Handshake
+            # desselben Geräts findet es danach als BEKANNT (accepted).
+            state.pairing_approvals.pop(gate_device_id, None)
+            state.pairing_requests.pop(gate_device_id, None)
+            state.device_registry.setdefault(gate_device_id, {})
+            state.device_registry[gate_device_id].update({
+                "admin": bool(state.device_registry[gate_device_id].get("admin"))
+                         or len(state.device_registry) == 1,
+                "epoch_of_enroll": int(state.pairing_epoch),
+                "enrolled_at": int(time.time() * 1000),
+            })
+            try:
+                _store_device_registry(state.device_registry)
+            except OSError as exc:
+                logger.error(
+                    "DEVICE-REGISTRY: Enroll-Persist fehlgeschlagen (%s) — "
+                    "Gerät %s bleibt Slot-fähig, aber UNBEKANNT beim Neustart",
+                    exc, _mask_id(gate_device_id))
+            logger.warning(
+                "ANMELDE-TOR: Gerät %s ENROLLT (epoch_of_enroll=%s, admin=%s, "
+                "cap=%d/%d) — Registry persistiert",
+                _mask_id(gate_device_id), state.pairing_epoch,
+                bool(state.device_registry[gate_device_id].get("admin")),
+                len(state.device_registry), _device_cap())
+        device_key = gate_device_id
+        entry = state.device_registry.get(device_key) or {}
+        previous = state.devices.get(device_key)
+        if previous is not None and previous.ws is not None \
+                and not previous.ws.closed:
+            # Reconnect DESSELBEN Geräts: das bisherige Replace-Verhalten
+            # bleibt — genau er erlaubt den zuverlässigen Doze/WLAN-Reconnect
+            # ohne Neukopplung. Andere Geräte-Slots bleiben UNBERÜHRT
+            # (Registry-Gesetz statt Fremd-Kick; W17-Vertrag 1:1 je Slot).
+            logger.info("Replacing previous connection of device %s",
+                        _mask_id(device_key))
+            await _fail_inflight(state, reason="device connection replaced")
+            try:
+                await previous.ws.close(
+                    code=aiohttp.WSCloseCode.GOING_AWAY, message=b"replaced")
+            except Exception as exc:
+                logger.debug("Alt-Slot-Close fehlgeschlagen (%s) — Slot ersetzt", exc)
+        state.devices[device_key] = _PhoneSlot(
+            ws, device_id=device_key, alias=str(entry.get("alias") or ""),
+            admin=bool(entry.get("admin")))
+        state.last_active_device = device_key
+        entry["last_seen"] = int(time.time() * 1000)
+        # Erst-Adoption (Migration ohne Verlust): das erste verbindende Gerät
+        # übernimmt den Fallback-Spool-Bucket (kein Spool-Verlust beim Upgrade).
+        if device_key not in state.device_outbox and state.fallback_outbox:
+            state.device_outbox[device_key] = state.fallback_outbox
+            state.fallback_outbox = _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN)
+            logger.info("SPOOL-MIGRATION: Fallback-Outbox → Gerät %s übernommen",
+                        _mask_id(device_key))
+        elif device_key not in state.device_outbox:
+            state.device_outbox[device_key] = _ByteBoundedDeque(
+                maxlen=_CHAT_QUEUE_MAXLEN)
 
     logger.info("Phone connected from %s", request.remote)
 
@@ -1969,13 +2681,13 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
     # bekommt die Agenten-Liste damit immer als allerersten Frame.
     await _send_phone_state(state, ws)
 
-    # PH2-T1: Agent→App-Nachrichten aus der Offline-Spool-Outbox ausliefern.
-    await _flush_phone_outbox(state)
+    # PH2-T1: Agent→App-Nachrichten aus der je-Gerät-Spool-Outbox ausliefern.
+    await _flush_phone_outbox(state, device_key)
 
     try:
         async for msg in ws:
             if msg.type == aiohttp.WSMsgType.TEXT:
-                await _on_phone_message(state, msg.data)
+                await _on_phone_message(state, msg.data, device_key)
             elif msg.type == aiohttp.WSMsgType.BINARY:
                 await _on_phone_binary(state, msg.data)
             elif msg.type == aiohttp.WSMsgType.ERROR:
@@ -1988,7 +2700,7 @@ async def _handle_ws(request: web.Request, state: _RelayState) -> web.WebSocketR
 
 
 async def _send_phone_state(state: _RelayState, ws: web.WebSocketResponse) -> None:
-    """PH2-MERGE: relay.state-Hallo-Frame an die Phone-WS (Agenten-Liste).
+    """PH2-MERGE: relay.state-Hallo-Frame an eine Geräte-WS (Agenten-Liste).
 
     agents = [{agent_id, display_name, online}] aus der Registry — fehlen die
     Felder (leere Server-Config), bleibt die Liste leer: die App-UI fällt auf
@@ -2000,7 +2712,10 @@ async def _send_phone_state(state: _RelayState, ws: web.WebSocketResponse) -> No
     beim Re-Connect ihre lokalen Sessions gegen dieses Feld ab — ein vom
     Agenten gesendetes crypto.session_reset, das die Phone-WS nicht erreicht
     hat (Reconnect), wird so nachgeholt statt still weiterlaufen zu lassen.
-    """
+
+    B1: devices[] je Registry-Gerät (Kennung maskiert, alias, online, admin) —
+    die App-Geräteverwaltung liest sie; Kennungen im Frame bleiben maskiert
+    (PII-Regel, _mask_id-Parität)."""
     if state.broker_lock is None:
         # Locks entstehen erst in _run_loop — vor dem Server-Start kann es
         # keine Sessions geben (Robustheit: NIE werfen, s. Presence-Test).
@@ -2023,39 +2738,58 @@ async def _send_phone_state(state: _RelayState, ws: web.WebSocketResponse) -> No
             }
             for agent_id, entry in state.agents.items()
         ]
+    async with (state.devices_lock or _NoAsyncLock()):
+        devices = [
+            {
+                "device_id": _mask_id(device_id),
+                "alias": str((state.device_registry.get(device_id) or {}).get("alias") or ""),
+                "online": True,
+                "admin": bool((state.device_registry.get(device_id) or {}).get("admin")),
+            }
+            for device_id, slot in state.devices.items()
+            if slot.ws is not None and not slot.ws.closed
+        ]
     try:
-        await ws.send_json({"type": "relay.state", "v": 1, "agents": agents})
+        await ws.send_json({"type": "relay.state", "v": 1, "agents": agents,
+                            "devices": devices})
     except Exception as exc:
         logger.warning("Phone: relay.state fehlgeschlagen (%s)", exc)
 
 
 async def _broadcast_agent_presence(state: _RelayState) -> None:
-    """PH2-FIX (E2E P2): relay.state je Agent-Presence-Wechsel ans Phone.
+    """PH2-FIX (E2E P2): relay.state je Agent-Presence-Wechsel an ALLE Geräte-
+    Slots (B1-Fan-out; bei EINEM Gerät exakt das alte Verhalten).
 
     Agent-Connect (online=True) und Disconnect (offline) ändern die Registry —
     ohne Push erfuhr die App einen Wechsel nur beim nächsten Phone-Connect
     (Hallo-Frame), der Header erstarrete auf 'Offline', während der Agent
     online antwortete (E2E-Fund e2e-c). Der Frame nutzt exakt die Payload-Form
     des Hallo-Frames (_send_phone_state) — die App parst relay.state bereits,
-    kein App-Change nötig. Keine offene Phone-WS = No-Op (bewusst KEIN Spool:
-    der nächste Connect bekommt den frischen Zustand als Hallo-Frame).
+    kein App-Change nötig. Kein offener Geräte-Slot = No-Op (bewusst KEIN
+    Spool: der nächste Connect bekommt den frischen Zustand als Hallo-Frame).
     Sendefehler je WS schluckt _send_phone_state (Log), der Presence-Wechsel
-    bleibt wirksam.
-    """
-    lock = state.phone_ws_lock
-    if lock is None:
+    bleibt wirksam."""
+    devices_lock = state.devices_lock
+    if devices_lock is None:
         # Locks entstehen erst in _run_loop — vor dem Server-Start gibt es
-        # keine Phone-WS, der Push ist dann ohnehin ein No-Op.
+        # keine Geräte-WS, der Push ist dann ohnehin ein No-Op.
         return
-    async with lock:
-        ws = state.phone_ws
-        if ws is None or ws.closed:
-            return
-    await _send_phone_state(state, ws)
+    async with devices_lock:
+        targets = [slot.ws for slot in state.devices.values()
+                   if slot.ws is not None and not slot.ws.closed]
+    for ws in targets:
+        await _send_phone_state(state, ws)
 
 
-async def _on_phone_message(state: _RelayState, raw: str) -> None:
-    """Route an incoming message from the phone to the matching pending future."""
+async def _on_phone_message(state: _RelayState, raw: str,
+                            device_id: Optional[str] = None) -> None:
+    """Route an incoming message from the phone to the matching pending future.
+
+    B1: pairing.approve/pairing.deny (Anmelde-Tor-Freigabe des Admin-Geräts)
+    werden VOR der request_id-Route behandelt (Frames ohne request_id sind
+    hier legitim); die WS-Identität (device_id) gewinnt — approves von nicht-
+    vorhandenen/toten Slots werden verworfen (fail-closed im Frame-Handler).
+    """
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, RecursionError):
@@ -2078,6 +2812,14 @@ async def _on_phone_message(state: _RelayState, raw: str) -> None:
     if not isinstance(data, dict):
         if _chat_rate_allow("phone:junk", _AGENT_LIGHT_FRAME_MAX_PER_SECOND):
             logger.warning("Non-object message from phone — verworfen")
+        return
+
+    # ── B1 Anmelde-Tor: Admin-Freigabe (approve) / Abweisung (deny) ─────────
+    msg_type = data.get("type")
+    if msg_type in ("pairing.approve", "pairing.deny") and device_id:
+        await _guard_phone_frame(
+            _handle_pairing_admin_frame, state, device_id, data,
+            "_handle_pairing_admin_frame")
         return
 
     request_id = data.get("request_id")
@@ -2169,31 +2911,76 @@ async def _on_phone_binary(state: _RelayState, raw: bytes) -> None:
             state.streams.pop(request_id, None)
 
 
+async def _guard_phone_frame(handler, state: _RelayState, device_id: str,
+                             data: dict, name: str) -> None:
+    """B1-Jäger-Parität (_guard_agent_frame): ein Exception eines Frame-
+    Handlers reißt die Geräte-WS nicht mit — Fail-soft, Frame verworfen,
+    Log mit Traceback. CancelledError läuft weiter durch."""
+    try:
+        await handler(state, device_id, data)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception(
+            "Gerät %s: Frame-Handler %s fehlgeschlagen — Frame verworfen (WS bleibt)",
+            _mask_id(device_id), name)
+
+
+def _device_bucket(state: _RelayState, device_id: str) -> deque:
+    """Je-Gerät-Outbox-Bucket (erzeugt on demand, ByteBounded wie der alte
+    Einheits-Spool)."""
+    bucket = state.device_outbox.get(device_id)
+    if bucket is None:
+        bucket = _ByteBoundedDeque(maxlen=_CHAT_QUEUE_MAXLEN)
+        state.device_outbox[device_id] = bucket
+    return bucket
+
+
 async def _cleanup_phone(
     state: _RelayState,
     reason: str = "",
     expected_ws: Optional[web.WebSocketResponse] = None,
 ) -> None:
-    """Clean up phone connection and cancel all pending requests."""
-    async with state.phone_ws_lock:
-        # A newly connected phone may already have replaced this socket. The
-        # old handler must not tear down the replacement or its active requests.
-        if expected_ws is not None and state.phone_ws is not expected_ws:
-            return
-        ws = state.phone_ws
-        state.phone_ws = None
-        # W17-F1: Slot-Registrierung MIT Räumen — die Kennung gilt NUR für
-        # den laufenden Inhaber; stirbt die Verbindung (Heartbeat/Timeout/
-        # bewusstes Trennen/Code-Rotation/Shutdown), kehrt normale Kopplung
-        # zurück (kein Dauer-Lock, HARTFEHLER-Verband der Welle). Der
-        # expected_ws-Guard oben schützt: eine ALT-WS (replace-Fall) kann die
-        # Registrierung des NEUEN Inhabers nicht anfassen.
-        state.phone_device_id = None
+    """B1: Slot-Freigabe JE Gerät — Stirbt eine Verbindung, fällt NUR ihr
+    EIGENER Slot; Registry-Eintrag + Outbox-Bucket bleiben (kein Dauer-Lock,
+    keine Spool-Verweise). expected_ws-Guard: eine ALT-WS (Replace-Fall) kann
+    den neuen Slot nicht anfassen (Parität zur alten Slot-Freigabe)."""
+    devices_lock = state.devices_lock or state.phone_ws_lock
+    if devices_lock is None:
+        return
+    async with devices_lock:
+        targets: list[web.WebSocketResponse] = []
+        if expected_ws is not None:
+            for device_id, slot in state.devices.items():
+                if slot.ws is expected_ws:
+                    targets.append(expected_ws)
+                    del state.devices[device_id]
+                    log_target = _mask_id(device_id)
+                    break
+            if not targets:
+                # Replaced/Rotiert-WS: der frische Inhaber ist längst drin —
+                # die ALT-WS darf die Registrierung des NEUEN nicht anfassen.
+                return
+        else:
+            # Rotation/Shutdown (kein expected_ws): ALLE lebenden Slots räumen
+            # UND schließen (Parität zum Alt-Verhalten: ws.close() weckt den
+            # Phone-Read-Loop — sonst hängt eine Alt-Verbindung als Geist).
+            for device_id, slot in state.devices.items():
+                targets.append(slot.ws)
+                log_target = None
+            state.devices.clear()
+            log_target = "alle Slots"
 
-    if ws is not None and not ws.closed:
-        await ws.close()
+    for ws in targets:
+        if ws is not None and not getattr(ws, "closed", True):
+            try:
+                await ws.close()
+            except Exception:
+                pass
 
     await _fail_inflight(state, reason)
+    if log_target is not None:
+        logger.debug("Geräte-Slot freigegeben (%s) — Grund: %s", log_target, reason)
 
 
 async def _fail_inflight(state: _RelayState, reason: str) -> None:
@@ -2755,6 +3542,10 @@ async def _handle_agent_hello_ack(state: _RelayState, agent_id: str, data: dict)
         if not isinstance(value, str) or not value:
             logger.warning("Agent %s: hello_ack ohne %s — verworfen", agent_id, field)
             return
+    # B2: der Relay reicht die Broker-Device-Identität der Session mit — der
+    # Adapter (spätere Welle) führt je Gerät eine eigene E2E-Session; die
+    # KOMPONENTE im Frame ist die Broker-Wahrheit (nicht Agent-Body).
+    session_device_id = session.get("device_id") if isinstance(session, dict) else None
     frame = {
         "type": "crypto.hello_ack", "v": 1,
         "session_id": session_id,
@@ -2764,6 +3555,8 @@ async def _handle_agent_hello_ack(state: _RelayState, agent_id: str, data: dict)
         "ct": data["ct"],
         "ts": int(time.time() * 1000),
     }
+    if session_device_id:
+        frame["device_id"] = str(session_device_id)
     async with state.broker_lock:
         if session_id in state.crypto_sessions:
             state.crypto_sessions[session_id]["acked"] = True
@@ -2804,6 +3597,11 @@ async def _handle_agent_session_reset(state: _RelayState, agent_id: str,
         "reason": reason,
         "ts": int(time.time() * 1000),
     }
+    # B2: Device-Identität mit (Broker-Wahrheit vor dem Pop) — der Adapter
+    # je Gerät kann den Reset je Session/Gerät zuordnen.
+    session_device = session.get("device_id") if isinstance(session, dict) else None
+    if session_device:
+        frame["device_id"] = str(session_device)
     await _deliver_to_phone(state, frame)
     logger.warning(
         "PH-3: Session %s auf Agenten-Verlangen zurückgesetzt (Agent %s, "
@@ -3180,19 +3978,12 @@ def _agent_status_dedup_allow(state: _RelayState, agent_id: str,
 
 async def _deliver_agent_status_to_phone(state: _RelayState, frame: dict) -> bool:
     """W18/W19: agent.status = Live-Zustand, KEIN Verlauf — Zustellung NUR
-    bei online Phone (Direct-Send unter broker_lock). Offline/tote WS =
-    False = bewusst verworfen: KEIN Outbox-Append, kein Spool (ein
-    'arbeitet…'-Zustand ist beim Reconnect längst Geschichte)."""
+    bei online Geräten (B1: Fan-out an ALLE lebenden Slots, _deliver_locked
+    mit spool=False). Kein Gerät verbunden/tote WS = False = bewusst verworfen:
+    KEIN Outbox-Append, kein Spool (ein 'arbeitet…'-Zustand ist beim
+    Reconnect längst Geschichte)."""
     async with state.broker_lock:
-        ws = state.phone_ws
-        if ws is None or ws.closed:
-            return False
-        try:
-            await ws.send_json(frame)
-        except Exception as exc:
-            logger.warning("agent.status-Zustellung ans Phone fehlgeschlagen: %s", exc)
-            return False
-    return True
+        return await _deliver_locked(state, frame, spool=False)
 
 
 async def _handle_agent_status_enc(state: _RelayState, agent_id: str,
@@ -3857,11 +4648,21 @@ async def _deliver_to_agent(state: _RelayState, agent_id: str, message: dict) ->
 
 
 async def _deliver_to_phone(state: _RelayState, message: dict,
-                            claim: Optional[tuple[str, str]] = None) -> Optional[bool]:
-    """Nachricht an die Phone-WS; offline = Outbox (Retention s. Config).
+                            claim: Optional[tuple[str, str]] = None,
+                            spool: bool = True) -> Optional[bool]:
+    """B1: Nachricht an die Geräte-Slots — Session-ROUTING + Fan-out.
 
-    SEC-W1 W1C-1: append + WS-Send + Pop laufen jetzt in EINER broker_lock-
-    Sektion (Dubletten-Rennen Deliver × Flush, s. _deliver_to_agent).
+    Routing (Kap. 2.2/3: Session-Broker = Routing-Wahrheit):
+    - Frame MIT session_id → Ziel = das Gerät der Session
+      (crypto_sessions[session_id].device_id). Offline → NUR die EIGENE
+      Outbox-Bucket dieses Geräts (ein Gerät bekommt nur seine eigene
+      Outbox). Unbekannte/abgelaufene Session → konservativer Broadcast.
+    - Frame OHNE session_id (Klar-Chat/Status/Presence) → Broadcast an JEDES
+      bekannte Gerät (Registry ∪ Slots): live = send, offline = je Gerät
+      EIGENE Outbox (spool) — oder bewusst verworfen (spool=False).
+
+    SEC-W1 W1C-1: append + WS-Send + Pop laufen in EINER broker_lock-Sektion
+    (Dubletten-Rennen Deliver × Flush, s. _deliver_to_agent).
 
     SEC-W1 W1A-2/W1C-3: claim=(agent_id, chat_id) prüft UND setzt den
     Konversations-Owner in derselben Lock-Sektion wie die Zustellung:
@@ -3888,39 +4689,98 @@ async def _deliver_to_phone(state: _RelayState, message: dict,
                 # mehr) — FIFO-Cap als RAM-Schutz, älteste zuerst.
                 state.chat_owner[chat_id] = (claiming_agent, time.time())
                 _cap_chat_owner(state)
-        _prune_chat_queue(state.phone_outbox, _chat_retention_seconds())
-        state.phone_outbox.append((time.time(), message))
-        ws = state.phone_ws
-        if ws is None or ws.closed:
-            return False
+        # ── B1-Routing: session_id → Ziel-Gerät, sonst Broadcast ────────────
+        _prune_crypto_sessions(state)
+        session_id = message.get("session_id")
+        targets = None
+        if isinstance(session_id, str) and session_id:
+            session_entry = state.crypto_sessions.get(session_id)
+            if isinstance(session_entry, dict) and session_entry.get("device_id"):
+                targets = [str(session_entry["device_id"])]
+        delivered = await _deliver_locked(state, message, spool=spool,
+                                          targets=targets)
+    return True if delivered else False
+
+
+async def _deliver_locked(state: _RelayState, message: dict,
+                          spool: bool = True,
+                          targets: Optional[list[str]] = None) -> bool:
+    """NACKT-Zustell-Kern (MUST NUR MIT gehaltenem broker_lock gerufen werden,
+    asyncio.Lock ist nicht reentrant): Send an alle lebenden Ziel-Slots,
+    Spool je Gerät in die EIGENE Bucket; keine Ziele → Fallback-Bucket (das
+    alte Ein-Gerät-Verhalten, Spool-Verlust ausgeschlossen). True = an mind.
+    einen Slot zugestellt."""
+    if targets is None:
+        targets = list(state.devices)
+        for device_id in state.device_registry:
+            if device_id not in targets:
+                targets.append(device_id)
+    delivered = False
+    for device_key in targets:
+        slot = state.devices.get(device_key)
+        ws = slot.ws if slot is not None else None
+        if ws is None or getattr(ws, "closed", True):
+            if spool:
+                bucket = _device_bucket(state, device_key)
+                _prune_chat_queue(bucket, _chat_retention_seconds())
+                bucket.append((time.time(), message))
+            continue
+        if spool:
+            bucket = _device_bucket(state, device_key)
+            _prune_chat_queue(bucket, _chat_retention_seconds())
+            bucket.append((time.time(), message))
         try:
             await ws.send_json(message)
         except Exception as exc:
-            logger.warning("Chat-Zustellung ans Phone fehlgeschlagen: %s", exc)
-            return False
-        for index, (_ts, queued) in enumerate(state.phone_outbox):
-            if queued is message:
-                del state.phone_outbox[index]
-                break
-    return True
+            logger.warning(
+                "Chat-Zustellung an Gerät %s fehlgeschlagen: %s",
+                _mask_id(device_key), exc)
+            continue  # spool=True: Eintrag bleibt (Frame nicht verloren);
+            # spool=False: NIE etwas angehängt (Live-Zustand kein Spool)
+        if spool:
+            for index, (_ts, queued) in enumerate(bucket):
+                if queued is message:
+                    del bucket[index]
+                    break
+        delivered = True
+    if not targets and spool:
+        # Noch KEIN bekanntes Gerät (frischer State vor erster Registrierung):
+        # Fallback-Bucket = das alte Ein-Gerät-Verhalten (kein Spool-Verlust).
+        _prune_chat_queue(state.fallback_outbox, _chat_retention_seconds())
+        state.fallback_outbox.append((time.time(), message))
+        spooled = True
+    return delivered
 
 
-async def _flush_phone_outbox(state: _RelayState) -> None:
-    """Agent→App-Spool an die frische Phone-Verbindung ausliefern (FIFO).
+async def _flush_phone_outbox(state: _RelayState,
+                              device_id: Optional[str] = None) -> None:
+    """Agent→App-Spool JE GERÄT ausliefern (FIFO) — ohne device_id wird der
+    Fallback-Bucket (B1-Migration: bestehender Spool vor erstem Bekanntsein)
+    abgearbeitet (Parität zum alten Einheits-Flush).
 
     SEC-W1 W1C-1: Flush läuft komplett unter broker_lock — Deliver und Flush
     können dasselbe Frame nicht mehr doppelt senden.
     """
     async with state.broker_lock:
-        _prune_chat_queue(state.phone_outbox, _chat_retention_seconds())
-        pending = list(state.phone_outbox)
-        state.phone_outbox.clear()
+        if device_id is not None:
+            queue = state.device_outbox.get(device_id)
+        else:
+            queue = state.fallback_outbox
+        if queue is None:
+            return
+        _prune_chat_queue(queue, _chat_retention_seconds())
+        pending = list(queue)
+        queue.clear()
         if not pending:
             return
-        ws = state.phone_ws
-        if ws is None or ws.closed:
-            # Replace-Rennen: kein Phone — Spool bleibt vollständig erhalten.
-            state.phone_outbox.extend(pending)
+        if device_id is not None:
+            slot = state.devices.get(device_id)
+            ws = slot.ws if slot is not None else None
+        else:
+            ws = state.phone_ws
+        if ws is None or getattr(ws, "closed", True):
+            # Replace-Rennen: kein Gerät — Spool bleibt vollständig erhalten.
+            queue.extend(pending)
             return
         for index, (_ts, message) in enumerate(pending):
             try:
@@ -3931,7 +4791,7 @@ async def _flush_phone_outbox(state: _RelayState) -> None:
             except Exception as exc:
                 rest = pending[index:]
                 # Rest VORNE wieder einreihen (FIFO-Reihenfolge erhalten).
-                state.phone_outbox.extendleft(reversed(rest))
+                queue.extendleft(reversed(rest))
                 logger.warning("Phone-Spool-Auslieferung abgebrochen (%s)", exc)
                 return
     logger.info("Phone: %d gespoolte Chat-Nachricht(en) ausgeliefert", len(pending))
@@ -3967,28 +4827,39 @@ async def _handle_key_publish(request: web.Request, state: _RelayState) -> web.S
             or not isinstance(spk_pub, str) or not _HEX64_RE.fullmatch(spk_pub.strip())):
         return web.json_response(
             {"error": "ik_pub/spk_pub must be 64-hex"}, status=400)
-    device_id = str(body.get("device_id") or "phone").strip()[:64] or "phone"
+    device_id = _normalize_registry_device_id(body.get("device_id"))
+    now_ms = int(time.time() * 1000)
     entry = {
         "device_id": device_id,
         "ik_pub": ik_pub.strip().lower(),
         "spk_pub": spk_pub.strip().lower(),
+        "epoch_of_enroll": int(state.pairing_epoch),
+        "enrolled_at": now_ms,
     }
-    # FIN-T1 RED-07: Identity-Wechsel SICHTBAR machen — bis jetzt überschrieb
-    # jede(r) Pairing-Code-Inhaber die Phone-Keys LAUTLOS (PoC red07: 8 Swaps
-    # je 200, kein Alert-Frame, laufende Sessions unberührt; Warn-only am
-    # Agenten = bewusstes W1A-5-Design, aber am Relay kam der Wechsel NICHT
-    # einmal ins Log). Jetzt: EINE Warning je Wechsel (device_id/Keys neu
-    # veröffentlicht) — Key-Material bleibt ungeloggt, Blockade bewusst NEIN.
-    existing = _load_device_keys().get("device") or {}
-    if existing and (existing.get("device_id") != entry["device_id"]
-                     or existing.get("ik_pub") != entry["ik_pub"]
-                     or existing.get("spk_pub") != entry["spk_pub"]):
+    # FIN-T1 RED-07 (B2 erweitert): Identity-Wechsel SICHTBAR — v2 mit
+    # GERÄTEGEBUNDENER Map: ein Wechsel des SELBEN device_id (Keys anders) =
+    # LOUD; ein NEUES device_id, sobald die Registry NICHT leer ist, = ebenso
+    # LOUD (ein neues Gerät in der Key-Registry ist ein Sicht-Ereignis, Plan
+    # Kap. 8: JEDE neue Geräte-Anmeldung ist sichtbar). Erstveröffentlichung
+    # in eine LEERE Registry = still (Bestands-Parität). Key-Material bleibt
+    # ungeloggt, Blockade bewusst NEIN.
+    current_keys = _load_device_keys_map()
+    existing = current_keys.get(device_id)
+    if (existing is not None and (existing.get("device_id") != entry["device_id"]
+                                  or existing.get("ik_pub") != entry["ik_pub"]
+                                  or existing.get("spk_pub") != entry["spk_pub"])):
         logger.warning(
             "PH-3: Phone-Identity-WECHSEL (device_id=%s) — ik_pub/spk_pub neu "
             "veröffentlicht; FP-Abgleich am Agenten prüfen (MITM-Indikator)",
             _log_id(device_id))
+    elif existing is None and current_keys:
+        logger.warning(
+            "PH-3: Phone-Identity-WECHSEL (device_id=%s) — NEUES Gerät in der "
+            "Key-Registry (Multi-Gerät-Bestand %d) — prüfen, ob erwartet",
+            _log_id(device_id), len(current_keys))
+    current_keys[device_id] = entry
     try:
-        _store_device_keys(entry)
+        _store_device_keys(current_keys, last_entry=entry)
     except OSError:
         logger.error("PH-3: Key-Registry-Schreibfehler — /key_publish fail-closed")
         return web.json_response({"error": "key registry unavailable"}, status=500)
@@ -4058,6 +4929,21 @@ async def _handle_crypto_hello(request: web.Request, state: _RelayState) -> web.
     # und warfen erst im Adapter UnicodeEncodeError (Frame-Loop-Tod).
     if not _utf8_encodable(session_id):
         return web.json_response({"error": "session_id not UTF-8 encodable"}, status=400)
+    # ── B2: Device-Identität im Hello-Pfad ───────────────────────────────────
+    # device_id kommt aus dem Body (bevorzugt, Parität /key_publish) ODER dem
+    # WS-Header-Feld der Kopplung (X-Device-Id); LEGACY-Default = "phone".
+    # NUR Durchreichung/Verband — keine Krypto-Änderung, keine neuen Primitives;
+    # der Adapter je Gerät (spätere Welle) führt je (agent, Gerät) die eigne
+    # E2E-Session. Eingebene Kennung mit schlechter Form = 400 (fail-closed
+    # Input-Gate, Parität zur WS-_parse_device_id-Verwerf-Route).
+    raw_device = str(body.get("device_id") or "").strip()
+    if raw_device and not _DEVICE_ID_RE.fullmatch(raw_device):
+        return web.json_response(
+            {"error": "device_id must be an ASCII word (≤64)"}, status=400)
+    if not raw_device:
+        header_device = _parse_device_id(getattr(request, "headers", {}) or {})
+        raw_device = header_device or ""
+    device_id = _normalize_registry_device_id(raw_device)
     pubs = {}
     for field in ("ik_pub", "ek_pub", "spk_pub"):
         value = body.get(field)
@@ -4112,11 +4998,13 @@ async def _handle_crypto_hello(request: web.Request, state: _RelayState) -> web.
             "agent_id": agent_id,
             "ts": time.time(),
             "acked": False,
+            "device_id": device_id,  # B2: Session→Gerät (Routing-Wahrheit)
         }
     frame = {
         "type": "crypto.hello", "v": 1,
         "session_id": session_id,
         "agent_id": agent_id,
+        "device_id": device_id,
         **pubs,
         "ts": int(time.time() * 1000),
     }
@@ -4591,28 +5479,69 @@ async def _handle_http(
         )
         return web.json_response({"error": "Unauthorized"}, status=401)
 
-    # ── Phone connectivity check ────────────────────────────────────────────
-    async with state.phone_ws_lock:
-        ws = state.phone_ws
-        if ws is None or ws.closed:
-            return web.json_response(
-                {
-                    "error": "No phone connected. Open the Hermes app on your phone and connect."
-                },
-                status=503,
-            )
+    body: dict = {}
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            body = body if isinstance(body, dict) else {}
+        except Exception:
+            body = {}
+
+    # ── Geräte-Auswahl (B1 Tool-Weg) ────────────────────────────────────────
+    # Connectivity-Check = 'irgendein Gerät verbunden'; der Befehls-Hüllposten
+    # bekommt optional ein Geräteziel (Kap. 8 #7): body device_id (POST),
+    # Query-Param device_id oder Header X-Device-Id; Default = sticky das
+    # zuletzt registrierte Gerät. Kein Gerät: 503 (alter Ton); WUNSCH-Gerät
+    # nicht verbunden: 503 mit Gerät-Kontext (kein falsches Gerät).
+    requested_device = str(
+        (body.get("device_id") if isinstance(body, dict) else "")
+        or request.query.get("device_id") or "").strip() \
+        or _parse_device_id(request) or None
+    if requested_device and not _DEVICE_ID_RE.fullmatch(requested_device):
+        return web.json_response(
+            {"error": "invalid device_id (ASCII-Wort ≤64)"}, status=400)
+    devices_lock = state.devices_lock or state.phone_ws_lock
+    if devices_lock is None:
+        raise web.HTTPServiceUnavailable(
+            text=json.dumps({"error": "server warming up"}),
+            content_type="application/json",
+        )
+    async with devices_lock:
+        if requested_device:
+            slot = state.devices.get(requested_device)
+            if slot is None or slot.ws is None or slot.ws.closed:
+                logger.warning(
+                    "Tool-Weg: Wunsch-Gerät %s nicht verbunden (path=%s)",
+                    _mask_id(requested_device), path)
+                return web.json_response(
+                    {"error": (f"Requested device {_mask_id(requested_device)} "
+                               "is not connected."),
+                     "device_id": _mask_id(requested_device)},
+                    status=503)
+            ws = slot.ws
+            device_for_cmd = requested_device
+        else:
+            slot = state.devices.get(state.last_active_device or "")
+            if slot is None or slot.ws is None or slot.ws.closed:
+                for candidate in state.devices.values():
+                    if candidate.ws is not None and not candidate.ws.closed:
+                        slot = candidate
+                        break
+                    slot = None
+            if slot is None or slot.ws is None or slot.ws.closed:
+                return web.json_response(
+                    {
+                        "error": "No phone connected. Open the Hermes app on your phone and connect."
+                    },
+                    status=503,
+                )
+            ws = slot.ws
+            device_for_cmd = slot.device_id
 
     # Build the command envelope
     request_id = str(uuid.uuid4())
     method = request.method  # GET or POST
     params = dict(request.query)
-
-    body = {}
-    if method == "POST":
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
 
     command = {
         "request_id": request_id,
@@ -4621,7 +5550,8 @@ async def _handle_http(
         "params": params,
         "body": body,
     }
-    logger.debug(">>> %s %s body=%s", method, path, _safe_body_repr(body))
+    logger.debug(">>> %s %s device=%s body=%s", method, path,
+                 _mask_id(device_for_cmd), _safe_body_repr(body))
 
     # Register the response target *before* sending so we never miss a reply.
     is_binary_stream = path in ("/mic_file", "/file")

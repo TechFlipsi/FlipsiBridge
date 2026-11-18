@@ -22,7 +22,9 @@ F2-Vertrag (Sir-Idee, Umfang FIX):
 
 import asyncio
 import json
+import os
 import time
+from pathlib import Path
 
 import aiohttp
 import pytest
@@ -120,14 +122,37 @@ def _wait_phone_gone_sync(timeout=5.0):
     return False
 
 
+def _wait_slot_gone(device_id: str, timeout=5.0) -> bool:
+    """B1: Warten bis genau DIESE Geräte-Verbindung geräumt ist (andere
+    Geräte-Slots dürfen weiter leben — is_phone_connected ist jetzt
+    'irgendein Gerät')."""
+    from tools.android_relay import _relay_instance
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = _relay_instance
+        if state is None or device_id not in (state.devices or {}):
+            return True
+        time.sleep(0.05)
+    return False
+
+
 @pytest.fixture(autouse=True)
 def w17_env(monkeypatch, tmp_path):
     """W17-F2: Hash-File IMMER in den tmp-Pfad umlenken — die Suite darf
     NIEMALS in den Live-State-Dir (/opt-/Plugin-Verband) schreiben. Runden
-    auf 1000 — sonst zahlt die Suite je koppltem Handshake PBKDF2-200k."""
+    auf 1000 — sonst zahlt die Suite je koppltem Handshake PBKDF2-200k.
+    B1: Auch die Geräte-Registry lebt je Test in tmp (leere Registry = die
+    W17-Regel-Semantik: erste Annahme = Selbst-Adoption, dann Tor)."""
     monkeypatch.setenv("ANDROID_RELAY_PASSWORD_FILE",
                        str(tmp_path / "pairing_password.json"))
     monkeypatch.setenv("ANDROID_RELAY_PW_ITERATIONS", "1000")
+    monkeypatch.setenv("ANDROID_RELAY_DEVICE_REGISTRY",
+                       str(tmp_path / "relay-devices.json"))
+    monkeypatch.setenv("ANDROID_RELAY_KEYS", str(tmp_path / "relay-keys.json"))
+    # B1: mTLS-Quelle der Migration ebenfalls in tmp (die W17-Regel-Semantik
+    # braucht eine LEERE Start-Registry — die Live-/etc-Source darf die Suite
+    # nicht einblenden).
+    monkeypatch.setenv("ANDROID_RELAY_TLS_DIR", str(tmp_path / "tls"))
     yield
 
 
@@ -234,12 +259,26 @@ class TestW17LiveRelaySlotLock:
                 phone_state = await first.receive_json(timeout=2)
                 assert phone_state.get("type") == "relay.state"
 
-                # ZWEITES Gerät, derselbe Code → 403 code-in-use.
+                # ZWEITES Gerät, derselbe Code → 403 code-in-use (B1: das Tor
+                # behält den Fehlton; EINE Anmelde-Anfrage geht an das bekannte
+                # Gerät = Admin der Selbst-Adoption, Rate-Chain zählt weiter).
                 info = await _try_handshake(session, DEVICE_B)
                 assert info["connected"] is False
                 assert info["status"] == 403
                 assert info["bridge_error"] == "code-in-use"
                 assert is_phone_connected()  # erste Verbindung lebt weiter
+                with _auth_lock:
+                    assert len(_auth_failures.get("127.0.0.1", [])) >= 1, \
+                        "Tor-Abweisung muss in die IP-Rate-Chain zählen"
+                request_frame = await first.receive_json(timeout=2)
+                assert request_frame.get("type") == "pairing.request", request_frame
+                assert "device_id_masked" in request_frame and "request_id" in request_frame
+                # Dedupe: dieselbe Kennung im TTL-Fenster erzeugt KEINE zweite
+                # Anfrage (kein Frame-Spam auf das Admin-Gerät).
+                info2 = await _try_handshake(session, DEVICE_B)
+                assert info2["bridge_error"] == "code-in-use"
+                with pytest.raises(asyncio.TimeoutError):
+                    await first.receive_json(timeout=0.4)
 
                 # Reconnect DESSELBEN Geräts geht IMMER durch (Replace-Muster):
                 # alte WS schließt (GOING_AWAY), neue erhält relay.state.
@@ -262,8 +301,9 @@ class TestW17LiveRelaySlotLock:
         assert _wait_phone_gone_sync(), "Slot sollte nach Ende frei sein"
 
     def test_slot_frees_after_holder_disconnect(self):
-        """W17-Kern: tote erste Verbindung = normale Kopplung zurück (kein
-        Dauer-Lock), das Zweitgerät kommt danach durch."""
+        """W17-Kern + B1: tote erste Verbindung = kein Dauer-Lock — das
+        BEKANNTE Gerät kehrt ohne Tor zurück; das UNBEKANNTE Gerät läuft
+        aufs Anmelde-Tor (403 + pairing.request an den lebenden Slot)."""
         start_relay(pairing_code=CODE, port=PORT)
 
         async def scenario():
@@ -276,12 +316,34 @@ class TestW17LiveRelaySlotLock:
                 await first.close()
                 assert await _wait_phone_gone(5.0), "Slot wurde nicht frei"
                 assert _wait_phone_gone_sync()  # Registry auch im Sync-Sinn frei
-                second = await session.ws_connect(
+                # Bekanntes Gerät: direkte Rückkehr (kein Zwangs-Kopplung).
+                again = await session.ws_connect(
                     f"ws://127.0.0.1:{PORT}/ws",
-                    headers=_ws_headers(DEVICE_B),
+                    headers=_ws_headers(DEVICE_A),
                 )
-                await second.receive_json(timeout=2)
-                await second.close()
+                await again.receive_json(timeout=2)
+                # Unbekanntes Gerät: Tor (403) + Anfrage am Admin-Slot.
+                info = await _try_handshake(session, DEVICE_B)
+                assert info["connected"] is False
+                assert info["status"] == 403
+                assert info["bridge_error"] == "code-in-use"
+                request_frame = await again.receive_json(timeout=2)
+                assert request_frame.get("type") == "pairing.request"
+                # Admin freigibt → der NÄCHSTE Handshake des Geräts enrollt.
+                await again.send_json({
+                    "type": "pairing.approve",
+                    "request_id": request_frame["request_id"]})
+                await asyncio.sleep(0.1)  # Frame abarbeiten lassen
+                paired = await asyncio.wait_for(
+                    session.ws_connect(
+                        f"ws://127.0.0.1:{PORT}/ws",
+                        headers=_ws_headers(DEVICE_B),
+                    ),
+                    timeout=3,
+                )
+                await paired.receive_json(timeout=2)  # relay.state
+                await paired.close()
+                await again.close()
 
         asyncio.run(scenario())
 
@@ -381,16 +443,25 @@ class TestW17LiveRelayPasswordGate:
                 )
                 await holder.receive_json(timeout=2)
 
-                # Richtiges Passwort + ANDERES Gerät: Passwort-Tor offen,
-                # F1-Slot-Lock greift trotzdem → code-in-use (F1+F2-Verband).
-                info = await _try_handshake(session, DEVICE_B, PASSWORD)
-                assert info["status"] == 403
-                assert info["bridge_error"] == "code-in-use"
+                # Richtiges Passwort + ANDERES Gerät: Passwort-Tor = Option b —
+                # das W17.2-Passwort verifiziert → DIREKT-Enroll (B1) und
+                # Kopplung (kein code-in-use mehr: die Sperre ist zum Tor
+                # geworden). Registry-Eintrag für B existiert danach.
+                paired = await session.ws_connect(
+                    f"ws://127.0.0.1:{PORT}/ws",
+                    headers=_ws_headers(DEVICE_B, PASSWORD),
+                )
+                await paired.receive_json(timeout=2)
+                registry = json.loads(
+                    Path(os.environ["ANDROID_RELAY_DEVICE_REGISTRY"]).read_text(
+                        encoding="utf-8"))
+                assert DEVICE_B in registry["devices"], "B wurde nicht enrollt"
+                assert DEVICE_A in registry["devices"], "A war Selbst-Adoption"
 
-                # Erster Inhaber stirbt → Wiederaufnahme: richtiges Passwort
-                # + freier Slot → Kopplung ok (dasselbe Zweitgerät).
-                await holder.close()
-                assert await _wait_phone_gone(5.0)
+                # Erster Inhaber stirbt → Wiederaufnahme: bekanntes Gerät B
+                # kehrt direkt zurück (kein Dauer-Lock).
+                await paired.close()
+                assert _wait_slot_gone(DEVICE_B), "B-Slot wurde nicht frei"
                 ws2 = await session.ws_connect(
                     f"ws://127.0.0.1:{PORT}/ws",
                     headers=_ws_headers(DEVICE_B, PASSWORD),
@@ -402,13 +473,31 @@ class TestW17LiveRelayPasswordGate:
                 resp = await self._post(session, "/password_clear", {})
                 assert resp.status == 200
                 assert await resp.json() == {"ok": True, "active": False}
-                assert await _wait_phone_gone(5.0)
-                ws3 = await session.ws_connect(
+                assert _wait_slot_gone(DEVICE_B), "B-Slot wurde nicht frei"
+                # Gerät C (unbekannt, Passwort nun inaktiv) → Tor: 403 +
+                # pairing.request am ADMIN-Slot (Admin-Frame → Freigabe →
+                # Enroll → Kopplung). Admin-WS verbinden VOR dem Versuch,
+                # sonst landet die Anfrage auf einem sterbenden Alt-Slot.
+                admin = await session.ws_connect(
+                    f"ws://127.0.0.1:{PORT}/ws",
+                    headers=_ws_headers(DEVICE_A, PASSWORD),
+                )
+                await admin.receive_json(timeout=2)
+                reject = await _try_handshake(session, DEVICE_C)
+                assert reject["status"] == 403
+                request_frame = await admin.receive_json(timeout=2)
+                assert request_frame.get("type") == "pairing.request", request_frame
+                await admin.send_json({
+                    "type": "pairing.approve",
+                    "device_id": DEVICE_C})
+                await asyncio.sleep(0.1)
+                third = await session.ws_connect(
                     f"ws://127.0.0.1:{PORT}/ws",
                     headers=_ws_headers(DEVICE_C),
                 )
-                await ws3.receive_json(timeout=2)
-                await ws3.close()
+                await third.receive_json(timeout=2)
+                await third.close()
+                await admin.close()
 
         asyncio.run(scenario())
         stop_relay()

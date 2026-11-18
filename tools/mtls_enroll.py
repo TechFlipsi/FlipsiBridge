@@ -152,6 +152,19 @@ def _registry_default() -> dict:
     return {"epoch": epoch, "enrolled": {}}
 
 
+def _registry_devices(data: dict) -> dict:
+    """B2 (Multi-Gerät): Geräte-Map je Registry-FORMAT — v2 trägt sie unter
+    'devices' {device_id: {cert_path…, epoch_of_enroll, enrolled_at}}, Legacy
+    v1 unter 'enrolled' (Lesefallback, aktuelles Verhalten bleibt intakt)."""
+    if not isinstance(data, dict):
+        return {}
+    devices = data.get("devices")
+    if isinstance(devices, dict):
+        return devices
+    enrolled = data.get("enrolled")
+    return enrolled if isinstance(enrolled, dict) else {}
+
+
 def _registry_load(strict: bool = False) -> dict:
     """Registry laden. FEHLENDE Datei = frische Registry (kein Fehler, legacy-
     konform). P43: strict=True (Enroll-Pfad, reset_epoch) behandelt eine
@@ -434,9 +447,30 @@ async def enroll_handler(request):
                 "mtls_enroll: Registry unlesbar — Enrollment verweigert "
                 "(kein stiller Wipe durch Leer-View-Save): %s", exc)
             return JSON_RESPONSE({"error": "registry-unavailable"}, status=503)
-        enrolled = reg.setdefault("enrolled", {})
-        is_new_device = device_id not in enrolled
-        if is_new_device and enrolled:
+        # B2: Registry v2 schreibt — beim ersten Enroll über einem v1-Bestand
+        # wird die Map unter 'devices' migriert (Alt-Zeilen behalten ihre
+        # Felder und erhalten 'enrolled_at' aus ihrem 'ts' — kein Datenverlust,
+        # P43-Wert 'epoch_of_enroll' bleibt je Gerät erhalten). Legacy-Leser
+        # des v1-Formats verlieren hiermit den Zugriff (Rollback = Backup/Weg).
+        if reg.get("v") != 2:
+            legacy_rows = _registry_devices(reg)
+            migrated = {}
+            for legacy_id, legacy_row in legacy_rows.items():
+                if not isinstance(legacy_row, dict):
+                    continue
+                row = dict(legacy_row)
+                row.setdefault("enrolled_at", int(row.get("ts") or 0))
+                migrated[str(legacy_id)] = row
+            reg["v"] = 2
+            reg.pop("enrolled", None)
+            reg["devices"] = migrated
+            logger.warning(
+                "mtls_enroll: Registry v1→v2 MIGRATION (Enroll-Pfad) — %d "
+                "Alt-Gerät(e) unter 'devices' übernommen (Felderverband bleibt)",
+                len(migrated))
+        devices = reg.setdefault("devices", {})
+        is_new_device = device_id not in devices
+        if is_new_device and devices:
             # CODE-EINMALIGKEIT: in dieser Epoch hat bereits ein Gerät enrollt
             # und das Gerät ist NEU → abgelehnt (reset_epoch via Code-Neuerzeugung).
             return JSON_RESPONSE(
@@ -475,10 +509,11 @@ async def enroll_handler(request):
                          "— ReadWritePaths setzen."}, status=500)
 
         reg.setdefault("epoch", 1)
-        enrolled[device_id] = {
+        devices[device_id] = {
             "cn": f"flipsibridge-{device_id}",
             "cert_path": str(cert_path.relative_to(tls_dir)),
             "ts": int(time.time()),
+            "enrolled_at": int(time.time()),
             "epoch_of_enroll": reg["epoch"],
             "is_new_device_epoch": bool(is_new_device),
         }
