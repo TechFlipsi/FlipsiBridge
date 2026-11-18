@@ -9,15 +9,18 @@ import java.util.Locale
  * (gleiche Faser wie DashboardRules: hier leben nur Wahrheit + Ordnung,
  * ihre Texte hängt die UI an).
  *
- * Backend-Verband (HEAD 24acda0, contrib/hermes-chat-plugin/adapter.py +
- * tools/android_relay.py):
- *  - relay.state devices[]: {device_id: per _mask_id NUR "<masked:N>" —
- *    KEINE stabile maskierte Kennung, alle Geräte gleicher Länge wirken
- *    identisch (Fehlstelle, Report B7); alias: Backend setzt beim Enroll
- *    KEINEN — leer ist der Normalfall; admin; online}. Der Frame listet
- *    NUR die LIVE verbundene Slots; offline Registry-Geräte fehlen ihm und
- *    last_seen steckt NICHT im Frame: lastSeenMs ist deshalb 0L =
- *    "unbekannt erlaubt" und wird ehrlich nicht angezeigt.
+ * Backend-Verband (APP-ANSCHLUSS-Klärung, HEAD 733504c GELESEN —
+ * tools/android_relay.py _send_phone_state, NICHT geändert):
+ *  - relay.state devices[] (JE Phone-Hallo-/Presence-Frame): je Eintrag
+ *    {device_id: per _mask_id NUR "<masked:N>" — die Maske trägt NUR die
+ *    LÄNGE der rohen Kennung, KEINE stabile maskierte Kennung (alle Geräte
+ *    gleicher Länge wirken identisch); alias: Backend setzt beim Enroll
+ *    KEINEN — leer ist der Normalfall; admin; online; last_seen: Unix-ms
+ *    der letzten Registrierungs-/Slot-Pflege (0 = unbekannt — für frühere
+ *    Frames gilt das ehrlich weiter); request_id: EPHEMERES B4-Revoke-
+ *    Handle (_device_revoke_id, in-memory) = Zielträger des device_revoke-
+ *    Frames}. Der Frame liest Registry ∪ LIVE-Slots — OFFLINE Geräte
+ *    bleiben sichtbar (online=False + last_seen).
  *  - pairing.request-Frame: {request_id, device_id_masked, ip, ts(ms),
  *    ttl_s = 600 (10 min, _PAIRING_TTL_SECONDS), Dedupe im TTL-Fenster}.
  *    Der Frame trägt KEINEN Alias-Vorschlag — der Name wird APP-GENERISCH
@@ -26,10 +29,13 @@ import java.util.Locale
  *    Gerät zurück; das Relay löst device_id AUCH über request_id auf —
  *    deshalb ist [PairingRequest.requestId] der Antwortträger (die App
  *    sieht nur die Maske, nie die rohe device_id).
- *  - Revoke: das Backend hat NOCH KEINEN Frame ("device-revoked" ist nur
- *    Plan Kap. 4.2, Close-Code 4403-Familie) — die UI-Kette läuft vollständig
- *    bis zur Bestätigung, das Absenden bleibt TODO (B-Lane/Backend), siehe
- *    DevicesCard.
+ *  - Revoke (B4, seit HEAD 733504c real): device_revoke vom Phone
+ *    {type: "device_revoke", request_id ODER raw device_id; OHNE Ziel =
+ *    Self-Revoke} — die App sendet bewusst NUR das request_id-Handle
+ *    (PII-Regel); fremde Geräte entfernen NUR Admin-Slots (fail-closed
+ *    am Relay), das Ziel wird mit Close-Code 4404 "device-revoked"
+ *    gekickt. Die 2-stufige UI-Kette sendet erst nach der Bestätigung
+ *    und NUR mit Handle (DevicesCard/SettingsHome-Verdrahtung).
  */
 object DeviceRules {
 
@@ -45,6 +51,18 @@ object DeviceRules {
         val online: Boolean = false,
         /** Unix-ms der letzten Sichtung — 0L = unbekannt (Frame-Fehlstelle). */
         val lastSeenMs: Long = 0L,
+        /**
+         * APP-ANSCHLUSS-Verdrahtung (B4-Kontrakt, HEAD 733504c): das
+         * EPHEMERE Revoke-Handle des Relays (relay.state devices[].request_id,
+         * _device_revoke_id — in-memory uuid4-Präfix). Einziges Zielträger-
+         * Konzept, das die App je Geräte-Eintrag kennt: das device_revoke-
+         * Frame löst das Ziel über REQUEST_ID auf (Parität pairing.approve-
+         * Norm: request_id ODER raw device_id — die App hält NIEMALS rohe
+         * Kennungen, PII-Regel). Leer = Frame ohne request_id-Feld (alter
+         * Relay vor B4) → die UI verweigert das Senden (fail-closed: ein
+         * Frame OHNE Ziel würde am Backend als Self-Revoke wirken).
+         */
+        val requestId: String = "",
     )
 
     /** Offene Kopplungs-Anfrage (pairing.request-Frame verengt). */
@@ -120,14 +138,63 @@ object DeviceRules {
 
     /**
      * "Dieses Gerät"-Markierung: NUR bei exakter Übereinstimmung der maskierten
-     * Kennung. Bewusst streng — das Backend-Signal ("<masked:N>") erlaubt heute
-     * KEIN sicheres Eigen-Gerät-Matching (alle Masken tragen nur die Länge,
-     * Fehlstelle Report B7); ohne Übereinkunft wird NICHT markiert statt
-     * falsch markiert (never-wrong vor always-right).
+     * Kennung. Bewusst streng — markiert wird NUR mit einer Maske, die
+     * [ownMaskedDeviceId] NIE-WRONG aufgelöst hat; ohne Auflösung (null) wird
+     * NICHT markiert statt falsch markiert (never-wrong vor always-right).
+     *
+     * APP-ANSCHLUSS-Klärung (Backend HEUTE gelesen, NICHT geändert — HEAD
+     * 733504c, tools/android_relay.py _mask_id): _mask_id(value) =
+     * "<masked:{len(value)}>" — die Maske trägt NUR die LÄNGE der rohen
+     * Kennung. Die App kennt ihre EIGENE rohe Kennung (PairingManager.deviceId,
+     * per-Install UUID) → ihre EIGENE Maske ist app-seitig MECHANISCH
+     * berechenbar; [ownMaskedDeviceId] deckelt die Mehrdeutigkeit bewusst mit
+     * dem Einträger-Zähl-Gate, damit das Exakt-Matching hier nie-wrong bleibt.
      */
     fun isOwnDevice(entry: DeviceEntry, ownMaskedDeviceId: String?): Boolean =
         ownMaskedDeviceId != null && entry.deviceId.isNotEmpty() &&
             entry.deviceId == ownMaskedDeviceId
+
+    /**
+     * Backend-Form-Gate der Geräte-Kennung (Spiegel zu tools/android_relay.py
+     * _DEVICE_ID_RE: "[A-Za-z0-9._-]{1,64}") — NUR eine Kennung dieser Form
+     * überlebt _normalize_registry_device_id UNVERÄNDERT (Länge bleibt ==
+     * Länge der rohen App-Kennung); alles andere fällt ans Backend auf
+     * "phone" (5 Zeichen) zurück. Ohne dieses Gates wäre die Länge-Maske im
+     * Sonderfall NICHT mehr die eigene — never-wrong schließt den Fall aus.
+     */
+    private val RAW_DEVICE_ID_RE = Regex("^[A-Za-z0-9._-]{1,64}$")
+
+    /**
+     * APP-ANSCHLUSS (Self-Match-Klärung): maskierte EIGENE Kennung für
+     * [isOwnDevice] — oder null (bewusst DEAKTIVIERT) wenn kein NIE-WRONG-
+     * Beweis möglich ist. Herleitung aus gelesenem Backend-Verband:
+     *
+     *  1. _mask_id(value) = "<masked:{len(value)}>" — Maske ⟺ Länge der rohen
+     *     Kennung; die Sonderform "none" entsteht NUR für leere Werte und
+     *     trägt die "<masked:"-Form nie.
+     *  2. Der Frame listet Registry ∪ LIVE-Slots (devices[]-Aufbau) — der
+     *     EIGENE Slot ist immer dabei, solange dieser Frame ankommt.
+     *  3. Form-Gate (oben): nur bei RE-gültiger Kennung ist die Maske des
+     *     eigenen Eintrags "<masked:{len(own)}>".
+     *  4. GATE: trägt GENAU EIN Eintrag diese Maske, so hat genau ein Geräte-
+     *     Eintrag diese Länge — und der eigene (2./3.) zählt auch dazu →
+     *     der einzige Träger IST der eigene Eintrag. Beweis-streng nie-wrong.
+     *
+     * Tragen ≥ 2 Einträge dieselbe Maske (der Normalfall je zwei App-Geräte:
+     * beide per-Install-UUIDs mit 36 Zeichen → beide "<masked:36>"), ist der
+     * Abgleich MEHRDEUTIG → null: KEIN "Dieses Gerät"-Chip (deaktiviert,
+     * ehrlich — never-wrong vor always-right, Sir-Regel). Der Wert ist REIN
+     * abgeleitet — KEINE Server-Abfrage, NIEMALS geraten.
+     *
+     * @param devices aktueller relay.state devices[]-Snapshot.
+     * @param rawOwnDeviceId EIGENE rohe Kennung (PairingManager.deviceId()).
+     */
+    fun ownMaskedDeviceId(devices: List<DeviceEntry>, rawOwnDeviceId: String?): String? {
+        val raw = rawOwnDeviceId?.trim().orEmpty()
+        if (!RAW_DEVICE_ID_RE.matches(raw)) return null
+        val mask = "<masked:${raw.length}>"
+        return if (devices.count { it.deviceId == mask } == 1) mask else null
+    }
 
     /**
      * last_seen relativ: DashboardRules.relativeTime ist DIE Eine-Faser für

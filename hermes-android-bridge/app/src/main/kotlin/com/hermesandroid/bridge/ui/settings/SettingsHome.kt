@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -17,6 +18,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.auth.PairingManager
+import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.i18n.AppLanguage
 
 /**
@@ -102,21 +105,61 @@ fun SettingsHome(
         // B7 (Multi-Gerät): Geräte-Verwaltung — Liste aus relay.state
         // devices[], Kopplungs-Anfrage (pairing.request), Entfernen 2-stufig.
         //
-        // VERDRAHTUNG (bewusst noch nicht verbunden): der Zustand kommt mit
-        // der B5/B6-Lane — TODO(B5): `devices` aus dem relay.state-Flow von
-        // RelayClient (handleRelayStateFrame → devices[]) via collectAsState,
-        // TODO(B5): `pendingPairing` aus dem pairing.request-StateFlow,
-        // TODO(B5): `ownMaskedDeviceId` = maskierte Eigene-Kennung, und
-        // TODO(B5): onPairingDecision → sende pairing.approve/pairing.deny
-        // (request_id) + Revoke-Senden, sobald der Backend-Frame existiert
-        // (Platzhalter-Callbacks im Card-Aufruf bleiben bis dahin No-Op).
+        // APP-ANSCHLUSS-VERDRAHTUNG (real, Multi-Gerät B4-Kontrakt HEAD
+        // 733504c): alle vier Signale sind gebunden —
+        //  1. devices: RelayClient.devices (parseRelayStateDevices liest
+        //     devices[] je relay.state-Hallo/Presence-Frame),
+        //  2. pendingPairing: RelayClient.pairingFrame (B5-Lane) → hier auf
+        //     DeviceRules.PairingRequest abgebildet (Feld-Parität) — das
+        //     Panel ist ehrlich: abgelaufene Anfragen verschwinden (TTL),
+        //  3. ownMaskedDeviceId: NIE-WRONG über DeviceRules.ownMaskedDeviceId
+        //     (Backend-Maske "<masked:{len}>"; MEHRDEUTIG = kein Chip),
+        //  4. onPairingDecision → sendPairingApprove/sendPairingDeny
+        //     (request_id-Parität: das Relay löst die Maske selbst auf) mit
+        //     StateFlow-Räumung nur bei erfolgreichem Senden (fehlge-
+        //     schlagenes WS-Send lässt die Anfrage sichtbar = wiederholbar);
+        //     onRevokeDevice → sendDeviceRevoke mit dem EPHEMEREN B4-Handle
+        //     — NUR mit Handle (fail-closed: je Frame OHNE Ziel würde das
+        //     Backend SELBST abmelden) und NUR bei offener Verbindung
+        //     (sendRawFrame gibt false ohne Socket).
         item(key = "devices") {
+            val devices by RelayClient.devices.collectAsState()
+            val pairingFrame by RelayClient.pairingFrame.collectAsState()
+            val pendingPairing = pairingFrame?.let { frame ->
+                DeviceRules.PairingRequest(
+                    requestId = frame.requestId,
+                    maskedDeviceId = frame.deviceMasked,
+                    ip = frame.ip,
+                    tsMs = frame.ts,
+                    ttlS = frame.ttlS,
+                )
+            }
             DevicesCard(
-                devices = emptyList(),
-                pendingPairing = null,
-                ownMaskedDeviceId = null,
+                devices = devices,
+                pendingPairing = pendingPairing,
+                // EIGENE Maske NIE-WRONG abgeleitet (nie raten): Backend-Masken-
+                // Regel "<masked:{len(raw)}>" + Form-Gate + Einträger-GATE
+                // (Beweis in DeviceRules.ownMaskedDeviceId); mehrdeutig = null.
+                ownMaskedDeviceId = DeviceRules.ownMaskedDeviceId(
+                    devices, PairingManager.deviceId(),
+                ),
                 expanded = devicesOpen,
                 onExpandedChange = { devicesOpen = it },
+                onPairingDecision = { requestId, approve ->
+                    val sent = if (approve) RelayClient.sendPairingApprove(requestId)
+                    else RelayClient.sendPairingDeny(requestId)
+                    // Räumen erst nach wirksamem Senden — eine fehlgeschlagene
+                    // WS-Send-Spur lässt das Tor sichtbar (erneuter Versuch).
+                    if (sent) RelayClient.dismissPairingFrame()
+                },
+                onRevokeDevice = { requestId ->
+                    // Fail-closed: OHNE Handle senden wir NICHT — der Frame
+                    // würde am Backend als Self-Revoke (ohne Ziel = eigenes
+                    // Gerät) wirken, niemals das gewünschte fremde Gerät
+                    // entfernen. Mit Handle löst das Relay das Ziel selbst
+                    // auf (Admin-only fail-closed dort; 4404-Kick am Ziel).
+                    if (requestId.isNotBlank()) RelayClient.sendDeviceRevoke(requestId)
+                },
             )
         }
     }

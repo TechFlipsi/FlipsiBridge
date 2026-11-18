@@ -59,27 +59,35 @@ import kotlinx.coroutines.delay
  * SignalRedText 6,18), Zustand nie NUR über Farbe (Online/Offline steht als
  * Text daneben; der Punkt ist Deko, contentDescription = null).
  *
- * STATE-VERBAND (bewusst entkoppelt für die B5/B6-Lane):
- *  - devices: relay.state devices[] (maskierte Kennung "<masked:N>", alias —
- *    Backend setzt heute keinen, admin, online). Die B5-Lane bindet den
- *    StateFlow aus RelayClient.handleRelayStateFrame an; bis dahin zeigt
- *    die Karte den ehrlichen Leer-Hinweis.
+ * STATE-VERBAND (APP-ANSCHLUSS-Verdrahtung, Multi-Gerät):
+ *  - devices: relay.state devices[] — StateFlow aus RelayClient
+ *    (parseRelayStateDevices, B4-Kontrakt HEAD 733504c: {device_id =
+ *    NUR Maske "<masked:N>", alias — Backend setzt keinen, admin, online,
+ *    last_seen (Unix-ms, 0 = unbekannt), request_id = B4-Revoke-Handle}).
+ *    Offline-Geräte bleiben sichtbar (Registry ∪ Slots); ohne die
+ *    devices[]-Liste im Frame (alter Relay vor B4) zeigt die Karte den
+ *    ehrlichen Leer-Hinweis.
  *  - pendingPairing: StateFlow der B5-Lane über den pairing.request-Frame
- *    (TTL 600 s). Diese Komponente nimmt die Entscheidung nur als
- *    [onPairingDecision]-Callback entgegen (Platzhalter-Default: bewusst
- *    No-Op, die Verdrahtung sendet pairing.approve/pairing.deny mit der
- *    request_id — Relay löst device_id AUCH über request_id auf).
- *  - ownMaskedDeviceId: maskierte Form der EIGENEN Geräte-Kennung. Das
- *    Backend-Signal erlaubt heute KEIN sicheres Eigen-Matching ("<masked:N>"
- *    trägt nur die Länge — Fehlstelle Report B7): ohne exakte Überein-
- *    stimmung wird NICHT als „Dieses Gerät“ markiert (never-wrong).
+ *    (TTL 600 s), APP-ANSCHLUSS: SettingsHome mappt PairingFrameRules.
+ *    PairingFrame → DeviceRules.PairingRequest. Diese Komponente nimmt die
+ *    Entscheidung nur als [onPairingDecision]-Callback entgegen — die
+ *    Verdrahtung sendet pairing.approve/pairing.deny mit der request_id
+ *    (Relay löst device_id AUCH über request_id auf) und räumt den
+ *    StateFlow bei erfolgreichem Senden (dismissPairingFrame).
+ *  - ownMaskedDeviceId: maskierte Form der EIGENEN Geräte-Kennung — von
+ *    SettingsHome NIE-WRONG über DeviceRules.ownMaskedDeviceId aufgelöst
+ *    (Backend-Maske = "<masked:{len}>"; bei MEHRDEUTIGER Maske — je zwei
+ *    App-Geräte tragen dieselbe Länge-Maske — bewusst null ⇒ KEIN Chip,
+ *    never-wrong vor always-right).
  *  - REVOKE 2-STUFIG: „Entfernen“ öffnet den Bestätigungs-Dialog (Warnung:
  *    Gerät wird abgemeldet + E2E-Sitzung endet), der Lauf ruft erst nach
- *    der Bestätigung [onRevokeDevice] (Platzhalter-Default: No-Op).
- *    TODO(B-Lane/Backend): Es gibt NOCH KEINEN Revoke-Frame im Relay/Adapter
- *    („device-revoked“, Close-Code 4403-Familie, steht nur im Plan Kap. 4.2;
- *    HEAD 24acda0) — State + UI-Kette sind fertig, das reale Senden
- *    verdrahtet die B-Lane, sobald der Backend-Vertrag existiert.
+ *    der Bestätigung [onRevokeDevice] — die Verdrahtung sendet das
+ *    device_revoke-Frame mit dem EPHEMEREN B4-Handle (request_id aus dem
+ *    DeviceEntry; OHNE Ziel = Self-Revoke am Relay). Das Backend löst das
+ *    Ziel über das Handle auf (die App hält NIEMALS rohe Kennungen), kickt
+ *    das Ziel mit Close-Code 4404 ("device-revoked") und broadcastet den
+ *    neuen relay.state-Stand; Freigabe für FREMDE Geräte = Admin-only
+ *    (fail-closed am Relay, kein App-Fallback — HEAD 733504c).
  *
  * STRING-BEDARF (bewusst als Literale im Code, KEINE Eingriffe in strings.xml
  * — die Strings-Lane trägt die im Report B7 notierten dev_*-Keys nach und
@@ -99,12 +107,22 @@ fun DevicesCard(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
-    onPairingDecision: (requestId: String, approve: Boolean) -> Unit = { _, _ -> },
-    onRevokeDevice: (deviceId: String) -> Unit = {},
+    // APP-ANSCHLUSS: beide Callbacks sind REAL verdrahtet (SettingsHome) —
+    // approve/deny → sendPairingApprove/sendPairingDeny; Revoke →
+    // sendDeviceRevoke mit dem B4-Handle. Keine Platzhalter-Defaults mehr.
+    onPairingDecision: (requestId: String, approve: Boolean) -> Unit,
+    /**
+     * APP-ANSCHLUSS: trägt das EPHEMERE B4-Revoke-Handle (relay.state
+     * devices[].request_id) des bestätigten Eintrags — der Zielträger des
+     * device_revoke-Frames (die App hält KEINE rohen Kennungen, PII-Regel).
+     * Leer = alter Relay vor B4 → die Verdrahtung verweigert das Senden
+     * (fail-closed statt versehentlichem Self-Revoke ohne Ziel).
+     */
+    onRevokeDevice: (requestId: String) -> Unit,
 ) {
     val ordered = remember(devices) { DeviceRules.sortedDevices(devices) }
     // 2. Stufe des Revoke-Laufs: erst der Klick auf „Entfernen“ besetzt das
-    // Ziel, erst die Bestätigung im Dialog sendet (Platzhalter-Callback).
+    // Ziel, erst die Bestätigung im Dialog sendet (APP-ANSCHLUSS-Verdrahtung).
     var revokeTarget by remember { mutableStateOf<DeviceRules.DeviceEntry?>(null) }
 
     Card(
@@ -186,10 +204,13 @@ fun DevicesCard(
         RevokeConfirmDialog(
             entry = target,
             onConfirm = {
-                // TODO(B-Lane/Backend): Revoke-Frame existiert am HEAD 24acda0
-                // NOCH NICHT — hier sendet die verdrahtete B-Lane später
-                // (device_revoke o. /cert_revoke-Verband, Plan Kap. 4.2).
-                onRevokeDevice(target.deviceId)
+                // APP-ANSCHLUSS: das EPHEMERE B4-Revoke-Handle (request_id)
+                // ist der Zielträger — das Relay löst es auf und kickt das
+                // Ziel mit Close 4404 ("device-revoked"). Leerer Handle
+                // (alter Relay vor B4) wird fail-closed oben verworfen,
+                // statt als Frame OHNE Ziel = versehentlicher Self-Revoke
+                // zu wirken.
+                onRevokeDevice(target.requestId)
                 revokeTarget = null
             },
             onDismiss = { revokeTarget = null },
@@ -335,10 +356,10 @@ private fun AdminBadge() {
  * („Gerät N“, der Frame trägt keinen), maskierte Kennung + IP als Kontext,
  * Restlaufzeit sekündlich (TTL 600 s — abgelaufen verschwindet die Anfrage
  * ehrlich, kein Fake-Button), Annehmen/Ablehnen je ≥ 48 dp. Beide Aktionen
- * laufen als [onPairingDecision] mit request_id — der Platzhalter-Default in
- * [DevicesCard] ist bewusst No-Op, die B5/B6-Lane verdrahtet das Senden
- * (pairing.approve / pairing.deny an das Relay; device_id wird dort AUCH
- * über request_id aufgelöst, die App sieht nur die Maske).
+ * laufen als [onPairingDecision] mit request_id — die APP-ANSCHLUSS-
+ * Verdrahtung (SettingsHome) sendet (pairing.approve / pairing.deny an das
+ * Relay; device_id wird dort AUCH über request_id aufgelöst, die App sieht
+ * nur die Maske) und räumt den StateFlow bei erfolgreichem Senden.
  *
  * Bewusst PUBLIC (nicht privat): die B5/B6-Lane kann das Tor-Banner auch
  * UNABHÄNGIG von der Geräte-Karte montieren (z. B. am Screen-Rand), weil die

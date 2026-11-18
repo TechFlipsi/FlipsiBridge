@@ -44,6 +44,7 @@ import com.hermesandroid.bridge.server.ServerProfileRules
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.service.BridgeAccessibilityService
 import com.hermesandroid.bridge.service.BridgeConnectionService
+import com.hermesandroid.bridge.ui.settings.DeviceRules  // APP-ANSCHLUSS: DeviceEntry des B7-Geräte-UI
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -479,6 +480,20 @@ object RelayClient {
     /** Agenten-Liste (relay.state) — letzte Meldung des Relays. */
     private val _agents = MutableStateFlow<List<AgentEntry>>(emptyList())
     val agents: StateFlow<List<AgentEntry>> = _agents.asStateFlow()
+
+    /**
+     * APP-ANSCHLUSS-Verdrahtung (Multi-Gerät B4-Kontrakt, HEAD 733504c):
+     * Geräte-Liste aus dem relay.state-Hallo-/Presence-Frame (devices[]) —
+     * je Eintrag {device_id (NUR Maske "<masked:N>" — PII-Regel, _mask_id),
+     * alias, admin, online, last_seen (Unix-ms, 0 = unbekannt), request_id
+     * (B4-Revoke-Handle — einziges Zielträger-Konzept der App für das
+     * device_revoke-Frame; Parität pairing.approve-Norm)}. REPLACE je Frame
+     * (letzte Meldung des Relays, Parität agents); ohne devices-Feld
+     * (alter Relay vor B4) bleibt die Liste leer (ehricher Leer-Hinweis).
+     * Einträge tragen KEINE rohen Kennungen — nie (Server-PII-Regel).
+     */
+    private val _devices = MutableStateFlow<List<DeviceRules.DeviceEntry>>(emptyList())
+    val devices: StateFlow<List<DeviceRules.DeviceEntry>> = _devices.asStateFlow()
 
     /** Empfangene Agenten-Antworten (chat.event) in Empfangs-Reihenfolge. */
     private val _chatEvents = MutableStateFlow<List<ChatMessageEvent>>(emptyList())
@@ -949,6 +964,8 @@ object RelayClient {
         // offline (onClosed läuft hier nicht — disconnect() bumpt generation,
         // die Callbacks kehren früh zurück).
         markAgentsOffline()
+        // APP-ANSCHLUSS: Geräte-Liste ebenso — ohne Verbindung „online“ gelogen.
+        markDevicesOffline()
         // PH-3 Welle 2: Session-Keys verwerfen (RAM-only; frischer Handshake je
         // Verbindung — Spec §2.5 Rotation je Session).
         cryptoSessions.clear()
@@ -1218,6 +1235,8 @@ object RelayClient {
                 // relay.state-Snapshot — ohne Verbindung ist JEDE „online“-
                 // Anzeige gelogen (Presence-Push ist Ein-Weg ohne Spool).
                 markAgentsOffline()
+                // APP-ANSCHLUSS: Geräte-Liste ebenso (Parität markAgentsOffline).
+                markDevicesOffline()
                 endSession()
                 // v0.12.0 (Akku P0-2): Leakschutz — ein gestorbener Stream darf
                 // den Vollcapture-Zustand nicht dauerhaft stehen lassen.
@@ -1271,6 +1290,8 @@ object RelayClient {
                 // PH-FIX-CHAT-A (F6): wie onClosed — Snapshot „online“ ist
                 // ohne Verbindung gelogen.
                 markAgentsOffline()
+                // APP-ANSCHLUSS: Geräte-Liste ebenso (Parität markAgentsOffline).
+                markDevicesOffline()
                 endSession()
                 // v0.12.0 (Akku P0-2): Leakschutz — wie onClosed.
                 EventStore.highVolumeEvents = false
@@ -1476,6 +1497,21 @@ object RelayClient {
      */
     private fun markAgentsOffline() {
         _agents.update { current ->
+            if (current.isEmpty()) current else current.map { it.copy(online = false) }
+        }
+    }
+
+    /**
+     * APP-ANSCHLUSS-Verdrahtung: Geräte-„online“-Merker räumen (Parität
+     * [markAgentsOffline]) — der devices[]-Snapshot ist an den Socket
+     * gebunden; stirbt die Phone-WS (onClosed/onFailure) oder trennt Sir
+     * bewusst, ist JEDE „online“-Anzeige der Liste gelogen (Presence-Push
+     * ist Ein-Weg ohne Spool). Liste bleibt mit last_seen erhalten, der
+     * nächste relay.state-Frame ersetzt sie ohnehin vollständig. update{}
+     * = atomar (SEC-W1 W1C-4-Muster).
+     */
+    private fun markDevicesOffline() {
+        _devices.update { current ->
             if (current.isEmpty()) current else current.map { it.copy(online = false) }
         }
     }
@@ -1798,9 +1834,50 @@ object RelayClient {
         }
         _agents.value = parsed
         if (BuildConfig.DEBUG) Log.d(TAG, "relay.state: ${parsed.size} Agent(en)")
+        // APP-ANSCHLUSS-Verdrahtung: devices[] daneben mitlesen (B7-Geräte-
+        // Karte bindet den [devices]-Flow; Felder oben im Frame-Verband).
+        parseRelayStateDevices(json)
         // PH-3 Welle 2: E2E-Handshake je onlineem Agenten (crypto.hello über
         // POST /crypto_hello; Identity-Publish läuft parallel beim onOpen).
         maybeStartHandshakes()
+    }
+
+    /**
+     * APP-ANSCHLUSS-Verdrahtung (Multi-Gerät, B4-Kontrakt aus dem Backend
+     * GELESEN — HEAD 733504c, tools/android_relay.py _send_phone_state):
+     * devices[] des relay.state-Frames → [devices]-Flow. Je Eintrag
+     * {device_id, alias, admin, online, last_seen, request_id}; Felder
+     * fail-soft (fehlende = ehrliche Defaults wie bei der agents-Parse),
+     * Eintrag OHNE device_id wird übersprungen. Fehlt das devices-Feld
+     * (alter Relay vor B4), bleibt die Liste LEER — die Geräte-Karte zeigt
+     * ihren ehrlichen Leer-Hinweis, kein Fake-Bestand.
+     */
+    private fun parseRelayStateDevices(json: JsonObject) {
+        val devicesArray = json.get("devices") as? JsonArray
+        val parsed = if (devicesArray == null) {
+            emptyList()
+        } else {
+            devicesArray.mapNotNull { element ->
+                val obj = element as? JsonObject ?: return@mapNotNull null
+                // device_id = PII-MASKE des Relays ("<masked:N>") — bewusst
+                // das Einzige, was die App je hält (nie rohe Kennungen).
+                val deviceId = stringOf(obj, "device_id")
+                if (deviceId.isNullOrEmpty()) return@mapNotNull null
+                DeviceRules.DeviceEntry(
+                    deviceId = deviceId,
+                    alias = stringOf(obj, "alias").orEmpty(),
+                    admin = boolOf(obj, "admin") ?: false,
+                    online = boolOf(obj, "online") ?: false,
+                    lastSeenMs = longOf(obj, "last_seen") ?: 0L,
+                    // B4-Revoke-Handle (Antwortträger des device_revoke-
+                    // Frames, Parität pairing.approve). Leerer Handle =
+                    // alter Relay → die UI verweigert das Senden.
+                    requestId = stringOf(obj, "request_id").orEmpty(),
+                )
+            }
+        }
+        _devices.value = parsed
+        if (BuildConfig.DEBUG) Log.d(TAG, "relay.state: ${parsed.size} Gerät(e)")
     }
 
     /**
@@ -2358,6 +2435,11 @@ object RelayClient {
         json.get(field)?.takeIf { it.isJsonPrimitive }?.asLong
     }.getOrNull()
 
+    /** APP-ANSCHLUSS: bool-Feld fail-soft lesen (devices[]: admin/online). */
+    private fun boolOf(json: JsonObject, field: String): Boolean? = runCatching {
+        json.get(field)?.takeIf { it.isJsonPrimitive }?.asBoolean
+    }.getOrNull()
+
     /** Vorher-sichtbare Session-Menge (W18-B: Gain-Erkennung fürs Banner-Clear). */
     private var e2eSessionAgentsPreviouslyVisible: Set<String> = emptySet()
 
@@ -2687,6 +2769,40 @@ object RelayClient {
     /** B5: UI-Räumung der angezeigten Anfrage (B7 bindet; StateFlow-Reset). */
     fun dismissPairingFrame() {
         _pairingFrame.value = null
+    }
+
+    /** APP-ANSCHLUSS: Frame-Typ des Entfernens (Kap. 4.2, B4-Kontrakt). */
+    private const val DEVICE_REVOKE_FRAME = "device_revoke"
+
+    /**
+     * APP-ANSCHLUSS-Verdrahtung: device_revoke vom Phone zum Relay (B4-
+     * Kontrakt aus dem Backend GELESEN — HEAD 733504c,
+     * tools/android_relay.py _handle_phone_device_revoke):
+     *
+     *   {"type": "device_revoke", "request_id": <B4-Handle>}
+     *
+     * request_id = das Revoke-Handle aus relay.state devices[].request_id
+     * ([DeviceRules.DeviceEntry.requestId]) — das Relay löst das Ziel AUCH
+     * über das Handle auf (Parität pairing.approve-Norm: request_id ODER
+     * raw device_id; die App hält bewusst NIE rohe Kennungen — PII-Regel).
+     * Administrativ: FREMDE Geräte dürfen NUR Admin-Slots entfernen
+     * (fail-closed am Relay, kein App-Fallback); OHNE Ziel (leeres Handle)
+     * = das EIGENE Gerät abmelden (für JEDES Gerät erlaubt).
+     *
+     * Wirksamkeit am Ziel: Registry-Eintrag weg + WS-Kick des Relays mit
+     * Close-Code 4404 ("device-revoked") — die App behandelt 4404 (nicht
+     * Mitglied der code-in-use-4403-Familie) im generischen Getrennt-Pfad,
+     * der Reconnect läuft danach ins Anmelde-Tor (fail-closed korrekt).
+     *
+     * @param requestId B4-Revoke-Handle des Ziel-Eintrags; Blank = Self-Revoke.
+     */
+    fun sendDeviceRevoke(requestId: String): Boolean {
+        val id = requestId.trim()
+        val frame = JsonObject().apply {
+            addProperty("type", DEVICE_REVOKE_FRAME)
+            if (id.isNotEmpty()) addProperty("request_id", id)
+        }
+        return sendRawFrame(frame)
     }
 
     /**
