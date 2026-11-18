@@ -81,6 +81,12 @@ fun SettingsHome(
         activity?.let { DefaultAssistantCoordinator(it) }
     }
 
+    // W22 A2 (P5): Anruf-Einstellungen — EIN Aufenthaltsort des Reglers
+    // „Anruf-Verlauf aufzeichnen“ (default an). Karte startet zugeklappt wie
+    // jede Sektion; nur dieser Call/Verlauf-Block ist W22, der Rest der
+    // SettingsHome bleibt unberührt.
+    var callsOpen by rememberSaveable { mutableStateOf(false) }
+
     LazyColumn(
         modifier = modifier.fillMaxSize().padding(padding),
         contentPadding = PaddingValues(
@@ -138,6 +144,13 @@ fun SettingsHome(
                 expanded = assistantPkgOpen,
                 onExpandedChange = { assistantPkgOpen = it },
                 texts = pkgTexts,
+            )
+        }
+        // W22 A2 (P5): Anrufe — Verlaufs-Regler (CallSettingsCard, s. KDoc).
+        item(key = "calls") {
+            CallSettingsCard(
+                expanded = callsOpen,
+                onExpandedChange = { callsOpen = it },
             )
         }
         // B7 (Multi-Gerät): Geräte-Verwaltung — Liste aus relay.state

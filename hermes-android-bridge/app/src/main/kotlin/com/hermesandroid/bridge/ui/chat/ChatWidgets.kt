@@ -51,6 +51,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -61,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.client.CallRules
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.ui.FlipsiColors
 import kotlinx.coroutines.launch
@@ -99,6 +102,19 @@ data class ChatQuote(
 )
 
 /**
+ * W22 A2 (P5, Call-Verlauf): Call-Anhang einer ChatMessage — null = normale
+ * Bubble. Spiegel von ChatHistoryStore.CallInfo (Platte) mit den eigenen
+ * UI-Typen (wie ChatMediaInfo ↔ Entry.mediaKind*): Anzeige-Text baut das
+ * Widget je LOCALE aus den Feldern, [ChatMessage.text] bleibt leer (kein
+ * eingefrorenes Literal — W16.3-F3-Verband).
+ */
+data class ChatCallInfo(
+    val direction: String,   // CallRules.CALL_DIRECTION_INCOMING/OUTGOING
+    val missed: Boolean,
+    val durationSec: Long,
+)
+
+/**
  * Eine Chat-Nachricht. [fromAgent] = true → Antwort des Agenten (KI) und
  * bekommt deshalb das „KI“-Badge (Art. 50 AI-Act-Kennzeichnungspflicht).
  * MEDIA-T1: [media] != null → Media-Bubble (Bild/Voice/Datei-Rendering in
@@ -108,6 +124,9 @@ data class ChatQuote(
  * Empfangs-Bubble (Messenger-Muster). [text] bleibt die REINE Antwort
  * (das Draht-Format mit Zitat baut ChatQuoteRules.wireText nur für Versand +
  * Platte).
+ * W22 A2 (P5): [call] != null → Anruf-Eintrag statt Text-Bubble —
+ * [CallHistoryBubble] (beendet, mit Dauer) oder [CallMissedRow] (verpasst),
+ * gerendert anstelle der MessageBubble im Verlauf.
  */
 data class ChatMessage(
     val id: Long,
@@ -125,6 +144,8 @@ data class ChatMessage(
      * Einträge ohne Datums-Spalte) → KEIN Chip, ehrlich statt erfunden.
      */
     val date: String = "",
+    /** W22 A2 (P5): Anruf-Eintrag (Anruf-Bubble/Verpasst-Zeile) — null = normale Bubble. */
+    val call: ChatCallInfo? = null,
 )
 
 /**
@@ -159,11 +180,17 @@ data class ChatAgent(
  * date-Slot je Gruppe (Gruppe = 15). v2-Bundles (14er) und v1-Legacy-Bundles
  * (11er) werden anhand des Versions-Markers wieder korrekt restauriert;
  * v2-Einträge bekommen date = "" (kein Datum bekannt → kein Chip, kein Fake).
+ *
+ * W22 A2 (P5): VERSION 4 — v3 plus 4 Call-Slots je Gruppe (Gruppe = 19:
+ * hasCall, callDirection, callMissed, callDuration). v3/v2/v1-Bundles
+ * restaurieren ohne Call (call = null) — die Gruppen-Größe entscheidet am
+ * Versions-Marker, kein Verrutschen.
  */
 private const val MSG_SAVER_LEGACY_GROUP = 11
 private const val MSG_SAVER_GROUP_V2 = 14  // 11 Basis + hasQuote + fromAgent + sender + text
-private const val MSG_SAVER_GROUP = 15     // v3 = v2 + date (Tageswechsel-Chip)
-private const val MSG_SAVER_VERSION = 3
+private const val MSG_SAVER_GROUP_V3 = 15     // v3 = v2 + date (Tageswechsel-Chip)
+private const val MSG_SAVER_GROUP = 19        // v4 = v3 + hasCall + direction + missed + duration
+private const val MSG_SAVER_VERSION = 4
 
 val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
     save = { list ->
@@ -181,6 +208,10 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 m.quoted?.senderName ?: "",
                 m.quoted?.text ?: "",
                 m.date,
+                m.call != null,
+                m.call?.direction ?: "",
+                m.call?.missed ?: false,
+                m.call?.durationSec ?: 0L,
             )
         }
         listOf(MSG_SAVER_VERSION) + flat
@@ -192,6 +223,7 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
         val body = if (versioned) flat.drop(1) else flat
         val group = when {
             version >= MSG_SAVER_VERSION -> MSG_SAVER_GROUP
+            version >= 3 -> MSG_SAVER_GROUP_V3
             versioned -> MSG_SAVER_GROUP_V2
             else -> MSG_SAVER_LEGACY_GROUP
         }
@@ -222,9 +254,18 @@ val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
                 media = media,
                 quoted = quoted,
                 // v3-Slot; v2/Legacy-Gruppen haben ihn nicht → "" (kein Chip).
-                date = if (version >= MSG_SAVER_VERSION && g.size > 14) {
+                date = if (version >= 3 && g.size > 14) {
                     (g[14] as? String) ?: ""
                 } else "",
+                // v4-Slots (W22 A2); v3-/ältere Gruppen haben sie nicht →
+                // call = null = normale Text-Bubble (kein erfundener Anruf).
+                call = if (version >= MSG_SAVER_VERSION && g.size > 18 && g[15] as Boolean) {
+                    ChatCallInfo(
+                        direction = (g[16] as? String).orEmpty(),
+                        missed = (g[17] as? Boolean) ?: false,
+                        durationSec = (g[18] as? Long) ?: 0L,
+                    )
+                } else null,
             )
         }
     },
@@ -901,6 +942,125 @@ fun MessageBubble(
     }
 }
 
+// ── W22 A2 (P5): Call-Verlauf im Chat (Anruf-Bubble + Verpasst-Zeile) ────────
+
+/**
+ * Anruf-Bubble im Verlauf (WA-Stil): „Anruf (2:41)“ je BEENDETEM Gespräch
+ * (angenommen, egal wer aufgelegt hat) — mittige Ereignis-Pill statt
+ * Text-Bubble, weil ein Anruf kein Gesprächs-Text ist. Anzeige-Text baut
+ * sich HIER je Locale aus den Call-Feldern (CallRules.formatDuration für
+ * die Dauer — mm:ss/h:mm:ss, JVM-getestet); ChatMessage.text bleibt leer.
+ * Kontrast-Verband: PanelElev-Fläche + TextPrimary (15,81:1), Zeit in
+ * TextSecondary (7,48:1) — dieselben Kombos wie die normale Bubble-Umgebung.
+ */
+@Composable
+fun CallHistoryBubble(
+    info: ChatCallInfo,
+    time: String,
+    modifier: Modifier = Modifier,
+) {
+    // STRING: call_history_bubble — de "Anruf (%1$s)", en "Call (%1$s)"
+    val label = "Anruf (${CallRules.formatDuration(info.durationSec)})"
+    // STRING: call_history_bubble_a11y — de "Anruf beendet, Dauer %1$s", en "Call ended, duration %1$s"
+    val a11y = "Anruf beendet, Dauer ${CallRules.formatDuration(info.durationSec)}"
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Row(
+            // Keine Aktion → keine 48dp-Touch-Pflicht; die Pill bleibt
+            // ordentlich tap-bar aber ohne Klick-Feedback (kein toter Klick).
+            modifier = Modifier
+                .clip(RoundedCornerShape(18.dp))
+                .background(FlipsiColors.PanelElev)
+                .semantics { contentDescription = a11y }
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_call),
+                contentDescription = null,
+                tint = FlipsiColors.Ember,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = FlipsiColors.TextPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                time,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextSecondary,
+            )
+        }
+    }
+}
+
+/**
+ * „Verpasster Anruf“-Systemzeile (WA-Referenz) — nie angenommener Klingel-
+ * Ring (Timeout/Abbruch). TAPPBAR mit sichtbarem Ergebnis (AKTIONEN-MIT-
+ * ERGEBNIS): Composer-Fokus + Antwort-Entwurf, NICHTS wird ohne den Nutzer
+ * gesendet. Echter Rückruf (App ruft Agenten) ist die v1.1-Outgoing-Route
+ * (HOOK-BEDARF im Wellen-Report) — die Zeile lügt nicht mit einem
+ * „Zurückrufen“, das keinen Weg hat. Touch-Ziel = ganze Zeile ≥ 48 dp.
+ */
+@Composable
+fun CallMissedRow(
+    time: String,
+    onCallBack: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    // STRING: call_history_missed — de "Verpasster Anruf · Zum Antworten tippen", en "Missed call · Tap to reply"
+    val label = "Verpasster Anruf · Zum Antworten tippen"
+    // STRING: call_history_missed_a11y — de "Verpasster Anruf — tippen, um im Chat zu antworten", en "Missed call — tap to reply in the chat"
+    val a11y = "Verpasster Anruf — tippen, um im Chat zu antworten"
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(FlipsiColors.PanelElev)
+                .clickable(onClickLabel = a11y) { onCallBack() }
+                .semantics { contentDescription = a11y }
+                .padding(start = 12.dp, end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                painter = painterResource(R.drawable.ic_call),
+                contentDescription = null,
+                // Rot-Signal trägt den verpasst-Zustand NICHT allein (A11y-
+                // Zeile sagt es zusätzlich); 6,18:1 auf PanelElev-Fläche.
+                tint = FlipsiColors.SignalRedText,
+                modifier = Modifier.size(16.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                label,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = FlipsiColors.TextPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                time,
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextSecondary,
+            )
+        }
+    }
+}
+
 // ── WELLE-13 P11: Datum-Chip (Tageswechsel-Gruppierung) ──────────────────────
 
 /**
@@ -1242,6 +1402,10 @@ fun ChatInputBar(
     // Modell & Denken-Sheet wie der ⋮-Punkt). null = Chip nicht verdrahtet.
     modelChipLabel: String? = null,
     onModelChip: (() -> Unit)? = null,
+    // W22 A2 (P5): Fokus-Griff des Textfeldes — die Verpasst-Anruf-Zeile
+    // fokussiert den Composer (sichtbares Ergebnis des Taps); null = kein
+    // Fokus-Verband (alle Bestands-Aufrufer unverändert).
+    inputFocusRequester: FocusRequester? = null,
 ) {
     val canSend = canSendChat(value) && !voiceRecording
     // W16: A11y-Texte einmal hoisten (stringResource ist nicht im onClick-
@@ -1291,7 +1455,15 @@ fun ChatInputBar(
                     onValueChange = onValueChange,
                     modifier = Modifier
                         .weight(1f)
-                        .heightIn(min = 48.dp),
+                        .heightIn(min = 48.dp)
+                        // W22 A2 (P5): Fokus-Griff (Verpasst-Anruf-Zeile).
+                        .then(
+                            if (inputFocusRequester != null) {
+                                Modifier.focusRequester(inputFocusRequester)
+                            } else {
+                                Modifier
+                            },
+                        ),
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
                         color = FlipsiColors.TextPrimary,
                     ),

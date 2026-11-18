@@ -37,8 +37,15 @@ import javax.crypto.Mac
  *   writeAtomic) — kein torn seal (alte oder neue Siegel-Datei, nie Müll),
  *   daher ist ein Scheitern der Neu-Siegelung krypto-konsistent: alter
  *   Siegel-Stand passt weiter zum unveränderten Bestand.
- * - Side-Car (chat_status.sidecar) bewusst NICHT Teil von P24 (kein
- *   Verlaufs-Text, nur Chip-Rang-Zeilen) — bewusster Scope-Schnitt.
+ * - Side-Car (chat_status.sidecar) bewusst NICHT Teil von P24 (kein Verlaufs-
+ *   Text, nur Chip-Rang-Zeilen) — bewusster Scope-Schnitt.
+ * - W22 A2 (Call-Verlauf): die Siegel-Kalkulation ist über den GESAMTEN
+ *   Datei-Inhalt definiert — neue Eintrags-Arten (kind=call: Anruf-Bubble/
+ *   Verpasst-Zeile mit callInfo-Feldern) stehen damit automatisch MIT im
+ *   Siegel, OHNE dass HistorySeal die Eintrags-Art kennt (Format-Brustfrei-
+ *   heit: künftige Arten siegeln genauso). Beweis: HistorySealRules.
+ *   callEntriesInSealCalculation (in-place-Veränderung einer Call-Zeile =
+ *   TAMPERED, vollzeiliger Anhang = RECOVERED wie jeder Append).
  */
 object HistorySeal {
 

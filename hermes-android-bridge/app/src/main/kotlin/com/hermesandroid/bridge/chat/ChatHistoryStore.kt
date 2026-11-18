@@ -87,6 +87,16 @@ object ChatHistoryStore {
      * [mediaId] referenzieren eine Media-Nachricht — NUR Verweise, NIE die
      * Bytes (die Datei liegt im app-privaten chat_media-Dir). Alle Felder
      * null = normale Text-Bubble (alte Einträge parsen weiter sauber).
+     *
+     * W22 A2 (P5, Call-Verlauf): [callInfo] != null → Eintrags-Art kind=call
+     * (Anruf-Bubble/Verpasst-Zeile). [text] bleibt dann LEER — die Anzeige
+     * baut die UI je Locale aus den Call-Feldern (kein eingefrorenes Literal,
+     * W16.3-F3-Verband); der Dedupe-Schlüssel faltet die Call-Felder mit ein
+     * (zwei Anrufe derselben Minute sind KEINE Zwillinge, s. mergeDedupeKey).
+     * Call-Einträge fließen durch ALLE Store-Verbände unverändert: FIFO-Cap,
+     * Byte-Deckel, clearAgent-Löschverband UND das P24-Siegel (HMAC über den
+     * GESAMTEN Datei-Inhalt — die Eintrags-Art steht damit MIT in der Siegel-
+     * Kalkulation, Beweis HistorySealRules.callEntriesInSealCalculation).
      */
     data class Entry(
         val seq: Long,          // Einfüge-Zeit (Unix-ms) — Sortier-Schlüssel
@@ -107,6 +117,19 @@ object ChatHistoryStore {
             // Side-Car: der Restore bindet die msg_id wieder (Live-Frames
             // treffen restaurierte Chips) und legt den Side-Car-Stand neben
             // den Sendezeit-Snapshot (dort ist der HÖCHSTE bekannte Stand).
+        val callInfo: CallInfo? = null,  // W22 A2: != null → Call-Eintrag
+    )
+
+    /**
+     * W22 A2 (P5): Call-Felder eines Verlaufs-Eintrags. Gson-tolerant: fehlt
+     * das Feld auf der Platte (alle Alt-Zeilen), bleibt es null — normale
+     * Bubble. direction = CallRules.CALL_DIRECTION_* („incoming"/„outgoing");
+     * v1 trägt nur incoming, das Format bleibt für die v1.1-Rückrichtung offen.
+     */
+    data class CallInfo(
+        val direction: String,
+        val missed: Boolean,
+        val durationSec: Long,
     )
 
     /** Persistiertes Verzeichnis unter filesDir (app-privat, kein Backup-Restore nötig). */
@@ -378,9 +401,14 @@ object ChatHistoryStore {
      * Merge-Dedupe-Schlüssel (Parität ChatTimelineMerge.dedupeKey — Längen-
      * Präfix gegen Trennzeichen-Gleichklang, ohne Agent-Hash: die Merge-Datei
      * ist je Agent EINE, der Agent ist implizit).
+     * W22 A2: Call-Einträge (leerer Text) dedupen über ihre Call-Felder —
+     * zwei Anrufe derselben Minute (z. B. verpasst + sofortiger Rückruf-
+     * Versuch) wären sonst Schlüssel-Zwillinge und der Merge fände einen Weg.
      */
     private fun mergeDedupeKey(entry: Entry): String =
-        "${entry.agentId}\u0000${entry.fromAgent}\u0000${entry.text.length}:${entry.text}\u0000${entry.time}"
+        entry.callInfo?.let { info ->
+            "${entry.agentId}\u0000call\u0000${info.direction}\u0000${info.missed}\u0000${info.durationSec}\u0000${entry.time}"
+        } ?: "${entry.agentId}\u0000${entry.fromAgent}\u0000${entry.text.length}:${entry.text}\u0000${entry.time}"
 
     // ── HAKEN-FIX (17.11.2026): Status-Side-Car ──────────────────────────────
     //
@@ -701,6 +729,35 @@ object ChatHistoryStore {
             // dann klassisch: copy+delete (Alt-Bestand bleibt bis zum Schluss).
             file.writeText(tmp.readText())
             tmp.delete()
+        }
+    }
+}
+
+/**
+ * W22 A2 (P5): Settings-Verband „Anruf-Verlauf aufzeichnen“ — EIN globaler
+ * Schalter (default AN), gelesen VOR jedem Call-Verlaufs-Eintrag
+ * (CallRules.callRecordFor in der ChatScreen-Call-Bindung). Persistenz wie
+ * ChatSpeechPrefs (SharedPreferences, app-privat); bewusst NUR die reine
+ * Platten-Entscheidung — was der Toggle NICHT deckt: Live-Bubbles während
+ * der Session (der Nutzer kann sie löschen; der Eintrags-Verband läuft über
+ * denselben Store wie jeder Chat auch).
+ */
+object CallHistoryPrefs {
+    private const val FILE = "chat_history_settings"
+    private const val KEY_RECORD = "call_history_record"
+
+    /** Default AN: der Verlauf gehört zum Anruf wie beim Chat-Muster. */
+    const val DEFAULT_RECORD = true
+
+    fun recordEnabled(context: Context): Boolean = runCatching {
+        context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+            .getBoolean(KEY_RECORD, DEFAULT_RECORD)
+    }.getOrDefault(DEFAULT_RECORD)
+
+    fun setRecordEnabled(context: Context, enabled: Boolean) {
+        runCatching {
+            context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
+                .edit().putBoolean(KEY_RECORD, enabled).apply()
         }
     }
 }

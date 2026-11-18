@@ -76,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
 import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.chat.CallHistoryPrefs
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.chat.HistorySeal  // P24: SealBreach-Fang (Restore/Backfill)
 import com.hermesandroid.bridge.BuildConfig
@@ -90,6 +91,7 @@ import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.ui.FlipsiColors
 import com.hermesandroid.bridge.ui.call.CallActiveStrip
 import com.hermesandroid.bridge.ui.call.CallRingingOverlay
+import com.hermesandroid.bridge.ui.call.CallSpeechRecognizer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -384,10 +386,26 @@ fun ChatScreen(
                                 text = wire.quoteText,
                             )
                         },
+                        // W22 A2 (P5): Call-Einträge (kind=call) restaurieren
+                        // als Anruf-Bubble/Verpasst-Zeile — Anzeige baut das
+                        // Widget je Locale aus den Feldern.
+                        call = entry.callInfo?.let { info ->
+                            ChatCallInfo(
+                                direction = info.direction,
+                                missed = info.missed,
+                                durationSec = info.durationSec,
+                            )
+                        },
                     ),
                 )
                 restoredKeys.add(
-                    ChatTimelineMerge.dedupeKey(entry.agentId.hashCode(), entry.fromAgent, entry.text, entry.time),
+                    // W22 A2: Call-Einträge dedupen über ihre Call-Felder —
+                    // leerer Text würde zwei Anrufe derselben Minute zu
+                    // Zwillingen machen (ein Verlauf fände den anderen weg).
+                    ChatTimelineMerge.dedupeKey(
+                        entry.agentId.hashCode(), entry.fromAgent,
+                        callDedupeText(entry.text, entry.callInfo), entry.time,
+                    ),
                 )
                 // HAKEN-FIX (1): Chip des Zwilling-Senders ⊔ Side-Car-Höchst-
                 // stand (Platte trägt den höchsten bekannten Stand — der
@@ -420,7 +438,12 @@ fun ChatScreen(
                             live.time,
                         )
                     } else {
-                        ChatTimelineMerge.dedupeKey(live.agentId, live.fromAgent, live.text, live.time)
+                        // W22 A2: Call-Live-Zeilen dedupen über ihre Call-
+                        // Felder (Parität zum Platte-Schlüssel oben).
+                        ChatTimelineMerge.dedupeKey(
+                            live.agentId, live.fromAgent,
+                            callDedupeText(live.text, live.call), live.time,
+                        )
                     }
                     liveKey !in restoredKeys
                 }
@@ -1368,6 +1391,112 @@ fun ChatScreen(
         callScreengrabExecute()
     }
 
+    // ── W22 A1 (STT on-device v1): Freihand-Verband ─────────────────────────
+    // §3.2 Variante A („Ton verlässt das Handy NICHT“): Sprache wird am Gerät
+    // transkribiert (CallSpeechRecognizer, on-device-Gate) und als Chat-TEXT-
+    // Turn im Call-Kontext gesendet — die Push-to-Talk-Aufnahme (E2E-Chunk)
+    // bleibt als Fallback am selben Mikro-Knopf (Lang-Drücken = Modus-Wahl).
+    val callSttSupported = remember { CallSpeechRecognizer.handsFreeSupported(context) }
+    var callHandsFree by remember { mutableStateOf(false) }
+    var callSttListening by remember { mutableStateOf(false) }
+
+    /**
+     * A1: Freihand-Turn senden — erkannter TEXT als normaler Chat-Text im
+     * Call-Kontext (chat.send E2E; der Adapter markiert die Antwort im akzep-
+     * tierten Anruf als TTS-Chunk, call_chunk_seq §3.3). Die User-Bubble
+     * erscheint wie WhatsApp-Transkript im Verlauf; RelayClient persistiert
+     * den Disk-Zwilling selbst (sendChat-Verband) — hier NUR die Live-Bubble.
+     */
+    fun callSendSttTurn(text: String) {
+        val cs = callSession ?: return
+        if (cs.phase != CallRules.Phase.ACTIVE) return
+        val clean = CallRules.sttTurnText(text) ?: return
+        val sentAtMs = System.currentTimeMillis()
+        val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+        messages = messages + ChatMessage(
+            id = nextId,
+            agentId = cs.agentId.hashCode(),
+            fromAgent = false,
+            text = clean,
+            time = formatTimestamp(sentAtMs),
+            date = ChatDateRules.dayKey(sentAtMs),
+        )
+        liveMessagesPresent = true
+        callInfoLine = null  // Partial-Overlay räumen (Turn ist raus)
+        if (cs.agentId.isNotBlank()) {
+            RelayClient.sendChat(cs.agentId, clean, sentAtMs) { ok, error, _ ->
+                if (!ok) {
+                    callInfoLine = context.getString(R.string.call_screengrab_talk_failed) +
+                        (error ?: context.getString(R.string.chat_send_failed_unknown))
+                }
+            }
+        }
+    }
+
+    /**
+     * A1-Callbacks: Partial = Live-Transkript-Overlay + Barge-in (§3.1,
+     * nicht-leerer Partial stoppt die Agenten-TTS), Turn = Senden, Fatal =
+     * sichtbarer Hinweis + Auto-Fallback auf Push-to-Talk (callHandsFree
+     * false — KEIN stiller Tod des Freihand-Modus).
+     */
+    val callStt = remember {
+        CallSpeechRecognizer(context, object : CallSpeechRecognizer.Callbacks {
+            override fun onPartial(text: String) {
+                // Barge-in: Nutzerrauschen stoppt die Agenten-Ausgabe (§3.1).
+                runCatching { ChatSpeechSpeaker.stopAll() }
+                callInfoLine = text
+            }
+
+            override fun onTurn(text: String) {
+                callSendSttTurn(text)
+            }
+
+            override fun onListeningChanged(listening: Boolean) {
+                callSttListening = listening
+            }
+
+            override fun onFatal(errorCode: Int) {
+                // Fail-soft (§A1): Freihand stirbt nie still — Modus fällt
+                // SICHTBAR auf Push-to-Talk zurück, der Hinweis sagt warum.
+                callHandsFree = false
+                callSttListening = false
+                callInfoLine =
+                    // STRING: call_stt_failed — de "Spracherkennung fehlgeschlagen — Sprechen-Taste nutzen", en "Speech recognition failed — use the talk button"
+                    "Spracherkennung fehlgeschlagen — Sprechen-Taste nutzen"
+            }
+        })
+    }
+
+    /**
+     * A1-Modus-Wahl (EIN Aufenthaltsort: der Mikro-Knopf): Freihand nur mit
+     * on-device-Provider UND Mikrofon-Erlaubnis — beides fehlt → ehrlicher
+     * Hinweis, Modus bleibt Push-to-Talk (AKTIONEN-MIT-ERGEBNIS).
+     */
+    fun callToggleHandsFree(toHandsFree: Boolean) {
+        val cs = callSession ?: return
+        if (cs.phase != CallRules.Phase.ACTIVE) return
+        if (toHandsFree) {
+            if (!callSttSupported) {
+                // STRING: call_stt_unavailable — de "Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen", en "Hands-free speech unavailable on this device — use the talk button"
+                callInfoLine = "Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen"
+                return
+            }
+            val micGranted = ContextCompat.checkSelfPermission(
+                context, android.Manifest.permission.RECORD_AUDIO,
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!micGranted) {
+                callInfoLine = context.getString(R.string.chat_media_permission_missing)
+                return
+            }
+            callHandsFree = true
+            callStt.start()
+        } else {
+            callHandsFree = false
+            callStt.stop()
+            callInfoLine = null
+        }
+    }
+
     // Dauer-Takt (Strip) + Turn-Cap + Räumung bei Phasenwechsel (P6-Verband).
     LaunchedEffect(callSession?.phase, callSession?.callId) {
         val phase = callSession?.phase
@@ -1379,8 +1508,27 @@ fun ChatScreen(
                 runCatching { callRecorder.cancel() }
                 callTalkRecording = false
             }
+            // W22 A1: Lifecycle-Cancel bei Call-Ende — die Freihand-Erkennung
+            // stirbt MIT dem Anruf (kein Mikro-Claim über den Call hinaus);
+            // der Modus startet je NEUEM Anruf frisch (Default unten).
+            callStt.stop()
+            callSttListening = false
+            callHandsFree = false
         } else {
             callDurationTick = System.currentTimeMillis()
+            // W22 A1: Freihand startet AUTOMATISCH im angenommenen Anruf,
+            // wenn on-device-STT verfügbar UND das Mikro erlaubt ist (§3.2-A-
+            // Default des Plans); sonst bleibt es ehrlich bei Push-to-Talk —
+            // der Nutzer lang-drückt den Mikro-Knopf, sieht den Grund-Hinweis.
+            if (callSttSupported) {
+                val micGranted = ContextCompat.checkSelfPermission(
+                    context, android.Manifest.permission.RECORD_AUDIO,
+                ) == PackageManager.PERMISSION_GRANTED
+                if (micGranted) {
+                    callHandsFree = true
+                    callStt.start()
+                }
+            }
             while (callSession?.phase == CallRules.Phase.ACTIVE) {
                 kotlinx.coroutines.delay(1000L)
                 callDurationTick = System.currentTimeMillis()
@@ -1399,6 +1547,72 @@ fun ChatScreen(
             screengrabConfirmOpen = false
         }
     }
+    // W22 A1: Screen-Räumung — Chat-Route verlassen (Tab-Wechsel mitten im
+    // Anruf) stoppt die Freihand-Erkennung (kein Mikro-Claim ohne sichtbaren
+    // Call-Strip). Die Rückkehr startet frisch: der Phasen-Effect oben läuft
+    // bei JEDEM neuen Mount (LaunchedEffect = Mount + Key-Wechsel).
+    DisposableEffect(Unit) {
+        onDispose {
+            callStt.stop()
+            callSttListening = false
+        }
+    }
+
+    // ── W22 A2 (P5): Call-Verlauf — Anruf-Bubble/Verpasst-Zeile je Ende ──────
+    // Genau EIN Verlaufs-Eintrag je call_id: der RelayClient hält die ENDED-
+    // Session 10 s („Anruf beendet“-Fenster) und Phasen-Effekte feuern je
+    // Phasenwechsel — das Done-Set dedupliziert (kein Doppel-Eintrag, auch
+    // nicht über App-Rückkehr/Mount-Ketten). Dauer liefert das PHONE lokal
+    // (CallRules.callRecordFor aus activeSinceMs/endedAtMs).
+    val callRecordedIds = remember { HashSet<String>() }
+    LaunchedEffect(callSession?.phase, callSession?.callId) {
+        val cs = callSession ?: return@LaunchedEffect
+        if (cs.phase != CallRules.Phase.ENDED) return@LaunchedEffect
+        if (!callRecordedIds.add(cs.callId)) return@LaunchedEffect
+        if (cs.agentId.isBlank()) return@LaunchedEffect
+        // Settings-Toggle „Anruf-Verlauf aufzeichnen“ (default an): aus =
+        // der Anruf hinterlässt KEINE Spur im Verlauf.
+        val record = CallRules.callRecordFor(
+            cs, CallHistoryPrefs.recordEnabled(context),
+        ) ?: return@LaunchedEffect
+        val endedAt = cs.endedAtMs ?: System.currentTimeMillis()
+        // Live-Anzeige in der Conversation-Zeitlinie (Anzeige-Text baut das
+        // Widget je Locale — text bleibt bewusst leer).
+        val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+        messages = messages + ChatMessage(
+            id = nextId,
+            agentId = cs.agentId.hashCode(),
+            fromAgent = false,
+            text = "",
+            time = formatTimestamp(endedAt),
+            date = ChatDateRules.dayKey(endedAt),
+            call = ChatCallInfo(
+                direction = record.direction,
+                missed = record.missed,
+                durationSec = record.durationSec,
+            ),
+        )
+        liveMessagesPresent = true
+        // Platte: Eintrags-Art kind=call im ChatHistoryStore — fließt durch
+        // ALLE Verbände (FIFO-Cap, Byte-Deckel, clearAgent-Löschverband,
+        // P24-Siegel über den ganzen Datei-Inhalt).
+        ChatHistoryStore.appendAsync(
+            ChatHistoryStore.root(context.applicationContext),
+            ChatHistoryStore.Entry(
+                seq = endedAt,
+                agentId = cs.agentId,
+                chatId = cs.chatId,
+                fromAgent = false,
+                text = "",
+                time = formatTimestamp(endedAt),
+                callInfo = ChatHistoryStore.CallInfo(
+                    direction = record.direction,
+                    missed = record.missed,
+                    durationSec = record.durationSec,
+                ),
+            ),
+        )
+    }
 
     // ── W21 ANRUF (P4): Route-Wrapper — Status-Zeile (aktiv) schwebt ÜBER der
     // Route (WA-Muster unter dem Kopf, kein Verdeckens des Chat-Headers), die
@@ -1416,11 +1630,14 @@ fun ChatScreen(
                 steerCapabilityOn = callSteerCapabilityOn,
                 screengrabPendingConfirmation = screengrabConfirmOpen,
                 talkRecording = callTalkRecording,
+                handsFree = callHandsFree,
+                sttListening = callSttListening,
                 infoLine = callInfoLine,
                 onToggleSteer = { RelayClient.setCallAgentSteer(!cs.agentScreenSteer) },
                 onScreengrabRequest = { callScreengrabTap() },
                 onTalkStart = { callTalkStart() },
                 onTalkEnd = { callTalkStop() },
+                onToggleHandsFree = { toHandsFree -> callToggleHandsFree(toHandsFree) },
                 onHangUp = { RelayClient.hangUpCall() },
             )
         }
@@ -1909,6 +2126,9 @@ private fun ConversationBody(
     searchIndexBuilding: Boolean = false,
 ) {
     val listState = rememberLazyListState()
+    // W22 A2 (P5): Fokus-Griff des Composers — die Verpasst-Anruf-Zeile setzt
+    // ihn (sichtbares Ergebnis des Taps: Tastatur + Antwort-Entwurf).
+    val missedCallFocus = remember { FocusRequester() }
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
     // je Composition (ChatMotionRules); steuert Geste-Settle UND Sprung-
     // Scroll der Chat-Suche (je Anim-Stelle genau einmal entschieden).
@@ -2349,7 +2569,7 @@ private fun ConversationBody(
                         }
                         // WELLE-13 P11: je Nachricht EIN Item — der Datum-Chip
                         // (Tageswechsel) rendert ÜBER der Bubble desselben
-                        // Items (kein separater Lazy-Schlüssel, kein Doppelslot).
+                        // Items (kein separater lazy-Schlüssel, kein Doppelslot).
                         itemsIndexed(conversation, key = { _, m -> m.id }) { index, message ->
                             val prevDate = if (index > 0) conversation[index - 1].date else null
                             if (ChatDateRules.chipVisible(prevDate, message.date)) {
@@ -2357,6 +2577,30 @@ private fun ConversationBody(
                                     ChatDateChip(label = label)
                                 }
                             }
+                            // W22 A2 (P5): Anruf-Einträge rendern STATT der
+                            // Text-Bubble — beendete Anrufe als „Anruf (2:41)“-
+                            // Ereignis-Pill, verpasste als tappbare Systemzeile
+                            // (Antwort-Fokus, s. CallMissedRow-KDoc).
+                            val callInfo = message.call
+                            if (callInfo != null && !callInfo.missed) {
+                                CallHistoryBubble(info = callInfo, time = message.time)
+                            } else if (callInfo != null) {
+                                CallMissedRow(
+                                    time = message.time,
+                                    onCallBack = {
+                                        // Sichtbares Ergebnis (AKTIONEN-MIT-
+                                        // ERGEBNIS): Composer-Fokus + Antwort-
+                                        // Entwurf, NICHTS geht ohne Nutzer raus.
+                                        // (Echter Rückruf = v1.1-Outgoing-Route,
+                                        // HOOK-BEDARF im Wellen-Report.)
+                                        if (inputText.isBlank()) {
+                                            // STRING: call_missed_callback_draft — de "Bitte ruf mich zurück.", en "Please call me back."
+                                            onInputChange("Bitte ruf mich zurück.")
+                                        }
+                                        runCatching { missedCallFocus.requestFocus() }
+                                    },
+                                )
+                            } else {
                             MessageBubble(
                             message = message,
                             // W16 (Fixliste 16a): Label-Spalte (Agenten-Name +
@@ -2403,6 +2647,7 @@ private fun ConversationBody(
                                 null
                             },
                             )
+                            }  // W22 A2: Ende Anruf-/Text-Bubble-Zweig
                         }
                     }
                 }
@@ -2466,6 +2711,8 @@ private fun ConversationBody(
                     // dasselbe Modell & Denken-Sheet wie der ⋮-Punkt.
                     modelChipLabel = modelChipLabel,
                     onModelChip = { composerPickerOpen = true },
+                    // W22 A2 (P5): Fokus-Griff (Verpasst-Anruf-Zeile → Composer).
+                    inputFocusRequester = missedCallFocus,
                 )
             }
             } // W16: Ende „!searchOpen" (Composer-Verband des Suchmodus)
@@ -3048,6 +3295,22 @@ private const val RESTORED_ID_BASE = 2_000_000_000L
 /** PH2-MERGE: Relay-Zeitstempel (Unix-Millisekunden) als „HH:mm“. */
 private fun formatTimestamp(ts: Long): String =
     SimpleDateFormat("HH:mm", Locale.GERMANY).format(Date(ts))
+
+/**
+ * W22 A2 (P5): Dedupe-Text von Verlaufs-Einträgen — Call-Einträge tragen
+ * KEINEN Anzeige-Text (leer), der Restore-/Merge-Schlüssel baut sich statt-
+ * dessen aus den Call-Feldern (Richtung/Verpasst/Dauer): zwei Anrufe der-
+ * selben Minute (z. B. verpasst + sofortiger zweiter Versuch) wären sonst
+ * Schlüssel-Zwillinge und der Restore-Merge fände einen Weg. Beide Overloads
+ * spiegeln Platte ([ChatHistoryStore.CallInfo]) und UI ([ChatCallInfo]) —
+ * die Schlüssel-Teile sind identisch formatiert.
+ */
+private fun callDedupeText(text: String, call: ChatHistoryStore.CallInfo?): String =
+    call?.let { "call\u0000${it.direction}\u0000${it.missed}\u0000${it.durationSec}" } ?: text
+
+/** UI-Spiegel von [callDedupeText] (Live-Bubbles im Restore-Merge). */
+private fun callDedupeText(text: String, call: ChatCallInfo?): String =
+    call?.let { "call\u0000${it.direction}\u0000${it.missed}\u0000${it.durationSec}" } ?: text
 
 /**
  * PH2-FIX (Jäger B8): Saver für die local_id → msg_id-Zuordnung — flache

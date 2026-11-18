@@ -322,4 +322,120 @@ object CallRules {
     /** Screengrab-Dateiname (§7.2 — RAM-only, Name dient nur dem Meta-Frame). */
     fun screengrabName(callId: String?, tsMs: Long): String =
         if (callId.isNullOrBlank()) "agent-shot-$tsMs.jpg" else "agent-shot-$callId-$tsMs.jpg"
+
+    // ── W22 A1 (STT on-device v1, §3.2 Variante A „Ton verlässt Handy NICHT") ─
+
+    /**
+     * Richtung eines Anrufs im Verlauf. v1 kennt NUR [CALL_DIRECTION_INCOMING]
+     * (der Agent ruft den Nutzer, P4-Rückrichtung = v1.1-Route) — das Feld
+     * existiert, damit die Verlaufs-Zeilen den späteren outgoing-Fall ohne
+     * Disk-Format-Bruch aufnehmen.
+     */
+    const val CALL_DIRECTION_INCOMING = "incoming"
+    const val CALL_DIRECTION_OUTGOING = "outgoing"
+
+    /** Chat-Text-Deckel eines STT-Turns (kein Riesendiktat über die Text-Schiene). */
+    const val STT_TURN_MAX_CHARS = 2_000
+
+    /**
+     * Fehlerklasse eines SpeechRecognizer-Error-Codes (android.speech.
+     * SpeechRecognizer.ERROR_* — als reine Ints gepinnt, damit diese Regel
+     * JVM-testbar bleibt; die Android-Konstanten liefert CallSpeechRecognizer):
+     * - RETRY_SILENT = Stille/OEM-Quirk: neu lauschen, KEIN Modus-Wechsel —
+     *   ERROR_SPEECH_TIMEOUT(6), ERROR_NO_MATCH(7), ERROR_RECOGNIZER_BUSY(8).
+     * - FATAL = ehrlich aufgeben → sichtbarer Hinweis + Auto-Fallback auf die
+     *   Push-to-Talk-Audio-Richtung (kein stiller Tod):
+     *   ERROR_NETWORK_TIMEOUT(1), ERROR_NETWORK(2), ERROR_AUDIO(3),
+     *   ERROR_SERVER(4), ERROR_CLIENT(5), ERROR_INSUFFICIENT_PERMISSIONS(9).
+     *   NETWORK zählt bewusst FATAL: im On-Device-Modus darf KEIN Ton das
+     *   Gerät verlassen — ein Netz-Fehler ist ein Abbruch-Grund, kein Retry.
+     */
+    enum class SttErrorClass { RETRY_SILENT, FATAL }
+
+    fun sttErrorClass(errorCode: Int): SttErrorClass = when (errorCode) {
+        SpeechRecognizerErrors.SPEECH_TIMEOUT,
+        SpeechRecognizerErrors.NO_MATCH,
+        SpeechRecognizerErrors.RECOGNIZER_BUSY,
+        -> SttErrorClass.RETRY_SILENT
+        else -> SttErrorClass.FATAL
+    }
+
+    /** Error-Code-Werte von android.speech.SpeechRecognizer (API-33-Stand). */
+    object SpeechRecognizerErrors {
+        const val NETWORK_TIMEOUT = 1
+        const val NETWORK = 2
+        const val AUDIO = 3
+        const val SERVER = 4
+        const val CLIENT = 5
+        const val SPEECH_TIMEOUT = 6
+        const val NO_MATCH = 7
+        const val RECOGNIZER_BUSY = 8
+        const val INSUFFICIENT_PERMISSIONS = 9
+    }
+
+    /**
+     * A1: STT-Turn-Text normalisieren — trim, Whitespace falten, Cap
+     * [STT_TURN_MAX_CHARS]. null = nichts sendbares (Stille/leerer Chunk)
+     * — der Aufrufer sendet dann NICHT (kein leerer Chat-Turn).
+     */
+    fun sttTurnText(raw: String?): String? {
+        if (raw == null) return null
+        val cleaned = raw.replace(Regex("\\s+"), " ").trim()
+        if (cleaned.isEmpty()) return null
+        return cleaned.take(STT_TURN_MAX_CHARS)
+    }
+
+    // ── W22 A2 (P5): Call-Verlauf im Chat (WhatsApp-Referenz) ────────────────
+
+    /**
+     * A2: Verlaufs-Spezifikation eines beendeten Calls — die UI/Platte leitet
+     * daraus Anruf-Bubble („Anruf (2:41)") bzw. Verpasst-Zeile ab.
+     * null = kein Verlaufs-Eintrag.
+     */
+    data class CallRecord(
+        val direction: String,
+        val missed: Boolean,
+        val durationSec: Long,
+    )
+
+    /**
+     * A2: Entscheidung aus einer BEENDETEN Session, ob und was der Verlauf
+     * festhält (JVM-rein, UI/Store wenden sie nur an):
+     * - recordEnabled = false (Settings-Toggle „Anruf-Verlauf aufzeichnen",
+     *   default an) → null — der Anruf hinterlässt KEINE Spur.
+     * - Angenommen & beendet (activeSince != null, egal wer aufgelegt hat:
+     *   AGENT/LOCAL/CONNECTION) → Bubble mit ECHTER Dauer
+     *   (endedAt − activeSince, min 0 — negative Uhr-Sprünge lügen nie).
+     * - Nie angenommen + DECLINED → null (bewusst: die ABLEHNUNG ist eine
+     *   Nutzer-Entscheidung, kein verpasster Anruf; der Agent fängt decline
+     *   adapter-seitig mit seinem Chat-Fallback selbst).
+     * - Nie angenommen + sonstige (TIMEOUT = verpasst, AGENT/CONNECTION wäh-
+     *   rend des Klingelns) → Verpasst-Zeile (missed = true, Dauer 0).
+     * Dauer liefert das PHONE lokal (activeSinceMs/endedAtMs) — das Backend
+     * schickt im call_end.enc KEIN Dauer-Feld (Beweis adapter.py call_end:
+     * encrypt_frame(..., {}) — Hook-Bedarf nur, falls künftig der AGENT
+     * eine eigene Dauer-Doku braucht).
+     */
+    fun callRecordFor(
+        session: CallSession?,
+        recordEnabled: Boolean,
+        nowMs: Long = System.currentTimeMillis(),
+    ): CallRecord? {
+        if (!recordEnabled) return null
+        if (session == null || session.phase != Phase.ENDED) return null
+        val accepted = session.activeSinceMs
+        return when {
+            accepted != null -> CallRecord(
+                direction = CALL_DIRECTION_INCOMING,
+                missed = false,
+                durationSec = maxOf(0L, ((session.endedAtMs ?: nowMs) - accepted) / 1000L),
+            )
+            session.endSource == EndSource.DECLINED -> null
+            else -> CallRecord(
+                direction = CALL_DIRECTION_INCOMING,
+                missed = true,
+                durationSec = 0L,
+            )
+        }
+    }
 }

@@ -1,8 +1,10 @@
 package com.hermesandroid.bridge.ui.call
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -161,8 +163,17 @@ fun CallRingingOverlay(
 
 /**
  * Laufender Anruf — Status-Zeile (WA-Verband: Dauer + Agentalias) mit
- * Auflegen, Sprechen (P5 half-duplex), G11-Freigabe-Pill und G12-Screenshot
+ * Auflegen, Sprechen-Modus, G11-Freigabe-Pill und G12-Screenshot
  * (3-s-Bestätigungs-Chip nach §7.2). Alle Knöpfe ≥ 48 dp Touch-Ziel.
+ *
+ * W22 A1 (STT on-device v1): der Mikro-Knopf ist EIN Aufenthaltsort für
+ * BEIDE Sprach-Modi (KEIN-DOPPEL):
+ * - [handsFree] = true: Freihand — die on-device-Erkennung lauscht (grüne
+ *   Fläche + Lauscht-Label, [sttListening]); TIPPEN wechselt zurück auf
+ *   Push-to-Talk (Erkennung stoppt in der Bindung).
+ * - [handsFree] = false: Push-to-Talk wie gehabt (tippen startet den Chunk,
+ *   nochmal tippen sendet); LANG DRÜCKEN wählt den Freihand-Modus
+ *   (Verfügbarkeits-/Mikrofon-Gate + sichtbarer Fail-Weg in der Bindung).
  */
 @Composable
 fun CallActiveStrip(
@@ -172,11 +183,14 @@ fun CallActiveStrip(
     steerCapabilityOn: Boolean,
     screengrabPendingConfirmation: Boolean,
     talkRecording: Boolean,
+    handsFree: Boolean,
+    sttListening: Boolean,
     infoLine: String?,
     onToggleSteer: () -> Unit,
     onScreengrabRequest: () -> Unit,
     onTalkStart: () -> Unit,
     onTalkEnd: () -> Unit,
+    onToggleHandsFree: (toHandsFree: Boolean) -> Unit,
     onHangUp: () -> Unit,
 ) {
     // A11y-Label einmal hoisten (stringResource lebt nicht im semantics-Lambda)
@@ -235,24 +249,57 @@ fun CallActiveStrip(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // P5 (§3.1): half-duplex Turn — drücken startet den Chunk
-            // (Barge-in stoppt die Agent-Ausgabe), loslassen sendet ihn.
-            CallPillButton(
-                label = if (talkRecording) {
-                    stringResource(R.string.call_action_talk_recording)
-                } else {
-                    stringResource(R.string.call_action_talk)
-                },
-                a11y = if (talkRecording) {
-                    stringResource(R.string.call_action_talk_recording_a11y)
-                } else {
-                    stringResource(R.string.call_action_talk_a11y)
-                },
-                background = if (talkRecording) FlipsiColors.SignalRed else FlipsiColors.Ember,
-                content = FlipsiColors.Void,
-                modifier = Modifier.weight(1.1f),
-                onClick = if (talkRecording) onTalkEnd else onTalkStart,
-            )
+            // W22 A1 (STT v1) + P5 (§3.1): EIN Mikro-Knopf, ZWEI Modi.
+            // Freihand: on-device-Erkennung lauscht (grün + Lauscht-Label),
+            // TIPPEN wechselt zurück auf Push-to-Talk.
+            // Push-to-Talk: drücken startet den Chunk (Barge-in stoppt die
+            // Agent-Ausgabe), loslassen sendet ihn; LANG DRÜCKEN = Modus-
+            // Auswahl Freihand (Gate + Fail-Weg in der Bindung, nicht hier —
+            // der Strip bleibt Presentation-only).
+            if (handsFree) {
+                // STRING: call_stt_handsfree_listening — de "Freihand — lauscht", en "Hands-free — listening"
+                // STRING: call_stt_handsfree — de "Freihand", en "Hands-free"
+                CallPillButton(
+                    label = if (sttListening) {
+                        "Freihand — lauscht"
+                    } else {
+                        "Freihand"
+                    },
+                    // STRING: call_stt_handsfree_listening_a11y — de "Freihand-Erkennung läuft — tippen für Sprechen-Taste", en "Hands-free recognition active — tap for the talk button"
+                    // STRING: call_stt_handsfree_a11y — de "Freihand-Modus — tippen für Sprechen-Taste", en "Hands-free mode — tap for the talk button"
+                    a11y = if (sttListening) {
+                        "Freihand-Erkennung läuft — tippen für Sprechen-Taste"
+                    } else {
+                        "Freihand-Modus — tippen für Sprechen-Taste"
+                    },
+                    background = if (sttListening) FlipsiColors.SignalGreen else FlipsiColors.Ember,
+                    content = FlipsiColors.Void,
+                    modifier = Modifier.weight(1.1f),
+                    onClick = { onToggleHandsFree(false) },
+                )
+            } else {
+                CallPillButton(
+                    label = if (talkRecording) {
+                        stringResource(R.string.call_action_talk_recording)
+                    } else {
+                        stringResource(R.string.call_action_talk)
+                    },
+                    a11y = if (talkRecording) {
+                        stringResource(R.string.call_action_talk_recording_a11y)
+                    } else {
+                        stringResource(R.string.call_action_talk_a11y)
+                    },
+                    background = if (talkRecording) FlipsiColors.SignalRed else FlipsiColors.Ember,
+                    content = FlipsiColors.Void,
+                    modifier = Modifier.weight(1.1f),
+                    onClick = if (talkRecording) onTalkEnd else onTalkStart,
+                    // LANG DRÜCKEN = Modus-Auswahl Freihand (Mikro-Button lang,
+                    // EIN Aufenthaltsort — s. KDoc oben).
+                    onLongClick = { onToggleHandsFree(true) },
+                    // STRING: call_stt_long_a11y — de "Lange drücken für Freihand-Sprechen am Gerät", en "Long-press for on-device hands-free speech"
+                    longClickA11y = "Lange drücken für Freihand-Sprechen am Gerät",
+                )
+            }
             SteerPill(
                 session = session,
                 steerCapabilityOn = steerCapabilityOn,
@@ -293,7 +340,12 @@ fun CallActiveStrip(
     }
 }
 
-/** 48dp-Pill-Knopf (Kontrast-Kombos oben dokumentiert, alles ≥ 4,5:1). */
+/**
+ * 48dp-Pill-Knopf (Kontrast-Kombos oben dokumentiert, alles ≥ 4,5:1).
+ * W22 A1: [onLongClick] != null → combinedClickable (Lang-Drücken für die
+ * Freihand-Modus-Wahl am Mikro-Knopf); sonst klassisches clickable.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CallPillButton(
     label: String,
@@ -302,13 +354,29 @@ private fun CallPillButton(
     content: Color,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+    longClickA11y: String? = null,
 ) {
+    // Lang-Press-Wirkung zusätzlich ins KLICK-Label (TalkBack liest beides,
+    // die Geste bleibt auffindbar); null-Check hält den klassischen Pfad
+    // (reines clickable) unangetastet.
+    val clickLabel = if (longClickA11y != null) "$a11y. $longClickA11y" else a11y
     Box(
         modifier = modifier
             .heightIn(min = 48.dp)
             .clip(RoundedCornerShape(24.dp))
             .background(background)
-            .clickable(onClickLabel = a11y) { onClick() }
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClickLabel = clickLabel,
+                        onLongClickLabel = longClickA11y,
+                        onLongClick = onLongClick,
+                    ) { onClick() }
+                } else {
+                    Modifier.clickable(onClickLabel = clickLabel) { onClick() }
+                },
+            )
             .semantics { contentDescription = a11y }
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,

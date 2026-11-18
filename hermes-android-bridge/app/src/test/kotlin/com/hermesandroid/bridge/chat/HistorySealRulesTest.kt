@@ -251,4 +251,58 @@ class HistorySealRules {
         assertFalse(HistorySeal.sealFile(target, keySource()))
         assertFalse(HistorySeal.sealFileFor(target).exists())
     }
+
+    // ── W22 A2 (P5): Call-Einträge stehen MIT in der Siegel-Kalkulation ─────
+
+    /**
+     * Das Siegel läuft über den GESAMTEN Datei-Inhalt — die neue Eintrags-Art
+     * kind=call (callInfo-Felder, leerer text) siegelt automatisch mit, ohne
+     * dass HistorySeal die Art kennt. Beweis-Kanten mit Call-Zeilen:
+     * - in-place veränderte Call-Zeile (Dauer-Doktor) = TAMPERED/SealBreach
+     *   (Mittel-Manipulation, KEIN Append → keine Torn-Heilung),
+     * - vollzeiliger Call-Anhang ohne Neu-Siegel = RECOVERED (Torn-Append-
+     *   Vertrag: Append-artige Zufälle heilen auf das bewiesene Präfix),
+     * - legitimer Neu-Siegel nach Call-Append = wieder VALID.
+     */
+    @Test
+    fun callEntriesInSealCalculation() {
+        val callLine = "{\"seq\":2,\"agentId\":\"alpha\",\"chatId\":\"c\",\"fromAgent\":false," +
+            "\"text\":\"\",\"time\":\"12:01\"," +
+            "\"callInfo\":{\"direction\":\"incoming\",\"missed\":false,\"durationSec\":161}}\n"
+        val textLine = "{\"seq\":1,\"agentId\":\"alpha\",\"chatId\":\"c\"," +
+            "\"fromAgent\":false,\"text\":\"Hallo Agent\",\"time\":\"12:00\"}\n"
+
+        // Kante 1: in-place veränderte Call-Zeile = TAMPERED (fail-closed).
+        val tampered = File(tmp.root, "alpha_c0ffee000010.jsonl")
+        tampered.writeText(textLine + callLine)
+        assertTrue(HistorySeal.sealFile(tampered, keySource()))
+        tampered.writeText(
+            textLine + callLine.replace("\"durationSec\":161", "\"durationSec\":999"),
+        )
+        assertEquals(HistorySeal.Verdict.TAMPERED, HistorySeal.verdictOf(tampered, keySource()))
+        val breach = runCatching { HistorySeal.readGuard(tampered, keySource()) }
+            .exceptionOrNull()
+        assertTrue(breach is HistorySeal.SealBreach)
+        assertEquals(HistorySeal.Verdict.TAMPERED, (breach as HistorySeal.SealBreach).reason)
+
+        // Kante 2: vollzeiliger Call-Anhang ohne Neu-Siegel = RECOVERED
+        // (Torn-Append-Vertrag — ein Anhang IST nicht vom Crash-Anhang
+        // unterscheidbar; die Recovery verwirft ihn auf das bewiesene Präfix).
+        val appended = File(tmp.root, "alpha_c0ffee000011.jsonl")
+        appended.writeText(textLine)
+        assertTrue(HistorySeal.sealFile(appended, keySource()))
+        appended.appendText(callLine)
+        assertEquals(
+            HistorySeal.Verdict.RECOVERED,
+            HistorySeal.readGuard(appended, keySource()),
+        )
+
+        // Kante 3: legitimer Weg — nach Call-Append NEU siegeln = VALID.
+        val legit = File(tmp.root, "alpha_c0ffee000012.jsonl")
+        legit.writeText(textLine)
+        assertTrue(HistorySeal.sealFile(legit, keySource()))
+        legit.appendText(callLine)
+        assertTrue(HistorySeal.sealFile(legit, keySource()))
+        assertEquals(HistorySeal.Verdict.VALID, HistorySeal.readGuard(legit, keySource()))
+    }
 }
