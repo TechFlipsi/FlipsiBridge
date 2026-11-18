@@ -6,6 +6,7 @@ import com.hermesandroid.bridge.client.ChatStatusRank
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.text.SimpleDateFormat
 import java.util.concurrent.Executors
 
 /**
@@ -197,6 +198,111 @@ object ChatHistoryStore {
             }
         }
     }
+
+    // ── B5/B6 (Multi-Gerät, Sir-General-GO 17.11.): Verlauf-Verband ──────────
+
+    /**
+     * B6: existiert ein persistenter Verlauf für agentId (≥1 lesbare Zeile)?
+     * Grundlage des Backfill-Requests (Roadmap Kap. 4.1: frisches Gerät mit
+     * fehlender/leerer ChatHistoryStore-Datei fordert an). Legacy-Adoption
+     * unter demselben Prozess-Lock (C4-Parität zu load/append); runCatching
+     * = nie eine Krypto-Session an einer IO-Scherbe kippen (false = ehrlich
+     * „kein Bestand bekannt“).
+     */
+    fun hasHistory(root: File, agentId: String): Boolean = runCatching {
+        synchronized(fileLock) {
+            val file = adoptLegacyFile(root, agentId, fileFor(root, agentId))
+            if (!file.exists()) false else readLines(file).isNotEmpty()
+        }
+    }.getOrDefault(false)
+
+    /**
+     * B6 BACKFILL-INGEST: Batch aus chat.backfill.enc CHRONOLOGISCH in die
+     * Platte einsortieren — ältere Zeilen wandern VOR den bestehenden Bestand
+     * (Roadmap Kap. 2.2 „Rest-Verlauf“ / Kap. 4.1 Merge über bestehenden
+     * Vertrag). Einmaliger atomarer Rewrite (writeAtomic, Torn-Write-Parität
+     * zu capLines-Kürzung) — der O(1)-Append des Alltags bleibt UNVERÄNDERT,
+     * nur der Backfill überschreibt einmalig je Agent.
+     *
+     * Verträge:
+     * - msg_id-Idempotenz (Kap. 2.3 #1): vorhandene msg_ids werden NICHT
+     *   doppelt — die Platte-Wahrheit gewinnt gegen Batch-Dubletten (Reconnect
+     *   kann denselben Batch spoolen; „restoredStatusById/Chips ziehen über die
+     *   msg_id“ — eine zweite Zeile gleicher msg_id würde den Chip-Verband
+     *   verzerren).
+     * - Zeilen OHNE msg_id dedupen über (agentId, fromAgent, text, HH:mm)-
+     *   Schlüssel (Parität ChatTimelineMerge.dedupeKey) — Alt-Haken-Daten und
+     *   Backend-B4-lose Zeilen bleiben so trotzdem doppelfest.
+     * - status = null (kein erfundener Sendezeit-Claim): die Chips kommen
+     *   über die msg_id-Bindung (Side-Car ⊔ chat.status ⊔ snapshot, Chat-
+     *   StatusRank-Monotonie) NACH — nie vom Backfill erfunden.
+     * - time wird aus seq („HH:mm“, Locale.GERMANY) neu gebaut — Parität zum
+     *   persistChatBubble-Formatter, damit Restore-Dedupe und Live-Anzeige
+     *   sich nicht an einem Format verzählen.
+     * - FIFO/Byte-Caps UNVERÄNDERT (capLines — 500/512 KiB, älteste zuerst).
+     *
+     * @return Anzahl NEU einsortierter Zeilen (0 = nichts Neues — der Aufrufer
+     *   stößt die Prepend-Anzeige dann NICHT an).
+     */
+    fun mergeBackfill(root: File, agentId: String, incoming: List<Entry>): Int {
+        if (agentId.isBlank() || incoming.isEmpty()) return 0
+        return runCatching {
+            synchronized(fileLock) {
+                val file = adoptLegacyFile(root, agentId, fileFor(root, agentId))
+                val existing = parse(readLines(file))
+                val knownMsgIds = existing
+                    .mapNotNull { it.msgId?.takeIf(String::isNotBlank) }
+                    .toHashSet()
+                val knownKeys = existing.map(::mergeDedupeKey).toHashSet()
+                // Zeit FIRST normalisieren („HH:mm“ aus seq) — sonst verzählt
+                // der Dedupe-Schlüssel Merge-Zeile ("") gegen Persist-Zeile
+                // ("HH:mm") und derselbe Beitrag landet doppelt.
+                val fresh = ArrayList<Entry>()
+                for (candidate in incoming.map(::normalizedForDisk)) {
+                    val msgId = candidate.msgId?.takeIf(String::isNotBlank)
+                    if (msgId != null && !knownMsgIds.add(msgId)) continue
+                    val key = mergeDedupeKey(candidate)
+                    if (!knownKeys.add(key)) continue
+                    fresh += candidate
+                }
+                if (fresh.isEmpty()) {
+                    return@synchronized 0
+                }
+                // Chronologisch aufsteigend — Bestand vor Backfill bei Gleich-
+                // stand (stable sort): dieselbe Platte-Wahrheit bleibt voran.
+                val merged = (existing + fresh).sortedBy { it.seq }
+                writeAtomic(file, capLines(merged.map(::normalizedForDisk)))
+                fresh.size
+            }
+        }.getOrDefault(0)
+    }
+
+    /** Asynchroner Merge (IO-Executor serialisiert mit append/load — kein Lock-Stau). */
+    fun mergeBackfillAsync(
+        root: File?,
+        agentId: String,
+        incoming: List<Entry>,
+        onComplete: (fresh: Int) -> Unit = {},
+    ) {
+        if (root == null) return
+        ioExecutor.execute {
+            val fresh = mergeBackfill(root, agentId, incoming)
+            runCatching { onComplete(fresh) }
+        }
+    }
+
+    /** Disk-Zeile für den Merge final bauen: msgId-bindbare Zeit „HH:mm“. */
+    private fun normalizedForDisk(entry: Entry): Entry = entry.copy(
+        time = SimpleDateFormat("HH:mm", java.util.Locale.GERMANY).format(java.util.Date(entry.seq)),
+    )
+
+    /**
+     * Merge-Dedupe-Schlüssel (Parität ChatTimelineMerge.dedupeKey — Längen-
+     * Präfix gegen Trennzeichen-Gleichklang, ohne Agent-Hash: die Merge-Datei
+     * ist je Agent EINE, der Agent ist implizit).
+     */
+    private fun mergeDedupeKey(entry: Entry): String =
+        "${entry.agentId}\u0000${entry.fromAgent}\u0000${entry.text.length}:${entry.text}\u0000${entry.time}"
 
     // ── HAKEN-FIX (17.11.2026): Status-Side-Car ──────────────────────────────
     //

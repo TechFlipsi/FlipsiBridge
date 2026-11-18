@@ -59,4 +59,26 @@ object ChatTimelineMerge {
             dedupeKey(agentIdOf(event), fromAgent = true, textOf(event), timeOf(event)) !in seen
         }
     }
+
+    /**
+     * B5 (Multi-Gerät): Übernahme mit FREIWÄHLBARER Richtung — Sync-Echo-
+     * Bubbles des NUTZERS (fromAgent = false) dürfen NICHT gegen Agenten-
+     * Twins gefiltert werden (dedupeKey trennt über fromAgent ohnehin hart).
+     * Dedupe-Schlüssel/Verband identisch zu [freshUnseen]: Restore-Zwillinge
+     * (id ≥ RESTORED_ID_BASE) tragen den Disk-Stand, Live-Übernahmen laufen
+     * über die Konsum-Marker.
+     */
+    fun <T> freshUnseenIngest(
+        messages: List<ChatMessage>,
+        fresh: List<T>,
+        agentIdOf: (T) -> Int,
+        textOf: (T) -> String,
+        timeOf: (T) -> String,
+        fromAgentOf: (T) -> Boolean,
+    ): List<T> {
+        val seen = messages.map { dedupeKey(it.agentId, it.fromAgent, it.text, it.time) }.toHashSet()
+        return fresh.filter { event ->
+            dedupeKey(agentIdOf(event), fromAgentOf(event), textOf(event), timeOf(event)) !in seen
+        }
+    }
 }

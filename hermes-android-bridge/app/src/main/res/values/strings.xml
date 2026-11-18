@@ -375,6 +375,7 @@
     <string name="chat_error_close_a11y">Fehlermeldung schließen</string>
     <string name="chat_send_failed">Chat: Senden fehlgeschlagen — %1$s. Verbindung prüfen und erneut senden.</string>
     <string name="chat_send_failed_unknown">unbekannter Fehler</string>
+    <string name="chat_backfill_progress">Verlauf wird synchronisiert …</string>
     <!-- HIG-W19 (Writing): ehrliche Leerzustände ohne Demo-Daten + Media-
          Fehler jeLocale — kein "Media:"-Präfix, WAS + AKTION statt Literale -->
     <string name="chat_empty_no_agents">Noch keine Kopplung</string>
@@ -575,4 +576,21 @@
     <string name="mtls_no_code">Kein Kopplungscode im Profil vorhanden — am Server erzeugen und Profil aktualisieren.</string>
     <string name="mtls_code_used">Code bereits verwendet — bitte am Server einen neuen Kopplungscode erzeugen.</string>
     <string name="mtls_enroll_error">Zertifikat-Anforderung fehlgeschlagen (%1$s) — Kopplungscode prüfen und erneut anfordern.</string>
+    <!-- W20 Multi-Gerät: Geräte-Verwaltung (B7) -->
+    <string name="dev_card_title">Geräte</string>
+    <string name="dev_card_hint">Gekoppelte Geräte am Relay. Entfernen meldet ein Gerät ab — es braucht danach eine neue Freigabe.</string>
+    <string name="dev_empty">Keine Geräte gemeldet. Das Relay listet nur aktuell verbundene Geräte.</string>
+    <string name="dev_this_device">Dieses Gerät</string>
+    <string name="dev_admin_badge">Admin</string>
+    <string name="dev_remove_action">Entfernen</string>
+    <string name="dev_revoke_title">Gerät entfernen?</string>
+    <string name="dev_revoke_text">%1$s wird abgemeldet und kann vor einer neuen Freigabe nicht mehr verbinden. Die verschlüsselte Sitzung (E2E) für dieses Gerät endet.</string>
+    <string name="dev_revoke_confirm">Entfernen</string>
+    <string name="dev_pairing_title">Kopplungsanfrage</string>
+    <string name="dev_pairing_alias_suggest">Vorschlag: %1$s</string>
+    <string name="dev_pairing_meta">Kennung: %1$s · IP: %2$s</string>
+    <string name="dev_pairing_meta_noip">Kennung: %1$s</string>
+    <string name="dev_pairing_ttl">Restzeit %1$s</string>
+    <string name="dev_pairing_accept">Annehmen</string>
+    <string name="dev_pairing_deny">Ablehnen</string>
 </resources>

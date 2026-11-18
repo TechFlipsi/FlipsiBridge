@@ -381,6 +381,7 @@
     <string name="chat_error_close_a11y">Close error message</string>
     <string name="chat_send_failed">Chat: send failed — %1$s. Check the connection and send again.</string>
     <string name="chat_send_failed_unknown">unknown error</string>
+    <string name="chat_backfill_progress">Syncing chat history …</string>
     <!-- HIG-W19 (english): honest empty states without demo data + media
          errors per locale — no "Media:" prefix, WHAT + ACTION over literals -->
     <string name="chat_empty_no_agents">No agents linked yet</string>
@@ -581,4 +582,21 @@
     <string name="mtls_no_code">No pairing code in the profile — create one on the server and refresh the profile.</string>
     <string name="mtls_code_used">Code already used — please generate a new pairing code on the server.</string>
     <string name="mtls_enroll_error">Certificate request failed (%1$s) — check the pairing code and try again.</string>
+    <!-- W20 Multi-Gerät: Geräte-Verwaltung (B7) -->
+    <string name="dev_card_title">Devices</string>
+    <string name="dev_card_hint">Devices are paired to the relay. Removing signs a device out — it needs a new approval afterwards.</string>
+    <string name="dev_empty">No devices reported. The relay lists only currently connected devices.</string>
+    <string name="dev_this_device">This device</string>
+    <string name="dev_admin_badge">Admin</string>
+    <string name="dev_remove_action">Remove</string>
+    <string name="dev_revoke_title">Remove device?</string>
+    <string name="dev_revoke_text">%1$s will be signed out and cannot reconnect until it is approved again. The encrypted session (E2E) for this device ends.</string>
+    <string name="dev_revoke_confirm">Remove</string>
+    <string name="dev_pairing_title">Pairing request</string>
+    <string name="dev_pairing_alias_suggest">Suggested: %1$s</string>
+    <string name="dev_pairing_meta">ID: %1$s · IP: %2$s</string>
+    <string name="dev_pairing_meta_noip">ID: %1$s</string>
+    <string name="dev_pairing_ttl">%1$s remaining</string>
+    <string name="dev_pairing_accept">Accept</string>
+    <string name="dev_pairing_deny">Deny</string>
 </resources>

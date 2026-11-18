@@ -60,6 +60,8 @@ fun SettingsHome(
     // W19: „Darstellung“-Zustand entfällt mit der entfernten Karte.
     var permissionsOpen by rememberSaveable { mutableStateOf(false) }
     var assistantOpen by rememberSaveable { mutableStateOf(false) }
+    // B7 (Multi-Gerät): die Geräte-Karte startet ebenfalls zugeklappt.
+    var devicesOpen by rememberSaveable { mutableStateOf(false) }
 
     // P10: die ACTIVITY baut den RoleManager-Koordinator (W4-CompositionLocal —
     // der wrapped Sprach-Context ist KEIN Activity-Context).
@@ -95,6 +97,26 @@ fun SettingsHome(
                 coordinator = assistantCoordinator,
                 expanded = assistantOpen,
                 onExpandedChange = { assistantOpen = it },
+            )
+        }
+        // B7 (Multi-Gerät): Geräte-Verwaltung — Liste aus relay.state
+        // devices[], Kopplungs-Anfrage (pairing.request), Entfernen 2-stufig.
+        //
+        // VERDRAHTUNG (bewusst noch nicht verbunden): der Zustand kommt mit
+        // der B5/B6-Lane — TODO(B5): `devices` aus dem relay.state-Flow von
+        // RelayClient (handleRelayStateFrame → devices[]) via collectAsState,
+        // TODO(B5): `pendingPairing` aus dem pairing.request-StateFlow,
+        // TODO(B5): `ownMaskedDeviceId` = maskierte Eigene-Kennung, und
+        // TODO(B5): onPairingDecision → sende pairing.approve/pairing.deny
+        // (request_id) + Revoke-Senden, sobald der Backend-Frame existiert
+        // (Platzhalter-Callbacks im Card-Aufruf bleiben bis dahin No-Op).
+        item(key = "devices") {
+            DevicesCard(
+                devices = emptyList(),
+                pendingPairing = null,
+                ownMaskedDeviceId = null,
+                expanded = devicesOpen,
+                onExpandedChange = { devicesOpen = it },
             )
         }
     }

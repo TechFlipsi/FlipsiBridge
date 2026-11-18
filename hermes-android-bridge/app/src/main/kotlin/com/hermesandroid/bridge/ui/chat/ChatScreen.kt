@@ -77,6 +77,7 @@ import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.ChatBackfillRules
 import com.hermesandroid.bridge.client.ChatStatusRank
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.media.MediaProtocol
@@ -124,6 +125,12 @@ fun ChatScreen(
     // PH2-MERGE: echte Agenten-Liste vom Relay; leer = Demo-Fallback.
     val relayAgents by RelayClient.agents.collectAsState()
     val chatEvents by RelayClient.chatEvents.collectAsState()
+    // B5 (Multi-Gerät): Sync-Echo fremder eigener Nachrichten + Anmelde-Tor-Frame.
+    val chatSyncEvents by RelayClient.chatSyncEvents.collectAsState()
+    // B6 (Multi-Gerät): Backfill-Verband (dezent, nicht blockierend).
+    val backfillSyncing by RelayClient.backfillSyncing.collectAsState()
+    val backfillEpochs by RelayClient.backfillEpochs.collectAsState()
+    val statusSnapshot by RelayClient.statusSnapshot.collectAsState()
     // PH2-T10: Zustell-/Lese-Status je msg_id + Arbeitsstatus je Agent.
     val chatStatus by RelayClient.chatStatus.collectAsState()
     val agentWorking by RelayClient.agentWorking.collectAsState()
@@ -198,6 +205,21 @@ fun ChatScreen(
     var consumedEventKeys by rememberSaveable(stateSaver = ConsumedEventKeysSaver) {
         mutableStateOf(listOf<String>())
     }
+
+    // ── B5/B6 (Multi-Gerät) — Konsum-/Prepend-Merker ─────────────────────────
+    // B5: Sync-Echo-Konsum (eigene Merker-Kette — ein Echo und ein event können
+    // je chatId+ts gleiche Schlüssel teilen? Nein: unterschiedliche ts; trotzdem
+    // bewusst EIGENE Kette, der Loop-Schutz bleibt ablesbar).
+    var consumedSyncKeys by rememberSaveable(stateSaver = ConsumedEventKeysSaver) {
+        mutableStateOf(listOf<String>())
+    }
+    // B6: Prepend-Zähler je Agent-Hash — ConversationBody hält den Blickpunkt
+    // (Index-Kompensation), statt ans Ende zu zerrn („Scroll-Position nicht
+    // springen lassen"). Konsumiert je Zähreff, sonst stale (kein Saveable:
+    // nach Rotation ist die Conversation ohnehin neu zusammengesetzt).
+    var historyPrependCounts by remember { mutableStateOf(mapOf<Int, Int>()) }
+    // B6: konsumierte Backfill-Epochen (Prepend je gelandeter Batch genau EINMAL).
+    var backfillEpochsConsumed by remember { mutableStateOf(mapOf<String, Long>()) }
 
     // PH-FIX-CHAT-A (F1): msg_id → elapsed_ms der zugehörigen Agenten-Antwort
     // (für 'Antwort nach X s') — wird direkt beim Übernehmen gefüllt, statt
@@ -462,6 +484,120 @@ fun ChatScreen(
         consumedEventKeys = (consumedEventKeys + fresh.map {
             ChatTimelineMerge.eventKey(it.chatId, it.ts)
         }).takeLast(MAX_CONSUMED_EVENT_KEYS)
+    }
+
+    // ── B5 (Multi-Gerät): Sync-Echo-Übernahme ────────────────────────────────
+    // Ein-Blase-Verband wie chatEvents, aber fromAgent = FALSE (die Nachricht
+    // stammt vom NUTZER auf einem anderen Gerät) + Ursprungs-msg_id-Bindung —
+    // die Chips laufen über denselben Broker-Kanal (chat.status trifft die
+    // msg_id auf jedem Gerät). Loop-Schutz liegt im RelayClient (Ingest-only):
+    // hier gibt es bewusst KEINEN Send-Pfad und KEIN Vorlesen.
+    LaunchedEffect(chatSyncEvents, historyRestored) {
+        if (!historyRestored) return@LaunchedEffect
+        val consumed = consumedSyncKeys.toHashSet()
+        val fresh = chatSyncEvents.filterNot { event ->
+            ChatTimelineMerge.eventKey(event.chatId, event.ts) in consumed
+        }
+        if (fresh.isEmpty()) return@LaunchedEffect
+        val restoredTwins = messages.filter { it.id >= RESTORED_ID_BASE }
+        val unseen = ChatTimelineMerge.freshUnseenIngest(
+            restoredTwins,
+            fresh,
+            agentIdOf = { it.agentId.hashCode() },
+            textOf = { it.text },
+            timeOf = { formatTimestamp(it.ts) },
+            fromAgentOf = { false },
+        )
+        if (unseen.isNotEmpty()) {
+            var nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+            val appended = unseen.map { event ->
+                ChatMessage(
+                    id = nextId++,
+                    agentId = event.agentId.hashCode(),
+                    fromAgent = false,
+                    text = event.text,
+                    time = formatTimestamp(event.ts),
+                    date = ChatDateRules.dayKey(event.ts),
+                )
+            }
+            messages = messages + appended
+            // HAKEN-Kette (B5): die Echo-Blase trägt die Ursprungs-msg_id —
+            // chat.status-/Snapshot-Frames des Brokers heben ihren Chip auf
+            // JEDEM Gerät monotone an (ChatStatusRank-Kette).
+            msgIdByLocalId = msgIdByLocalId + unseen.zip(appended)
+                .mapNotNull { (event, msg) ->
+                    event.msgId?.takeIf(String::isNotBlank)?.let { msg.id to it }
+                }
+        }
+        consumedSyncKeys = (consumedSyncKeys + fresh.map {
+            ChatTimelineMerge.eventKey(it.chatId, it.ts)
+        }).takeLast(MAX_CONSUMED_EVENT_KEYS)
+    }
+
+    // ── B6 (Multi-Gerät): Status-Snapshot-Anhebung ───────────────────────────
+    // ids-only msg_id→Status-Snapshot hebt die Bindungen (msgIdByLocalId) auf
+    // den HÖCHSTEN bekannten Stand: restoredStatusById ⊔ statusHighWater über
+    // ChatStatusRank.fuse — die W20-Haken-Fusion fällt NIE zurück.
+    LaunchedEffect(statusSnapshot, msgIdByLocalId) {
+        if (statusSnapshot.isEmpty() || msgIdByLocalId.isEmpty()) return@LaunchedEffect
+        val highWater = ChatBackfillRules.raiseBindingStatuses(
+            statusHighWaterByLocalId, msgIdByLocalId, statusSnapshot,
+        )
+        if (highWater != statusHighWaterByLocalId) {
+            statusHighWaterByLocalId = highWater
+        }
+        val restored = ChatBackfillRules.raiseBindingStatuses(
+            restoredStatusById, msgIdByLocalId, statusSnapshot,
+        )
+        if (restored != restoredStatusById) {
+            restoredStatusById = restored
+        }
+    }
+
+    // ── B6 (Multi-Gerät): Backfill-Verlauf-Prepend ───────────────────────────
+    // chat.backfill.enc ist in der Platte CHRONOLOGISCH einsortiert (Chat-
+    // HistoryStore.mergeBackfill) — der Screen liest den Disk-Stand je gelandeter
+    // Batch EINMAL (Consumed-Epochen) und setzt die frischen Zeilen VOR den
+    // bestehenden Stand. Dedupe: msgIdByLocalId-Bindungen + Schlüssel-Filter
+    // (Parität zum Disk-Restore) — keine Doppel-Bubble, kein Verlust der Live-Bubbles.
+    LaunchedEffect(backfillEpochs) {
+        for ((agentId, epoch) in backfillEpochs) {
+            if ((backfillEpochsConsumed[agentId] ?: 0L) >= epoch) continue
+            val agentHash = agentId.hashCode()
+            val root = ChatHistoryStore.root(context.applicationContext)
+            val entries = withContext(Dispatchers.IO) {
+                ChatHistoryStore.load(root, agentId)
+            }
+            val seenKeys = messages.map {
+                ChatTimelineMerge.dedupeKey(it.agentId, it.fromAgent, it.text, it.time)
+            }.toHashSet()
+            var nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
+            val prepended = ArrayList<ChatMessage>()
+            val bindings = HashMap<Long, String>()
+            for (entry in entries) {
+                val key = ChatTimelineMerge.dedupeKey(agentHash, entry.fromAgent, entry.text, entry.time)
+                if (key in seenKeys) continue
+                val id = nextId++
+                prepended += ChatMessage(
+                    id = id,
+                    agentId = agentHash,
+                    fromAgent = entry.fromAgent,
+                    text = entry.text,
+                    time = entry.time,
+                    // B6-Prepend trägt den Tages-Schlüssel — ein Backfill über
+                    // Tag-Grenzen rendert korrekte Datum-Chips im Verlauf.
+                    date = ChatDateRules.dayKey(entry.seq),
+                )
+                seenKeys += key
+                entry.msgId?.takeIf(String::isNotBlank)?.let { bindings[id] = it }
+            }
+            backfillEpochsConsumed = backfillEpochsConsumed + (agentId to epoch)
+            if (prepended.isEmpty()) continue
+            messages = prepended + messages
+            historyPrependCounts = historyPrependCounts +
+                (agentHash to (historyPrependCounts[agentHash] ?: 0) + prepended.size)
+            msgIdByLocalId = msgIdByLocalId + bindings
+        }
     }
 
     // PH-3 Welle 2: rot-Banner (Fingerprint-ABWEICHUNG / Session-Reset).
@@ -1179,6 +1315,12 @@ fun ChatScreen(
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
+            // B6 (Multi-Gerät): dezente Backfill-Zeile + Blickpunkt-Halten.
+            backfillSyncing = agent.agentId.isNotBlank() && agent.agentId in backfillSyncing,
+            historyPrependCount = historyPrependCounts[agent.id] ?: 0,
+            onConsumePrependCount = {
+                historyPrependCounts = historyPrependCounts - agent.id
+            },
             // W18-1a: das verdeckte FP-Ergebnis DIESES Agenten (Demo-Eintrag
             // ohne eigene agentId hat niemals eines) + Abmelden der Zeile.
             fpCheckResult = agent.agentId.takeIf { it.isNotBlank() }
@@ -1440,6 +1582,16 @@ private fun ConversationBody(
     // + ChatHistoryStore) lebt im ChatScreen-Verband; hier kommt der
     // Bestätigungsdialog davor und der Nachträgliche Callback dahinter.
     onClearHistory: () -> Unit = {},
+    // B6 (Multi-Gerät): dezent — der Verlauf dieses Agenten wird vom Gateway
+    // nachgeladen (chat.backfill_request offen/angekommen). KEIN Blockieren:
+    // die Zeile sitzt unter dem Kopf, der Verlauf bleibt bedienbar.
+    backfillSyncing: Boolean = false,
+    // B6: frisch prepended Verlauf-Zeilen SEIT dem letzten Zähreff — der
+    // Blickpunkt des scrollenden Verlaufs hält sich (Index-Kompensation),
+    // statt vom auto-Scroll ans Ende gerissen zu werden („Scroll-Position
+    // nicht springen lassen“).
+    historyPrependCount: Int = 0,
+    onConsumePrependCount: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
@@ -1627,17 +1779,55 @@ private fun ConversationBody(
     // Bei offener Suchleiste folgt der Verlauf dem Nutzer (Suchleiste zu =
     // gewohntes Ende Folgen; ein Rest-Zustand wird beim Schließen nicht
     // nachgezogen — der Nutzer ist eh am Lesen).
+    // B6 (Multi-Gerät): ein reines Backfill-PREPEND ist KEIN Folgen-Anlass —
+    // statt ans Ende zu zerrn hält der Blickpunkt sich (Index-Kompensation
+    // um die prependeten Zeilen, ohne Animation = kein sichtbarer Sprung);
+    // beim ersten Zusammensetzen der Conversation greift der gewohnte End-
+    // Sprung (der Prepend ist dann bereits Teil der Ausgangsliste).
+    var lastConversationSize by remember { mutableStateOf(-1) }
     LaunchedEffect(conversation.size) {
         if (searchOpen) return@LaunchedEffect
         if (conversation.isNotEmpty()) {
-            listState.animateScrollToItem(conversation.lastIndex)
+            val firstComposition = lastConversationSize == -1
+            val grew = !firstComposition && conversation.size > lastConversationSize
+            val prepended = historyPrependCount
+            when {
+                firstComposition -> {
+                    listState.animateScrollToItem(conversation.lastIndex)
+                    onConsumePrependCount()
+                }
+                grew && prepended > 0 -> {
+                    val anchor = (listState.firstVisibleItemIndex + prepended)
+                        .coerceAtMost(conversation.lastIndex)
+                    onConsumePrependCount()
+                    // Instant-Sprung auf dieselbe Inhaltsposition — KEINE Anim
+                    // über evtl. 200 Zeilen (die würde sich als Sprung zeigen).
+                    listState.scrollToItem(anchor)
+                }
+                else -> listState.animateScrollToItem(conversation.lastIndex)
+            }
         }
+        lastConversationSize = conversation.size
     }
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(padding),
     ) {
+        // B6 (Multi-Gerät): dezente Sync-Zeile — der Verlauf dieses Agenten
+        // wird vom Gateway nachgeladen. Bewusst KEIN Blockieren/Deckel: nur
+        // eine Zeile unter dem Kopf, der Verlauf bleibt bedienbar (Roadmap
+        // Kap. 4.1: Backfill als Zusatz-Verband, nicht als Sperre).
+        if (backfillSyncing) {
+            Text(
+                stringResource(R.string.chat_backfill_progress),
+                style = MaterialTheme.typography.labelSmall,
+                color = FlipsiColors.TextSecondary,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+            )
+        }
         // WELLE 13 (Sir): Herz-Knopf = Support — W16 (Fixliste 34): play
         // öffnet DIREKT das „Unterstützen“-Sheet im Chat; GitHub hat das
         // Herz vollständig nicht (keine Supporter-Route).

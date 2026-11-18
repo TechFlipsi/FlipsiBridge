@@ -488,6 +488,53 @@ object RelayClient {
     private val _chatStatus = MutableStateFlow<Map<String, String>>(emptyMap())
     val chatStatus: StateFlow<Map<String, String>> = _chatStatus.asStateFlow()
 
+    /**
+     * ── B5 (Multi-Gerät, Sir-General-GO 17.11.): Sync-Echo-Empfang ───────────
+     * chat.sync.enc = Echo des NUTZER-Texts eines ANDEREN Geräts (Backend B3:
+     * je Geräte-Session verschlossen, Marker "sync" + "sync_of" = Ursprungs-
+     * msg_id). INGEST-ONLY: Bubble + Platte, NIE sendChat (Loop-Schutz,
+     * Roadmap Kap. 8 #6 — Beweis-Verband in ChatSyncRules-Doku + QA-Grep).
+     */
+    data class ChatSyncEvent(
+        val chatId: String,
+        val agentId: String,
+        val text: String,
+        val ts: Long,
+        /** Ursprungs-msg_id des Posts (Platte + Chip-Verband + msg_id-Dedup). */
+        val msgId: String?,
+    )
+
+    private val _chatSyncEvents = MutableStateFlow<List<ChatSyncEvent>>(emptyList())
+    val chatSyncEvents: StateFlow<List<ChatSyncEvent>> = _chatSyncEvents.asStateFlow()
+
+    /** B5: Anmelde-Tor — die ZULETZT empfangene pairing.request (UI/B7 bindet). */
+    private val _pairingFrame = MutableStateFlow<PairingFrameRules.PairingFrame?>(null)
+    val pairingFrame: StateFlow<PairingFrameRules.PairingFrame?> = _pairingFrame.asStateFlow()
+
+    /**
+     * ── B6 (Multi-Gerät): Backfill-Verband ───────────────────────────────────
+     * backfillSyncing: Agent-ids, deren Verlauf gerade nachgeladen wird (dezente
+     * Fortschritt-Zeile in der Conversation, KEIN Blockieren).
+     * backfillEpochs: je Agent ein Zähler je gelandetem chat.backfill.enc —
+     * ChatScreen liest die Platte (mergeBackfill fertig) und prepends.
+     * statusSnapshot: ids-only Snapshot (msg_id→Status) — MONOTON gemerged
+     * (ChatStatusRank.fuse, W20-Haken-Kette fällt nie zurück).
+     */
+    private val _backfillSyncing = MutableStateFlow<Set<String>>(emptySet())
+    val backfillSyncing: StateFlow<Set<String>> = _backfillSyncing.asStateFlow()
+
+    private val _backfillEpochs = MutableStateFlow<Map<String, Long>>(emptyMap())
+    val backfillEpochs: StateFlow<Map<String, Long>> = _backfillEpochs.asStateFlow()
+
+    private val _statusSnapshot = MutableStateFlow<Map<String, String>>(emptyMap())
+    val statusSnapshot: StateFlow<Map<String, String>> = _statusSnapshot.asStateFlow()
+
+    /** B5/B6-Gate: je-Connect-Merker + Echo-FIFO (Frame-Coroutinen teilen sich). */
+    private val frameGate = Any()
+    private val backfillRequested = HashSet<String>()   // einmal je Connect × Agent
+    private val syncEchoSeen = LinkedHashSet<String>()  // FIFO 256 (ChatSyncRules.SEEN_CAP)
+
+
     /** PH2-T10: Arbeitsstatus je agent_id (letzter chat.activity-Frame). */
     private val _agentWorking = MutableStateFlow<Map<String, AgentActivity>>(emptyMap())
     val agentWorking: StateFlow<Map<String, AgentActivity>> = _agentWorking.asStateFlow()
@@ -1120,6 +1167,10 @@ object RelayClient {
                 // Session-Wahrheit; ein gespeichertes/richtiges Passwort
                 // hat den Handshake durchgelassen).
                 _pairingPasswordNeeded.value = false
+                // B5/B6 (Multi-Gerät): frische Connect-Semantik — der Backfill-
+                // Verlauf-Request-Spielraum gilt je Connect EINMAL je Agent.
+                synchronized(frameGate) { backfillRequested.clear() }
+                _backfillSyncing.value = emptySet()
             }
 
             override fun onMessage(webSocket: WebSocket, text: String) {
@@ -1584,6 +1635,16 @@ object RelayClient {
                 "chat.fp_check.enc" -> { handleChatFpCheckEnc(json); return }
                 "crypto.hello_ack" -> { handleCryptoHelloAck(json); return }
                 "crypto.session_reset" -> { handleCryptoSessionReset(json); return }
+                // B5 (Multi-Gerät): Sync-Echo fremder eigener Nachrichten —
+                // INGEST-ONLY (Bubble + Platte, NIE sendChat: Loop-Schutz).
+                "chat.sync.enc" -> { handleChatSyncEnc(json); return }
+                // B5: Anmelde-Tor — pairing.request → StateFlow (UI/B7 bindet),
+                // Senden über sendPairingApprove/sendPairingDeny (sendRawFrame).
+                "pairing.request" -> { handlePairingRequestFrame(json); return }
+                // B6: Backfill-Verlauf-Batch je frisches Gerät (K ≤ 200) +
+                // ids-only Status-Snapshot — Chips über die msg_id-Bindung.
+                "chat.backfill.enc" -> { handleChatBackfillEnc(json); return }
+                "chat.status_snapshot" -> { handleStatusSnapshotFrame(json); return }
             }
 
             val requestId = json.get("request_id")?.asString ?: ""
@@ -2356,6 +2417,9 @@ object RelayClient {
             // PH-FIX-BACKEND-B: Hello-Ack-Verifiziert = Retry-Budget zurücksetzen.
             helloAckFailures.remove(agentId)
             publishE2eSessions()
+            // B5 (Multi-Gerät): frisches Gerät ohne Verlauf fordert den Gateway-
+            // Verlauf an (Gate: leerer Verlauf, einmal je Connect × Agent).
+            maybeRequestBackfill(agentId)
             Log.i(TAG, "PH-3: E2E-Session ${sessionId.take(8)} aktiv (Agent ${agentId.take(24)})")
         } catch (e: Exception) {
             // Wrong-Key/PSK → Session verwerfen, KEIN Cleartext-Fallback (Spec §6).
@@ -2534,6 +2598,265 @@ object RelayClient {
         // (handleChatFpCheckResult) — der enc-Text läuft oben dorthin um,
         // BEVOR er eine Chat-Bubble werden könnte.
     }
+
+    /**
+     * B5 (Multi-Gerät): chat.sync.enc = Echo des NUTZER-Texts eines ANDEREN
+     * Geräts desselben Accounts (Backend B3: Adapter verschließt je Geräte-
+     * Session, Marker "sync" + "sync_of" = Ursprungs-msg_id — contrib/
+     * hermes-chat-plugin/adapter.py B3_SYNC_ENC_FRAME/B3_ECHO_FIELD/
+     * B3_SYNC_OF_FIELD). Verband:
+     * - INGEST-ONLY (Loop-Schutz, Roadmap Kap. 8 #6): Bubble in chatSyncEvents
+     *   + persistChatBubble — bewusst KEIN sendChat/POST-Nachschub, KEIN
+     *   notifyIncomingChat (eigene Nachricht!), KEIN Vorlesen. Damit kann das
+     *   Echo nie wieder in den Gateway-Verlauf fallen (kein Duplex-Loop).
+     * - Dedup über Ursprungs-msg_id: FIFO 256 (Parität B3_SYNC_ECHO_DEDUP)
+     *   fängt Spool-Re-Flush-Dubletten live; der UI-Zwilling-Filter
+     *   (ChatTimelineMerge) + msg_id-Idempotenz der Platte frisst den Rest.
+     */
+    private fun handleChatSyncEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: run {
+            Log.w(TAG, "B5: chat.sync.enc ohne aktive E2E-Session verworfen")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "B5: chat.sync.enc-Entschlüsselung fehlgeschlagen — Frame verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val echo = ChatSyncRules.parseEcho(
+            payload,
+            json,
+            agentId,
+            stringOf(json, "chat_id") ?: "",
+            longOf(json, "ts") ?: System.currentTimeMillis(),
+        ) ?: run {
+            // Kein Echo-Marker = kein Sync-Frame (Backend-B4-lose Struktur) —
+            // NIE als Agenten-Antwort rendern, NIE senden.
+            Log.w(TAG, "B5: chat.sync.enc ohne Echo-Marker verworfen")
+            return
+        }
+        val memorable = synchronized(frameGate) {
+            ChatSyncRules.isNewAndRemember(syncEchoSeen, echo.msgId)
+        }
+        if (!memorable) {
+            if (BuildConfig.DEBUG) {
+                Log.d(TAG, "B5: sync-Echo-Duplikat (msg ${echo.msgId?.take(12)}) verworfen")
+            }
+            return
+        }
+        _chatSyncEvents.update { list ->
+            (list + ChatSyncEvent(echo.chatId, echo.agentId, echo.text, echo.ts, echo.msgId))
+                .takeLast(MAX_CHAT_EVENTS)
+        }
+        persistChatBubble(agentId, echo.chatId, fromAgent = false, echo.text, echo.ts, status = null,
+            msgId = echo.msgId)
+        // Bewusst ENDE — kein notifyIncomingChat, kein ChatSpeechSpeaker, kein
+        // sendChat: der Ingest endet an der Platte (Kap. 8 #6, Loop-sicher).
+        if (BuildConfig.DEBUG) {
+            Log.d(TAG, "B5: sync-Echo von Agent ${agentId.take(24)} geplattet (msg ${echo.msgId?.take(12)})")
+        }
+    }
+
+    /**
+     * B5: pairing.request (Anmelde-Tor, tools/android_relay.py B1) — nur die
+     * zuletzt empfangene Anfrage im StateFlow (Kap. 8 #8: die App zeigt NUR
+     * die letzte Anfrage; Kennung/IP maskiert, TTL je Frame). Die UI-Bindung
+     * (Banner) kommt in der B7-Lane; das Senden läuft über
+     * [sendPairingApprove]/[sendPairingDeny].
+     */
+    private fun handlePairingRequestFrame(json: JsonObject) {
+        val frame = PairingFrameRules.parse(json) ?: run {
+            Log.w(TAG, "B5: pairing.request ohne gültige Struktur verworfen")
+            return
+        }
+        _pairingFrame.value = frame
+        Log.i(TAG, "B5: pairing.request empfangen (${frame.deviceMasked}, TTL ${frame.ttlS}s)")
+    }
+
+    /** B5: Freigabe-Draht — NUR request_id (Relay löst die device_id selbst auf; die App hält bewusst NUR die maskierte Kennung). */
+    fun sendPairingApprove(requestId: String): Boolean =
+        sendRawFrame(PairingFrameRules.approveFrame(requestId))
+
+    /** B5: Abweisungs-Draht (pairing.deny) — dieselbe Norm wie approve. */
+    fun sendPairingDeny(requestId: String): Boolean =
+        sendRawFrame(PairingFrameRules.denyFrame(requestId))
+
+    /** B5: UI-Räumung der angezeigten Anfrage (B7 bindet; StateFlow-Reset). */
+    fun dismissPairingFrame() {
+        _pairingFrame.value = null
+    }
+
+    /**
+     * B6: chat.backfill.enc = Gateway-Verlauf-Batch je frisches Gerät (K ≤ 200
+     * je Agent, je Frame max 64 Entries — B3_BACKFILL_BATCH_MAX). Einträge
+     * CHRONOLOGISCH in die Platte einsortieren (ChatHistoryStore.mergeBackfill:
+     * älter vor Bestand, msg_id-Idempotenz, Caps unverändert), dann der Chat-
+     * Screen den Disk-Stand einmalig vor den Live-Stand setzen (Prepend).
+     * Chips: KEIN erfundener Status — die msg_id-Bindung zieht den Broker-
+     * Stand (Side-Car ⊔ chat.status ⊔ snapshot) monotone nach.
+     */
+    private fun handleChatBackfillEnc(json: JsonObject) {
+        val agentId = stringOf(json, "agent_id") ?: return
+        val peer = cryptoSessions[agentId] ?: run {
+            Log.w(TAG, "B6: chat.backfill.enc ohne aktive E2E-Session verworfen")
+            return
+        }
+        val payload = try {
+            peer.decryptFrame(json)
+        } catch (e: Exception) {
+            Log.w(TAG, "B6: chat.backfill.enc-Entschlüsselung fehlgeschlagen — Frame verworfen")
+            return
+        }
+        handleRotateHint(json, agentId, peer)
+        val chatId = stringOf(json, "chat_id") ?: ""
+        val entries = ChatBackfillRules.parseEntries(payload, System.currentTimeMillis())
+        val root = appContext?.let { ChatHistoryStore.root(it) } ?: run {
+            _backfillSyncing.update { it - agentId }
+            return
+        }
+        if (entries == null) {
+            Log.w(TAG, "B6: chat.backfill.enc ohne Batch-Feld verworfen")
+            return
+        }
+        if (entries.isEmpty()) {
+            // Leere Batch = „Weiter gibt es ehrlich nichts" — Fortschritt aus.
+            _backfillSyncing.update { it - agentId }
+            return
+        }
+        ChatHistoryStore.mergeBackfillAsync(
+            root,
+            agentId,
+            entries.map { entry ->
+                ChatHistoryStore.Entry(
+                    seq = entry.ts,
+                    agentId = agentId,
+                    chatId = chatId,
+                    fromAgent = entry.fromAgent,
+                    text = entry.text,
+                    time = "",
+                    status = null,
+                    msgId = entry.msgId,
+                )
+            },
+        ) { fresh ->
+            // Die Fortschritt-Zeile DREHT NICHT ENLOS: gelandet = aus (auch bei
+            // 0 neuen Zeilen — der Verlauf ist dann schon komplett geplattet).
+            _backfillSyncing.update { it - agentId }
+            if (fresh > 0) {
+                _backfillEpochs.update { epochs ->
+                    epochs + (agentId to (epochs[agentId] ?: 0L) + 1L)
+                }
+                Log.i(TAG, "B6: chat.backfill.enc geplattet — ${fresh} neue Zeilen (${agentId.take(24)})")
+            } else {
+                Log.d(TAG, "B6: chat.backfill.enc ohne neue Zeilen (${agentId.take(24)})")
+            }
+        }
+    }
+
+    /**
+     * B6: chat.status_snapshot (ids-only, Roadmap Kap. 4.1) — msg_id→Status-
+     * Mapping je Backfill/Connect. MONOTONE Übernahme: ChatStatusRank.fuse in
+     * _statusSnapshot UND in der Live-Map (Parität handleChatStatusFrame, inkl.
+     * Write-Back Side-Car vor der rang-priorisierten Eviction) — die W20-Haken-
+     * Fusion fällt NIE zurück (ein verspätetes 'delivered' kippt keinen 'read').
+     */
+    private fun handleStatusSnapshotFrame(json: JsonObject) {
+        val parsed = ChatBackfillRules.parseStatusSnapshot(json) ?: run {
+            Log.w(TAG, "B6: chat.status_snapshot ohne gültige Felder verworfen")
+            return
+        }
+        if (parsed.isEmpty()) return
+        _statusSnapshot.update { current -> ChatBackfillRules.mergeStatuses(current, parsed) }
+        val root = appContext?.let { ChatHistoryStore.root(it) }
+        _chatStatus.update { cur ->
+            val next = LinkedHashMap(cur)
+            for ((msgId, status) in parsed) {
+                if (!ChatStatusRank.shouldApply(next[msgId], status)) continue
+                next[msgId] = status
+                // rang-priorisierte Eviction mit Write-Back VOR jeder Entfernung
+                // (Parität handleChatStatusFrame — >500-msg_ids-Kette, kein
+                // Chip-Voll-Verlust).
+                while (next.size > MAX_CHAT_STATUS) {
+                    val victimId = ChatStatusRank.evictionVictims(next).firstOrNull() ?: break
+                    root?.let { r ->
+                        runCatching { ChatHistoryStore.recordStatus(r, victimId, next.getValue(victimId)) }
+                    }
+                    next.remove(victimId)
+                }
+            }
+            next
+        }
+        // Snapshot-Stände auf die Platte (Side-Car = höchster bekannter Stand;
+        // idempotent — Duplikat-Zeilen sind fold-unschädlich).
+        root?.let { r ->
+            runCatching {
+                for ((msgId, status) in parsed) {
+                    ChatHistoryStore.recordStatus(r, msgId, status)
+                }
+            }
+        }
+        if (BuildConfig.DEBUG) Log.d(TAG, "B6: status_snapshot übernommen (${parsed.size} ids)")
+    }
+
+    /**
+     * B5: chat.backfill_request — beim ERFOLGREICHEN hello_ack je Agent (Roadmap
+     * Kap. 4.1: „nach hello_ack: wenn kein lokaler Verlaufs-File für agentId →
+     * sende backfill_request“). Gate-Verband: nur bei LEEREM Verlauf, einmal je
+     * (Re)Connect × Agent (Frame [mayRequestOnce] — kein DoS-Hammer gegen das
+     * B3_BACKFILL_RATE_S-Schild), ids-only über den Phone-WS (Klar-Steuer-Frame,
+     * Senden-Muster = pairing.approve). Fortschritt-Zeile ehrlich mit Timeout.
+     */
+    private fun maybeRequestBackfill(agentId: String) {
+        val activeScope = scope ?: return
+        activeScope.launch {
+            val root = appContext?.let { ChatHistoryStore.root(it) } ?: return@launch
+            val has = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                ChatHistoryStore.hasHistory(root, agentId)
+            }
+            if (!ChatBackfillRules.shouldRequest(has)) return@launch
+            val chatId = cryptoSessions[agentId]?.chatId ?: return@launch
+            val frame = ChatBackfillRules.requestFrame(chatId) ?: return@launch
+            val ws = webSocket ?: return@launch
+            val first = synchronized(frameGate) {
+                ChatBackfillRules.mayRequestOnce(backfillRequested, agentId)
+            }
+            if (!first) return@launch
+            val sent = runCatching { ws.send(frame.toString()) }.getOrDefault(false)
+            if (!sent) {
+                synchronized(frameGate) { ChatBackfillRules.unmarkRequested(backfillRequested, agentId) }
+                Log.w(TAG, "B5: chat.backfill_request nicht gesendet (Agent ${agentId.take(24)})")
+                return@launch
+            }
+            _backfillSyncing.update { it + agentId }
+            scheduleBackfillProgressTimeout(agentId)
+            Log.i(TAG, "B5: chat.backfill_request gesendet (Agent ${agentId.take(24)}, K=${ChatBackfillRules.BACKFILL_K})")
+        }
+    }
+
+    /** B6: ehrliches Fortschritt-Ende — die Zeile bleibt ohne Antwort nie hängen. */
+    private fun scheduleBackfillProgressTimeout(agentId: String) {
+        scope?.launch {
+            kotlinx.coroutines.delay(ChatBackfillRules.PROGRESS_TIMEOUT_MS)
+            _backfillSyncing.update { cur ->
+                if (agentId in cur) cur - agentId else cur
+            }
+        }
+    }
+
+    /** B5: roher Klar-Frame auf den Phone-WS (Anmelde-Tor-Gegenrichtung). */
+    private fun sendRawFrame(frame: JsonObject?): Boolean {
+        val json = frame ?: return false
+        val ws = webSocket ?: return false
+        val ok = runCatching { ws.send(json.toString()) }.getOrDefault(false)
+        if (ok && BuildConfig.DEBUG) {
+            Log.d(TAG, "B5: ${json.get("type")?.asString ?: "?"} über WS gesendet")
+        }
+        return ok
+    }
+
 
     /**
      * W18-1a: verdeckter FP-Abgleich-Kontrollframe (chat.fp_check, klar) —
