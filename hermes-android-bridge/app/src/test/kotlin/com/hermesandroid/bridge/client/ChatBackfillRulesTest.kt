@@ -90,8 +90,7 @@ class ChatBackfillRulesTest {
         assertEquals(4, entries.size)
         // Chronologisch ASC — 100 → 150 → 200 → 300.
         assertEquals(listOf(100L, 150L, 200L, 300L), entries.map { it.ts })
-        assertEquals(true, entries[0].fromAgent)   // alt: m-1 from_agent=true? NEIN —
-        // Sortierung: 100 = m-2 (fromAgent=false), 150 = user, 200 = assistant,
+                // Sortierung: 100 = m-2 (fromAgent=false), 150 = user, 200 = assistant,
         // 300 = m-1. Präzise:
         assertEquals("kuerzel", entries[0].text)
         assertEquals(false, entries[0].fromAgent)

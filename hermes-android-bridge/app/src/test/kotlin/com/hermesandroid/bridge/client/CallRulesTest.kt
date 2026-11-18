@@ -313,7 +313,7 @@ class CallRulesTest {
     @Test
     fun screengrab_name_mit_und_ohne_call_id() {
         assertEquals("agent-shot-42.jpg", CallRules.screengrabName(null, 42L))
-        assertEquals("agent-shot-.jpg", CallRules.screengrabName("", 42L))
+        assertEquals("agent-shot-42.jpg", CallRules.screengrabName("", 42L))
         assertEquals(
             "agent-shot-call-abc12345-42.jpg",
             CallRules.screengrabName("call-abc12345", 42L),

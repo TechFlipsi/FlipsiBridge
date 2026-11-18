@@ -93,7 +93,7 @@ class ChatSyncRulesTest {
             ChatSyncRules.originMsgId(payload("msg_id", "m-inner"), frame("m-frame")),
         )
         assertEquals("m-frame", ChatSyncRules.originMsgId(payload(), frame("m-frame")))
-        assertEquals("m-frame", ChatSyncRules.originMsgId(payload("sync_of", "  "), frame(null)))
+        assertEquals("m-frame", ChatSyncRules.originMsgId(payload("sync_of", "  "), frame("m-frame")))
         assertNull(ChatSyncRules.originMsgId(payload(), frame(null)))
     }
 

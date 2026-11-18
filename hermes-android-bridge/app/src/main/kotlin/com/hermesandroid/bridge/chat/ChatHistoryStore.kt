@@ -315,7 +315,7 @@ object ChatHistoryStore {
                 // P24: Backfill überschreibt nie einen verdächtigen Bestand
                 // (Breach → Befund-Zettel + runCatching fängt → 0, fail-closed).
                 guardSealedRead(file)
-                val existing = parse(readLines(file))
+                val existing = parse(readLines(file)).map(::normalizedForDisk)
                 val knownMsgIds = existing
                     .mapNotNull { it.msgId?.takeIf(String::isNotBlank) }
                     .toHashSet()
