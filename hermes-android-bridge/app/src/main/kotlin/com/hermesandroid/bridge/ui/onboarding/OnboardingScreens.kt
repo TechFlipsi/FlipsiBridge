@@ -26,13 +26,13 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -56,9 +56,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.auth.PairingManager
 import com.hermesandroid.bridge.client.PairingHandshakePolicy
 import com.hermesandroid.bridge.client.RelayClient
 import com.hermesandroid.bridge.i18n.AppLanguage
+import com.hermesandroid.bridge.legal.AgbAcceptanceRules
 import com.hermesandroid.bridge.server.ServerProfiles
 import com.hermesandroid.bridge.server.ServerProfileRules
 import com.hermesandroid.bridge.ui.BridgeStatus
@@ -80,9 +82,21 @@ import com.hermesandroid.bridge.ui.FlipsiType
  *  1 RECHTLICHES    — Accept-Gate VOR der Kopplung, weil die Kopplung die
  *                     erste Datenübermittlung ist (Checkliste C: „Keine
  *                     Datenabfragen vor dem Rechtliches-Accept“). Impressum/
- *                     Datenschutz/Nutzung ausklappbar (legal_*-Keys), Checkbox
- *                     „Ich akzeptiere“, Weiter bleibt bis zum Accept deaktiv-
- *                     iert, Zustand persistiert ([OnboardingLegalPrefs]).
+ *                     Datenschutz/Nutzung ausklappbar (legal_*-Keys, dieselbe
+ *                     Quelle wie das About-Sheet). PH8-T6 (W22, Lane E):
+ *                     Buttons „Akzeptieren“/„Ablehnen“ — Akzeptieren
+ *                     persistiert SOFORT ([OnboardingLegalPrefs],
+ *                     key «legal_accepted_v1») und schaltet weiter; Ablehnen
+ *                     zeigt einen klaren Hinweis-Dialog und beendet die App
+ *                     sauber (finishAffinity, [AgbAcceptanceRules]). Der
+ *                     Fail-Safe ([AgbAcceptanceRules.mustAsk]): bereits
+ *                     akzeptiertes Flag ODER bestehender Verlauf/Kopplung
+ *                     (Upgrade-Installationen) → Schritt im Lese-Modus mit
+ *                     „Weiter“ — die Frage kommt NIRGENDS wiederkehrend.
+ *                     Entschluss (PH8-T6): der Schritt ist der EINGEBETTETE
+ *                     Akzeptanz-Schritt (kein separater VOR-Schritt vor dem
+ *                     Wizard — der Wizard existiert seit Welle 13 mit diesem
+ *                     Schritt; ein Vorgänger wäre ein Doppel).
  *  2 RELAY_URL      — Kopplung Teil 1 (Adresse, NSC-Pin-Validierung via
  *                     [OnboardingRules]).
  *  3 BRIDGE_CODE    — Kopplung Teil 2 (Code, Fehlerhilfe 401/429/Timeout;
@@ -122,9 +136,12 @@ import com.hermesandroid.bridge.ui.FlipsiType
  *     Screen davor).
  *  2. EN-Tile → kompletter Wizard sofort englisch (Live-Rewrap, kein
  *     Flash/Recreate); DE-Tile → zurück.
- *  3. Rechtliches ohne Accept → „Weiter“ bleibt deaktiviert; Accept-Checkbox
- *     → Weiter aktiv; App-Neustart vor Accept zeigt Checkbox wieder leer,
- *     nach Accept dauerhaft gesetzt (Prefs legal_accepted_v1).
+ *  3. Rechtliches (PH8-T6): ohne Accept nur „Ablehnen“/„Überspringen“ —
+ *     „Akzeptieren“ persistiert sofort (Prefs legal_accepted_v1) und schaltet
+ *     weiter; Neustart/Resume nach Accept zeigt den Schritt im Lese-Modus
+ *     („Weiter“, keine erneute Frage). „Ablehnen“ → Hinweis-Dialog → Beenden
+ *     = finishAffinity (App endet sauber). Upgrade-Verband (Profil/Kopplung
+ *     vorhanden) → Lese-Modus statt Gate (Fail-Safe).
  *  4. Richtiger Code → CONNECTED → Sprung auf FINGERPRINT automatisch
  *     (logcat: `WebSocket connected` → Phase CONNECTED).
  *  5. Falscher Code → 401×3 → Phase PAIRING_BROKEN → rote Karte „Code ist
@@ -148,6 +165,11 @@ enum class OnboardingHelpKind { CODE_REJECTED, PASSWORD_REQUIRED, RELAY_BLOCKED,
  * Dokumente wesentlich, setzt die nächste Welle einen v2-Key und das Gate
  * fragt erneut. Kein eigener Thread/Apparat: apply() reicht, der Wert wird
  * nur beim Wizard-Betreten gelesen.
+ *
+ * PH8-T6 (W22, Lane E): der Key bleibt UNVERÄNDERT weitergenutzt (einmal
+ * akzeptiert = nie wiederkehrend; das Flag wird nie zurückgesetzt) — die
+ * Gate-Entscheidung (ask vs. Lese-Modus, Upgrade-Fail-Safe) zog als reine
+ * JVM-Regeln in [AgbAcceptanceRules] (legal/AgbAcceptanceRules.kt).
  */
 object OnboardingLegalPrefs {
 
@@ -276,11 +298,9 @@ fun OnboardingScreens(
     // = RelayClient.pairingPasswordNeeded). Sauber-Feld: sonst bleibt der
     // Schritt reiner Code-Eintrag.
     var pwText by rememberSaveable { mutableStateOf("") }
-    // Welle 13 (P7): Accept-Zustand — initial aus den Prefs (wizard nach
-    // Absturz/Rotation kommt nicht mit gefälschtem Leerzustand durch).
-    var legalAccepted by rememberSaveable {
-        mutableStateOf(OnboardingLegalPrefs.isAccepted(context))
-    }
+    // PH8-T6 (W22): der Accept-Zustand lebt NICHT mehr als Checkbox-State im
+    // Composable — „Akzeptieren“ persistiert direkt ([OnboardingLegalPrefs]),
+    // das Gate entscheidet je Schritt-Eintritt über [AgbAcceptanceRules].
 
     // Rücksprung je Wizard-Stufe (Abbrechen ab Schritt 1 = zurück, nie raus).
     BackHandler(enabled = step > OnboardingStep.SPRACHE.ordinal) { step = step - 1 }
@@ -380,6 +400,17 @@ fun OnboardingScreens(
             }
 
             // ── Schritt 1: RECHTLICHES (Welle 13, P7 — Accept-Gate) ──────────
+            // PH8-T6 (W22, Lane E): EIN Gate-Knoten, zwei Modi.
+            //  - GATE (echter Erststart: Flag nie gesetzt UND kein Verlauf/
+            //    Kopplung): drei legal_*-Karten + Buttons „Akzeptieren“/
+            //    „Ablehnen“ — Akzeptieren persistiert SOFORT (P7-Verband) und
+            //    geht weiter; Ablehnen öffnet den klaren Hinweis-Dialog,
+            //    Bestätigen beendet die App sauber (finishAffinity).
+            //  - Lese-Modus (Flag akzeptiert ODER Fail-Safe-Verband, z. B.
+            //    Upgrade oder Resume nach Akzeptieren): dieselben Karten +
+            //    „Weiter“ — die Zustimmung wird NICHT erneut eingefordert
+            //    („nie wiederkehrend“; [AgbAcceptanceRules.mustAsk] ist die
+            //    eine Entschcheidungsstelle, JVM-getestet).
             OnboardingStep.RECHTLICHES.ordinal -> {
                 Text(
                     stringResource(R.string.onb_step_header_legal),
@@ -403,38 +434,110 @@ fun OnboardingScreens(
                     title = stringResource(R.string.legal_terms_title),
                     text = stringResource(R.string.legal_terms_body),
                 )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { legalAccepted = !legalAccepted },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = legalAccepted,
-                        onCheckedChange = { checked ->
-                            legalAccepted = checked
-                            // Sofort persistieren (P7: „Zustand persistiert“) —
-                            // auch wenn der Nutzer danach überspringt: das Gate
-                            // bleibt eingelöst, ein Re-Visit startet akzeptiert.
-                            if (checked) OnboardingLegalPrefs.accept(context)
-                        },
-                        colors = CheckboxDefaults.colors(
-                            checkedColor = FlipsiColors.Ember,
-                            checkmarkColor = FlipsiColors.OnEmber,
-                        ),
-                    )
-                    Text(
-                        stringResource(R.string.legal_accept),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                WizardButton(
-                    label = stringResource(R.string.onb_next),
-                    // P7-Gate: Weiter bleibt deaktiviert, bis akzeptiert.
-                    enabled = legalAccepted,
-                ) {
-                    step = OnboardingStep.RELAY_URL.ordinal
+                // ORIGINAL Activity über den AppLanguageGate-Verband (der
+                // wrapped Context ist kein Activity-Context) — für das
+                // saubere Beenden bei „Ablehnen“. Compose-Zeit-Read, KEIN
+                // Click-Zeit-Read (CompositionLocal-Pflicht).
+                val activity = AppLanguage.LocalAppActivity.current
+                val mustAsk = AgbAcceptanceRules.mustAsk(
+                    storedFlag = OnboardingLegalPrefs.isAccepted(context),
+                    hasProfiles = ServerProfiles.profiles.value.isNotEmpty(),
+                    hasLegacyPairing = AgbAcceptanceRules.hasLegacyPairing(
+                        RelayClient.serverUrl,
+                        PairingManager.getCode(),
+                    ),
+                )
+                if (mustAsk) {
+                    var declineDialogOpen by remember { mutableStateOf(false) }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        OutlinedButton(
+                            onClick = { declineDialogOpen = true },
+                            // Touch-Ziel ≥48dp (QA-Klasse), Wichtung: die
+                            // Ablehnen-Fläche ist sichtbar, aber sekundär.
+                            modifier = Modifier.weight(1f).height(48.dp),
+                        ) {
+                            // STRING: agb_decline_btn — de "Ablehnen", en "Decline"
+                            Text("Ablehnen")
+                        }
+                        Button(
+                            onClick = {
+                                // Persist SOFORT (P7-Verband: ein Absturz nach
+                                // dem Tipp verliert die Einlösung nicht) —
+                                // dann weiter zur Kopplung.
+                                OnboardingLegalPrefs.accept(context)
+                                step = OnboardingStep.RELAY_URL.ordinal
+                            },
+                            modifier = Modifier.weight(1f).height(48.dp),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = FlipsiColors.Ember,
+                                contentColor = FlipsiColors.OnEmber,
+                            ),
+                        ) {
+                            // STRING: agb_accept_btn — de "Akzeptieren", en "Accept"
+                            Text("Akzeptieren", fontWeight = FontWeight.SemiBold)
+                        }
+                    }
+                    if (declineDialogOpen) {
+                        AlertDialog(
+                            onDismissRequest = { declineDialogOpen = false },
+                            // STRING: agb_decline_title — de "App beenden?", en "Exit app?"
+                            title = {
+                                Text(
+                                    "App beenden?",
+                                    fontWeight = FontWeight.SemiBold,
+                                )
+                            },
+                            // STRING: agb_decline_text —
+                            // de "FlipsiBridge kann nur mit akzeptierten Nutzungsbedingungen und Datenschutzhinweisen genutzt werden. Ablehnen beendet die App — dein Gerät wird dabei nicht verändert.",
+                            // en "FlipsiBridge can only be used with the terms of use and privacy notice accepted. Declining closes the app — nothing on your device is changed."
+                            text = {
+                                Text(
+                                    "FlipsiBridge kann nur mit akzeptierten Nutzungsbedingungen und Datenschutzhinweisen genutzt werden. Ablehnen beendet die App — dein Gerät wird dabei nicht verändert.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            },
+                            confirmButton = {
+                                TextButton(
+                                    onClick = {
+                                        declineDialogOpen = false
+                                        // AgbAcceptanceRules.declineEndsApp:
+                                        // sauber beenden — alle Activities der
+                                        // Task-Wurzel mit finishAffinity; ohne
+                                        // Activity-Verband (nie im MainActivity-
+                                        // Pfad) bleibt der Wizard offen statt
+                                        // stillen Crash zu riskieren.
+                                        activity?.let { a ->
+                                            runCatching { a.finishAffinity() }
+                                        }
+                                    },
+                                ) {
+                                    // STRING: agb_decline_exit — de "Beenden", en "Exit"
+                                    Text(
+                                        "Beenden",
+                                        color = FlipsiColors.SignalRedText,
+                                        fontWeight = FontWeight.SemiBold,
+                                    )
+                                }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { declineDialogOpen = false }) {
+                                    // STRING: agb_decline_stay — de "Weiter lesen", en "Keep reading"
+                                    Text("Weiter lesen")
+                                }
+                            },
+                        )
+                    }
+                } else {
+                    // Lese-Modus (bereits akzeptiert oder Upgrade-Fail-Safe).
+                    WizardButton(
+                        label = stringResource(R.string.onb_next),
+                        enabled = true,
+                    ) {
+                        step = OnboardingStep.RELAY_URL.ordinal
+                    }
                 }
             }
 

@@ -43,6 +43,11 @@ import com.hermesandroid.bridge.ui.FlipsiColors
  *    raus“) — das Sheet ist der EINE Ort für Version + Rechtstexte; der
  *    Tiefen-Sprung samt LegalScreenPlaceholder (nur Platzhalterkarten)
  *    existiert nicht mehr.
+ *  - PH8-T7 (W22, Lane E): NEU der Abschnitt „Open-Source-Lizenzen“
+ *    ([OssEntryCard]) — er öffnet den OSS-Attribution-Screen
+ *    ([OssLicensesHost] in OssLicensesScreen.kt) als Vollbild-Dialog ÜBER
+ *    diesem Sheet. EIN Zugang (kein Zweit-Eintrag in den Einstellungen),
+ *    beim Sheet-Abbruch wird der Dialog mit abgeräumt.
  */
 object AboutState {
 
@@ -67,9 +72,18 @@ object AboutState {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AboutSheetHost() {
+    // PH8-T7 (W22, Lane E): der OSS-Attribution-Screen gehört zum selben
+    // Rechtliches-Ort — der Host mountet ihn hier einmalig (Vollbild-Dialog
+    // über dem Sheet; schließt auf „Zurück“/Abbruch, Sheet bleibt bestehen).
+    OssLicensesHost()
     if (!AboutState.sheetOpen) return
     ModalBottomSheet(
-        onDismissRequest = { AboutState.close() },
+        onDismissRequest = {
+            // PH8-T7 (W22): der OSS-Dialog (falls über dem Sheet auf) wird
+            // beim Sheet-Abbruch mit abgeräumt — kein verwaistes Fenster.
+            OssLicensesState.hide()
+            AboutState.close()
+        },
         containerColor = FlipsiColors.PanelElev,
     ) {
         AboutSheetContent()
@@ -123,6 +137,11 @@ private fun AboutSheetContent() {
         LegalExpander(titleRes = R.string.legal_imprint_title, bodyRes = R.string.legal_imprint_body)
         LegalExpander(titleRes = R.string.legal_privacy_title, bodyRes = R.string.legal_privacy_body)
         LegalExpander(titleRes = R.string.legal_terms_title, bodyRes = R.string.legal_terms_body)
+        // PH8-T7 (W22, Lane E): GENAU EIN neuer Abschnitt „Open-Source-
+        // Lizenzen“ — öffnet den OSS-Attribution-Screen ([OssEntryCard] →
+        // [OssLicensesHost][OssLicensesScreen.kt]). EIN Zugang (P18/P38):
+        // niemals zusätzlich in den Einstellungen oder Tiefe-Routen.
+        OssEntryCard()
         // W16.1 (P38): der frühere „Über die App: Rechtliches (Vollansicht)"-
         // Sprung (requestLegalDepth → Route 3) ist ENTFERNT — hinter der Tiefe
         // standen ausschließlich die Phase-8-Platzhalterkarten, während die
