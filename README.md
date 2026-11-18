@@ -47,6 +47,15 @@ curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/main/instal
 
 Der Code steht in der App (Setup-Screen). Danach die Handy-App verbinden (URL http://dein-server:8766 oder https://deine-domain.tld via Reverse-Proxy + TLS).
 
+### Deployment-Härtung (systemd, eigener Service-User)
+
+Wer den Relay persistiert als systemd-Dienst (`install-relay.sh` legt ihn für
+den Root-Kontext an), sollte ihn nach dem ersten Setup auf einen dedizierten
+System-User (nologin, keine Shell) mit systemd-Sandbox-Vollset migrieren:
+Unit-Vorlage + Migrations-/Rollback-Anleitung liegen in
+[`deployment/README.md`](deployment/README.md) — Vorlage nie unverändert
+rotieren, Platzhalter (Host/Proxy/Port/TLS-Pfade) vorher anpassen.
+
 ## Repository Structure
 
 This repo contains **two components**:

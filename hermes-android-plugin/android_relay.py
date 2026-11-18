@@ -50,6 +50,35 @@ from aiohttp import web
 
 logger = logging.getLogger("android_relay")
 
+# ── PH-4 (O4): Security-Parameter = Server-Config, nie hard-coded ────────────
+# Jedes Security-Limit ist per Env konfigurierbar (systemd-Unit / relay.env) und
+# wird von _env_clamped_* AUF das DoS-Schild geclampt: die Konfig darf die
+# Schilder nur VERSCHÄRFEN, nie lockern — Default (Env weg/ungültig) ist der
+# bisherige Hardcode (fail-closed). Syntax-Guards (Device-/Call-/Media-Regex,
+# Namespace-Syntax) bleiben bewusst NICHT konfigurierbar: eine Konfig könnte
+# sonst die Validierung weiten (O4-Ausnahme, dokumentiert in deployment/README).
+
+
+def _env_clamped_float(name: str, default: float, lo: float, hi: float) -> float:
+    """Env-Float lesen; wegfallend/ungültig/nicht-finite = Default, sonst auf
+    [lo, hi] geclampt (Klammer = hartes Maximum, konfigurierbar nur innerhalb)."""
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if not math.isfinite(value):
+        return default
+    return max(lo, min(hi, value))
+
+
+def _env_clamped_int(name: str, default: int, lo: int, hi: int) -> int:
+    """Env-Int lesen (via _env_clamped_float), sonst wie dort clamplen."""
+    return int(_env_clamped_float(name, float(default), float(lo), float(hi)))
+
+
 # ── Module-level state ────────────────────────────────────────────────────────
 
 _relay_lock = threading.Lock()
@@ -495,8 +524,10 @@ def _mask_id(value: Optional[str]) -> str:
 # die IP-Rate-Chain zählt weiter.
 _DEVICE_REGISTRY_MAX_DEFAULT = 4   # Sir-Decision-Kern (Plan Kap. 6): 4 Geräte
 _DEVICE_CAP_HARD_MAX = 8           # hartes Maximum — Cap ist DoS-Schild
-_PAIRING_TTL_SECONDS = 600.0       # 10 min — Anfrage- UND Freigabe-Fenster
-_PAIRING_PENDING_MAX = 8           # cap-Paarigkeit der Tor-Maps (Kap. 8 #2)
+_PAIRING_TTL_SECONDS = _env_clamped_float(
+    "ANDROID_RELAY_PAIRING_TTL_SECONDS", 600.0, 60.0, 600.0)  # 10 min — Anfrage- UND Freigabe-Fenster (O4: Env nur verschärfen [60..600])
+_PAIRING_PENDING_MAX = _env_clamped_int(
+    "ANDROID_RELAY_PAIRING_PENDING_MAX", 8, 2, 8)     # cap-Paarigkeit der Tor-Maps (Kap. 8 #2; O4: Env nur kleiner = strenger)
 
 _DEVICE_REGISTRY_FILE = "relay-devices.json"
 
@@ -1478,8 +1509,10 @@ _AGENT_FINGERPRINT_PREFIX = "ANDROID_AGENT_FINGERPRINT_"
 _HEX64_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _ENC_NONCE_LEN = 12
 _ENC_CT_MAX_BYTES = 512 * 1024
-_REPLAY_WINDOW = 100                # Counter-Fenster je Richtung (Relay-Grobprüfung)
-_FRAME_MAX_AGE_MS = 10 * 60 * 1000  # Frame-Freshness (Replay-Fenster 100 + 10 min)
+_REPLAY_WINDOW = _env_clamped_int(
+    "ANDROID_RELAY_REPLAY_WINDOW", 100, 10, 100)        # Counter-Fenster je Richtung (Relay-Grobprüfung; O4: Env nur verschärfen)
+_FRAME_MAX_AGE_MS = _env_clamped_int(
+    "ANDROID_RELAY_FRAME_MAX_AGE_MS", 10 * 60 * 1000, 60 * 1000, 10 * 60 * 1000)  # Frame-Freshness (Replay-Fenster 100 + 10 min; O4: Env nur verschärfen)
 # SEC-W1 B F-06: Sanity-Cap für hdr.n/pn — ein Riesen-n (PoC: 10^20) wurde als
 # "neu" akzeptiert (max=n) und vergiftete danach das Fenster (legitimes n=5
 # fiel auf 429 'replay' → Session-DoS). 2^32 Nachrichten je Ratchet-Kette
@@ -1591,7 +1624,9 @@ def _validate_media_meta(data: dict, require_header: bool = True) -> Optional[st
 
 # ── SEC-W1 B F-01: harte Größen-Grenzen (Relay-RAM-Schutz, Shared-Infra) ────
 _CHAT_TEXT_MAX_CHARS = 32 * 1024    # Chat-Text je Nachricht (413 darüber)
-_CHAT_QUEUE_MAX_BYTES = 8 * 1024 * 1024  # Bytes-Budget je Broker-Queue
+_CHAT_QUEUE_MAX_BYTES = _env_clamped_int(
+    "ANDROID_RELAY_CHAT_SPOOL_MAX_BYTES", 8 * 1024 * 1024, 64 * 1024,
+    8 * 1024 * 1024)  # Bytes-Budget je Broker-Queue (O4 Spool-Quota: Env nur verschärfen)
 _CHAT_ACTIVITY_MAX = 256           # SEC-W1 D2: Dedup-Map-Cap (war unbounded)
 # W19 (SIRS-Neued): agent.status-Dedup-Map (letzter working-Wert je agent_id)
 # — FIFO-Cap Parität chat_activity.
@@ -2609,9 +2644,12 @@ async def _serve(state: _RelayState, ready: threading.Event) -> None:
 
 # ── Rate limiting for WebSocket auth ─────────────────────────────────────────
 
-_AUTH_MAX_ATTEMPTS = 5  # max failed attempts before blocking
-_AUTH_WINDOW_SECONDS = 60  # sliding window for counting failures
-_AUTH_BLOCK_SECONDS = 300  # how long to block an IP (5 minutes)
+_AUTH_MAX_ATTEMPTS = _env_clamped_int(
+    "ANDROID_RELAY_AUTH_MAX_ATTEMPTS", 5, 1, 5)  # max failed attempts before blocking (O4: Env nur verschärfen [1..5])
+_AUTH_WINDOW_SECONDS = _env_clamped_int(
+    "ANDROID_RELAY_AUTH_WINDOW_SECONDS", 60, 60, 3600)  # sliding window for counting failures (O4: nur länger = strenger)
+_AUTH_BLOCK_SECONDS = _env_clamped_int(
+    "ANDROID_RELAY_AUTH_BLOCK_SECONDS", 300, 300, 86400)  # how long to block an IP (O4: nur länger = strenger)
 _AUTH_CLEANUP_INTERVAL = 120  # seconds between cleanup sweeps
 
 # {ip: [timestamp, timestamp, ...]} — tracks failed auth attempt times per IP
@@ -2692,12 +2730,69 @@ def _mask_token(token: str) -> str:
 # Request-body fields that may carry PII or secrets (phone numbers, SMS text,
 # typed text incl. passwords/OTPs, clipboard content, intent extras).
 # AGENTS.md: strip phone numbers, recipients, location from tool logs.
-# Security-Fix-Welle 17.11.: password/token/authorization/code ergänzt —
-# Login-/Pairing-/Auth-Felder landeten bisher KLAR im Body-Debug-Log.
+# Security-Fix-Welle 17.11. + PH-4-Log-Redaktion (P23.3): password/token/
+# authorization/code ergänzt, dazu secret/apikey/bearer/credentials/otp/pin/
+# psk/prekey/session_key — Tokens/Codes/Keymaterial landen NIE im Log. Das
+# Matching ist case-insensitive und REKURSIV (siehe _redact_sensitive).
 _SENSITIVE_BODY_KEYS = frozenset(
     {"to", "number", "body", "text", "message", "extras", "data", "uri", "content",
-     "password", "token", "authorization", "code"}
+     "password", "token", "authorization", "code", "secret", "apikey", "api_key",
+     "bearer", "credentials", "credential", "otp", "pin", "psk", "prekey",
+     "session_key", "access_token", "auth", "authorization_header"}
 )
+# PH-4: Tiefen-Begrenzung des Redaktions-Baumlaufs (DoS-Schild gegen riesige/
+# zirkuläre Strukturen); jenseits der Tiefe = Platzhalter ohne Inhalt.
+_SENSITIVE_REDACT_DEPTH_MAX = 6
+
+
+def _redact_sensitive(value, depth: int = 0):
+    """PH-4 Log-Redaktion: Wertbaum rekursiv wandern und Werte unter sensiblen
+    Schlüsseln durch "<redacted>" ersetzen. Bisher redigierte _safe_body_repr
+    nur TOP-LEVEL-Keys — verschachtelte {"params": {"token": ...}}-Bodies
+    flossen KLAR ins Debug-Log (Audit-Fund P23.3). Case-insensitiv; Listen/
+    Tupeln werden elementweise gewandert; jenseits _SENSITIVE_REDACT_DEPTH_MAX
+    nur ein Platzhalter; Nicht-Container unverändert."""
+    if depth > _SENSITIVE_REDACT_DEPTH_MAX:
+        return "<redacted-depth>"
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            key = k if isinstance(k, str) else str(k)
+            if key.lower() in _SENSITIVE_BODY_KEYS:
+                out[k] = "<redacted>"
+            else:
+                out[k] = _redact_sensitive(v, depth + 1)
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_redact_sensitive(item, depth + 1) for item in value]
+    return value
+
+
+# PH-4 Code-Verdunkelung: Request-Body-Debug ist Default-OFF — selbst wenn der
+# Logger auf DEBUG steht, werden Bodies NUR mit explizitem
+# ANDROID_RELAY_DEBUG_BODY_LOGGING=1 ans Log gereicht (per Call gelesen →
+# ohne Neustart umschaltbar). Ohne Env: body=<off> (kein Inhalt, auch nach
+# _safe_body_repr-Redaktion).
+_DEBUG_BODY_LOGGING_ENV = "ANDROID_RELAY_DEBUG_BODY_LOGGING"
+
+
+def _debug_body_enabled() -> bool:
+    """Debug-Body-Logging bewusst per Env opt-in (Default OFF)."""
+    return os.getenv(_DEBUG_BODY_LOGGING_ENV, "") == "1"
+
+
+def _log_command_debug(method: str, path: str, device: Optional[str], body) -> None:
+    """Debug-Zeile je Phone-Command — PH-4 Log-Redaktion: ohne Debug-Env wird
+    der Body NIE an den Logger gereicht; mit Env über _safe_body_repr
+    (rekursiv redigiert). Method/Path/Device bleiben (ohne Query-Params)."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    if _debug_body_enabled():
+        logger.debug(">>> %s %s device=%s body=%s", method, path,
+                     _mask_id(device), _safe_body_repr(body))
+    else:
+        logger.debug(">>> %s %s device=%s body=<off>", method, path,
+                     _mask_id(device))
 
 
 def _safe_body_repr(body) -> str:
@@ -2705,6 +2800,8 @@ def _safe_body_repr(body) -> str:
 
     v0.10.9-Sicherheitsfix: body kann auch non-dict JSON sein (Array/String/Zahl)
     — vorher AttributeError -> 500. Jetzt defensiv typisieren.
+    PH-4: Redaktion jetzt REKURSIV über den ganzen Key-Baum (sensible
+    verschachtelte Felder landen nicht mehr klar im Debug-Log).
     """
     if not body:
         return "{}"
@@ -2717,9 +2814,7 @@ def _safe_body_repr(body) -> str:
         except (TypeError, ValueError):
             raw = ""
         return f"<non-dict:{type(body).__name__}> ({len(raw)} bytes)"
-    redacted = {
-        k: "<redacted>" if k in _SENSITIVE_BODY_KEYS else v for k, v in body.items()
-    }
+    redacted = _redact_sensitive(body)
     return json.dumps(redacted, default=str)[:200]
 
 
@@ -3581,7 +3676,8 @@ async def _handle_agent_ws(request: web.Request, state: _RelayState) -> web.WebS
 # PH2-FIX (Jäger B2): FIFO-Cap der Broker-Queues (Phone-Outbox + je-Agent-
 # Inbound). 500 Frames reichen für jeden Offline-Spool-Drill; ältere fallen
 # bei Überlauf automatisch raus (bounded memory, kein unlimitiertes Wachstum).
-_CHAT_QUEUE_MAXLEN = 500
+_CHAT_QUEUE_MAXLEN = _env_clamped_int(
+    "ANDROID_RELAY_CHAT_SPOOL_MAXLEN", 500, 10, 500)  # (O4 Spool-Quota: Env nur verschärfen)
 
 # PH2-MERGE: Frame-Allowlist der Agent-WS — ALLES andere wird geloggt und
 # verworfen (kein Crash, keine Broker-Berührung). keepalive/ping = Presence-
@@ -6312,8 +6408,7 @@ async def _handle_http(
         "params": params,
         "body": body,
     }
-    logger.debug(">>> %s %s device=%s body=%s", method, path,
-                 _mask_id(device_for_cmd), _safe_body_repr(body))
+    _log_command_debug(method, path, device_for_cmd, body)
 
     # Register the response target *before* sending so we never miss a reply.
     is_binary_stream = path in ("/mic_file", "/file")
@@ -6483,3 +6578,31 @@ async def _relay_binary_stream(
                 queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+
+
+# ── PH-4 Code-Verdunkelung: --version-Banner NUR auf explizites Flag ─────────
+# Die Versionskennung fließt bewusst NICHT spontan in Logs/HTTP-Antworten
+# (keine Versions-Disclosure im Journal/Fehlerpfad) — abrufbar einzig via
+# `python tools/android_relay.py --version`. Das Modul ist Bibliothek/Daemon-
+# Baustein: bare Ausführung startet KEINEN Relay (start_relay lebt im Daemon).
+def _resolve_relay_version() -> str:
+    """Versionskennung aus den Paket-Metadaten ('hermes-android'); ohne
+    installiertes Paket ehrlich 'dev' — kein erfundener Fixwert."""
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        return _pkg_version("hermes-android")
+    except Exception:
+        return "dev"
+
+
+if __name__ == "__main__":  # pragma: no cover — Flag-Route, kein Relay-Start
+    import argparse
+
+    _parser = argparse.ArgumentParser(
+        prog="android_relay",
+        description="FlipsiBridge phone relay — Bibliothek/Daemon-Baustein.")
+    _parser.add_argument(
+        "--version", "-V", action="version",
+        version=f"android_relay {_resolve_relay_version()}")
+    _parser.parse_args()

@@ -74,6 +74,13 @@ sudo systemctl enable --now hermes-android-relay
 
 Verify: `systemctl status hermes-android-relay` and `journalctl -u hermes-android-relay -n 20`. The daemon exits at startup if `ANDROID_BRIDGE_TOKEN` is unset.
 
+### Deployment hardening (own service user, systemd sandbox)
+
+Installiert die Unit den Relay im Root-Kontext (Legacy-Verhalten), migriere
+ihn nach dem ersten Setup auf einen dedizierten System-User (nologin) mit
+systemd-Sandbox-Vollset — Unit-Vorlage, Migrationsschritte, Rechte-Matrix
+(0600/0640) und beweisbarer Rollback: [../deployment/README.md](../deployment/README.md).
+
 ## Python dev setup
 
 ```bash
