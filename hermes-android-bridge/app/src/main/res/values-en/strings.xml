@@ -669,4 +669,56 @@
     <string name="call_screengrab_confirm_hint">Screenshot to agent — tap again within 3 s to confirm.</string>
     <string name="call_screengrab_talk_failed">Voice turn failed: </string>
     <string name="call_screengrab_cap_missing">Screenshot capability off — enable it in Settings › Capabilities.</string>
+    <!-- W22 MERGE (i18n): Assistant lane B — bubble service (G2) -->
+    <string name="assistant_bubble_a11y">Start assistant voice input</string>
+    <string name="assistant_bubble_channel_name">Assistant bubble</string>
+    <string name="assistant_bubble_channel_desc">Keeps the overlay bubble above all apps — tapping starts voice input</string>
+    <string name="assistant_bubble_notif_title">Assistant bubble active</string>
+    <string name="assistant_bubble_notif_text">Tap the bubble to start voice input</string>
+    <string name="assistant_pkg_bubble_toggle_a11y">Turn the overlay bubble above all apps on or off</string>
+    <string name="assistant_pkg_bubble_start_failed">The bubble could not start — permission or the system blocked it; try again.</string>
+    <string name="assistant_pkg_bubble_perm_pending">The overlay permission screen is open — the bubble activates when you return here.</string>
+    <string name="assistant_pkg_bubble_perm_unreachable">Overlay permission screen not reachable — system settings → apps → FlipsiBridge → display over other apps.</string>
+    <!-- W22 MERGE (i18n): Assistant lane B — mini panel + share dialog (G11) -->
+    <string name="assistant_panel_input_hint">Question or message …</string>
+    <string name="assistant_panel_default_name">Assistant</string>
+    <string name="assistant_panel_close_a11y">Close mini panel</string>
+    <string name="assistant_panel_chip_remove_a11y">Remove page context</string>
+    <string name="assistant_panel_mic">Mic</string>
+    <string name="assistant_panel_mic_a11y">Record a voice message</string>
+    <string name="assistant_panel_send">Send</string>
+    <string name="assistant_panel_send_a11y">Send to the active chat</string>
+    <string name="assistant_share_dialog_title">Send to FlipsiBridge</string>
+    <string name="assistant_share_chip_prefix">Page: %1$s</string>
+    <string name="assistant_share_no_url">No link in the shared content — the page actions need an address.</string>
+    <string name="assistant_share_action_send">Send to agent</string>
+    <string name="assistant_share_action_send_a11y">Send the shared content to the active chat</string>
+    <string name="assistant_share_action_ask">Ask about page</string>
+    <string name="assistant_share_action_ask_a11y">Ask a question about the shared page</string>
+    <string name="assistant_share_action_summarize">Summarize</string>
+    <string name="assistant_share_action_summarize_a11y">Have the shared page summarized</string>
+    <!-- W22 MERGE (i18n): lane E — OSS licenses screen (PH8-T7) -->
+    <string name="about_oss_title">Open-source licenses</string>
+    <string name="about_oss_entry_note">App dependencies with license and copyright</string>
+    <string name="oss_intro">Essential dependencies of the app (name — version — license, copyright below). Full license texts are in each project\'s source repository.</string>
+    <string name="oss_empty">No entries.</string>
+    <string name="oss_base_attribution">FlipsiBridge is based on hermes-android (MIT license). Copyright (c) 2026 Raul (hermes-android, original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge modifications).</string>
+    <string name="oss_license_ref">Project version %1$s. The complete license (LICENSE file, MIT) is in the app\'s source repository.</string>
+    <!-- W22 MERGE (i18n): lane E — AGB gate, decline dialog (PH8-T6) -->
+    <string name="agb_accept_btn">Accept</string>
+    <string name="agb_decline_btn">Decline</string>
+    <string name="agb_decline_title">Exit app?</string>
+    <string name="agb_decline_text">FlipsiBridge can only be used with the terms of use and privacy notice accepted. Declining closes the app — nothing on your device is changed.</string>
+    <string name="agb_decline_exit">Exit</string>
+    <string name="agb_decline_stay">Keep reading</string>
+    <!-- W22 MERGE (i18n): lane C — global chat history search (PH-6) -->
+    <string name="chat_global_search_title">More matches in histories</string>
+    <string name="chat_global_search_searching">Searching histories…</string>
+    <string name="chat_global_search_index_building">Search index is being built…</string>
+    <string name="chat_global_search_no_index">No history indexed yet</string>
+    <string name="chat_global_search_empty">No further matches</string>
+    <string name="chat_global_search_capped">Trimmed — best matches first</string>
+    <string name="chat_global_search_building_partial">Index is still building — results may be incomplete</string>
+    <string name="chat_global_search_unknown_agent">Unknown agent</string>
+    <string name="chat_global_search_jump_label">Jump to this match</string>
 </resources>

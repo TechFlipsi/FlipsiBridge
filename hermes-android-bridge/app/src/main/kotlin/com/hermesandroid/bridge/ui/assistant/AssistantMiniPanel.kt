@@ -225,9 +225,7 @@ class MiniPanelController(private val service: android.app.Service) {
             }
             setTextColor(colorTextPrimary)
             setHintTextColor(colorTextSecondary)
-            // STRING: assistant_panel_input_hint — de "Frage oder Nachricht …",
-            // en "Question or message …"
-            hint = "Frage oder Nachricht …"
+            hint = service.getString(R.string.assistant_panel_input_hint)
             textSize = 15f
             setSingleLine(false)
             maxLines = 3
@@ -285,8 +283,7 @@ class MiniPanelController(private val service: android.app.Service) {
         row.addView(
             PlatformTextView(service).apply {
                 text = agentName
-                    // STRING: assistant_panel_default_name — de "Assistent", en "Assistant"
-                    ?: "Assistent"
+                    ?: service.getString(R.string.assistant_panel_default_name)
                 setTextColor(colorTextPrimary)
                 textSize = 16f
                 typeface = Typeface.DEFAULT_BOLD
@@ -299,9 +296,7 @@ class MiniPanelController(private val service: android.app.Service) {
             setTextColor(colorTextSecondary)
             gravity = Gravity.CENTER
             textSize = 22f
-            // STRING: assistant_panel_close_a11y — de "Mini-Panel schließen",
-            // en "Close mini panel"
-            contentDescription = "Mini-Panel schließen"
+            contentDescription = service.getString(R.string.assistant_panel_close_a11y)
             minWidth = dp(48, density)
             minHeight = dp(48, density)
         }
@@ -337,9 +332,7 @@ class MiniPanelController(private val service: android.app.Service) {
             setTextColor(colorTextSecondary)
             gravity = Gravity.CENTER
             textSize = 16f
-            // STRING: assistant_panel_chip_remove_a11y — de "Seiten-Kontext entfernen",
-            // en "Remove page context"
-            contentDescription = "Seiten-Kontext entfernen"
+            contentDescription = service.getString(R.string.assistant_panel_chip_remove_a11y)
             minWidth = dp(48, density)
             minHeight = dp(48, density)
         }
@@ -350,13 +343,10 @@ class MiniPanelController(private val service: android.app.Service) {
 
     private fun buildMicButton(density: Float): View {
         val mic = PlatformButton(service).apply {
-            // STRING: assistant_panel_mic — de "Mikro", en "Mic"
-            text = "Mikro"
+            text = service.getString(R.string.assistant_panel_mic)
             textSize = 14f
             isAllCaps = false
-            // STRING: assistant_panel_mic_a11y — de "Sprachnachricht aufnehmen",
-            // en "Record a voice message"
-            contentDescription = "Sprachnachricht aufnehmen"
+            contentDescription = service.getString(R.string.assistant_panel_mic_a11y)
             background = GradientDrawable().apply {
                 cornerRadius = 12 * density
                 setColor(colorPanelElev)
@@ -370,13 +360,10 @@ class MiniPanelController(private val service: android.app.Service) {
 
     private fun buildSendButton(density: Float): PlatformButton =
         PlatformButton(service).apply {
-            // STRING: assistant_panel_send — de "Senden", en "Send"
-            text = "Senden"
+            text = service.getString(R.string.assistant_panel_send)
             textSize = 15f
             isAllCaps = false
-            // STRING: assistant_panel_send_a11y — de "An den aktiven Chat senden",
-            // en "Send to the active chat"
-            contentDescription = "An den aktiven Chat senden"
+            contentDescription = service.getString(R.string.assistant_panel_send_a11y)
             background = GradientDrawable().apply {
                 cornerRadius = 14 * density
                 setColor(colorEmber)
@@ -480,9 +467,7 @@ fun AssistantShareDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            // STRING: assistant_share_dialog_title — de "An FlipsiBridge senden",
-            // en "Send to FlipsiBridge"
-            Text("An FlipsiBridge senden")
+            Text(stringResource(R.string.assistant_share_dialog_title))
         },
         text = {
             Column {
@@ -500,19 +485,17 @@ fun AssistantShareDialog(
                 Spacer(Modifier.height(8.dp))
                 if (url != null) {
                     // Kontext-Chip: Host der Seite als kurze, sichtbare Adresse.
-                    // STRING: assistant_share_chip_prefix — de "Seite: {host}",
-                    // en "Page: {host}"
                     Text(
-                        "Seite: " + (PanelActionRules.chipLabel(url) ?: url),
+                        stringResource(
+                            R.string.assistant_share_chip_prefix,
+                            PanelActionRules.chipLabel(url) ?: url,
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
                     )
                 } else {
-                    // STRING: assistant_share_no_url — de "Kein Link im Geteilten — die
-                    // Seiten-Aktionen brauchen eine Adresse.", en "No link in the shared
-                    // content — the page actions need an address."
                     Text(
-                        "Kein Link im Geteilten — die Seiten-Aktionen brauchen eine Adresse.",
+                        stringResource(R.string.assistant_share_no_url),
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.SignalAmber,
                     )
@@ -521,34 +504,23 @@ fun AssistantShareDialog(
         },
         confirmButton = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                // STRING: assistant_share_action_send — de "An Agenten senden",
-                // en "Send to agent"
-                // STRING: assistant_share_action_send_a11y — de "Geteilten Inhalt an
-                // den aktiven Chat senden", en "Send the shared content to the active chat"
                 ShareActionButton(
-                    label = "An Agenten senden",
-                    a11y = "Geteilten Inhalt an den aktiven Chat senden",
+                    label = stringResource(R.string.assistant_share_action_send),
+                    a11y = stringResource(R.string.assistant_share_action_send_a11y),
                     enabled = true,
                     onClick = { onAction(ShareAction.SEND_TO_AGENT) },
                 )
                 Spacer(Modifier.height(8.dp))
-                // STRING: assistant_share_action_ask — de "Seite fragen", en "Ask about page"
-                // STRING: assistant_share_action_ask_a11y — de "Frage zur geteilten Seite
-                // stellen", en "Ask a question about the shared page"
                 ShareActionButton(
-                    label = "Seite fragen",
-                    a11y = "Frage zur geteilten Seite stellen",
+                    label = stringResource(R.string.assistant_share_action_ask),
+                    a11y = stringResource(R.string.assistant_share_action_ask_a11y),
                     enabled = url != null,
                     onClick = { onAction(ShareAction.ASK_PAGE) },
                 )
                 Spacer(Modifier.height(8.dp))
-                // STRING: assistant_share_action_summarize — de "Zusammenfassen",
-                // en "Summarize"
-                // STRING: assistant_share_action_summarize_a11y — de "Geteilte Seite
-                // zusammenfassen lassen", en "Have the shared page summarized"
                 ShareActionButton(
-                    label = "Zusammenfassen",
-                    a11y = "Geteilte Seite zusammenfassen lassen",
+                    label = stringResource(R.string.assistant_share_action_summarize),
+                    a11y = stringResource(R.string.assistant_share_action_summarize_a11y),
                     enabled = url != null,
                     onClick = { onAction(ShareAction.SUMMARIZE_PAGE) },
                 )

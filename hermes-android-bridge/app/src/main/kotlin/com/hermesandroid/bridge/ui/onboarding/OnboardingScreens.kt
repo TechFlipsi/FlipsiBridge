@@ -439,14 +439,19 @@ fun OnboardingScreens(
                 // saubere Beenden bei „Ablehnen“. Compose-Zeit-Read, KEIN
                 // Click-Zeit-Read (CompositionLocal-Pflicht).
                 val activity = AppLanguage.LocalAppActivity.current
-                val mustAsk = AgbAcceptanceRules.mustAsk(
-                    storedFlag = OnboardingLegalPrefs.isAccepted(context),
-                    hasProfiles = ServerProfiles.profiles.value.isNotEmpty(),
-                    hasLegacyPairing = AgbAcceptanceRules.hasLegacyPairing(
-                        RelayClient.serverUrl,
-                        PairingManager.getCode(),
-                    ),
-                )
+                // mustAsk-Reads (Prefs/Profiles/Relay/Pairing) ein Mal je Step-
+                // Eintritt cachen — remember hält die Entscheidung stabil über
+                // Recompositions (funktional identisch: je Step-Eintritt neu).
+                val mustAsk = remember {
+                    AgbAcceptanceRules.mustAsk(
+                        storedFlag = OnboardingLegalPrefs.isAccepted(context),
+                        hasProfiles = ServerProfiles.profiles.value.isNotEmpty(),
+                        hasLegacyPairing = AgbAcceptanceRules.hasLegacyPairing(
+                            RelayClient.serverUrl,
+                            PairingManager.getCode(),
+                        ),
+                    )
+                }
                 if (mustAsk) {
                     var declineDialogOpen by remember { mutableStateOf(false) }
                     Row(
@@ -459,8 +464,7 @@ fun OnboardingScreens(
                             // Ablehnen-Fläche ist sichtbar, aber sekundär.
                             modifier = Modifier.weight(1f).height(48.dp),
                         ) {
-                            // STRING: agb_decline_btn — de "Ablehnen", en "Decline"
-                            Text("Ablehnen")
+                            Text(stringResource(R.string.agb_decline_btn))
                         }
                         Button(
                             onClick = {
@@ -476,26 +480,24 @@ fun OnboardingScreens(
                                 contentColor = FlipsiColors.OnEmber,
                             ),
                         ) {
-                            // STRING: agb_accept_btn — de "Akzeptieren", en "Accept"
-                            Text("Akzeptieren", fontWeight = FontWeight.SemiBold)
+                            Text(
+                                stringResource(R.string.agb_accept_btn),
+                                fontWeight = FontWeight.SemiBold,
+                            )
                         }
                     }
                     if (declineDialogOpen) {
                         AlertDialog(
                             onDismissRequest = { declineDialogOpen = false },
-                            // STRING: agb_decline_title — de "App beenden?", en "Exit app?"
                             title = {
                                 Text(
-                                    "App beenden?",
+                                    stringResource(R.string.agb_decline_title),
                                     fontWeight = FontWeight.SemiBold,
                                 )
                             },
-                            // STRING: agb_decline_text —
-                            // de "FlipsiBridge kann nur mit akzeptierten Nutzungsbedingungen und Datenschutzhinweisen genutzt werden. Ablehnen beendet die App — dein Gerät wird dabei nicht verändert.",
-                            // en "FlipsiBridge can only be used with the terms of use and privacy notice accepted. Declining closes the app — nothing on your device is changed."
                             text = {
                                 Text(
-                                    "FlipsiBridge kann nur mit akzeptierten Nutzungsbedingungen und Datenschutzhinweisen genutzt werden. Ablehnen beendet die App — dein Gerät wird dabei nicht verändert.",
+                                    stringResource(R.string.agb_decline_text),
                                     style = MaterialTheme.typography.bodyMedium,
                                 )
                             },
@@ -514,9 +516,8 @@ fun OnboardingScreens(
                                         }
                                     },
                                 ) {
-                                    // STRING: agb_decline_exit — de "Beenden", en "Exit"
                                     Text(
-                                        "Beenden",
+                                        stringResource(R.string.agb_decline_exit),
                                         color = FlipsiColors.SignalRedText,
                                         fontWeight = FontWeight.SemiBold,
                                     )
@@ -524,8 +525,7 @@ fun OnboardingScreens(
                             },
                             dismissButton = {
                                 TextButton(onClick = { declineDialogOpen = false }) {
-                                    // STRING: agb_decline_stay — de "Weiter lesen", en "Keep reading"
-                                    Text("Weiter lesen")
+                                    Text(stringResource(R.string.agb_decline_stay))
                                 }
                             },
                         )

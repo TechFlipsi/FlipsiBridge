@@ -22,11 +22,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.ChatHistoryStore
 import com.hermesandroid.bridge.chat.GlobalSearchRules
 import com.hermesandroid.bridge.chat.SearchIndex
@@ -59,38 +61,10 @@ import kotlinx.coroutines.withContext
  *   (bzw. Aufbau-Hinweis bei [indexBuilding]), 0 Treffer = „Keine weiteren
  *   Treffer" — NIE Fake.
  *
- * ## Strings (STRING-Marker, kein strings.xml-Edit hier)
- * Jede App-Textzeile trägt ihren `// STRING:`-Key je Nutzungsstelle (de+en)
- * — der i18n-Merge (×3 Locales) läuft beim Koordinator.
+ * ## Strings (W22 MERGE: i18n ×3 Locales)
+ * Texte leben als <string>-Ressourcen (`chat_global_search_*` in strings.xml)
+ * — hier nur noch stringResource(R.string.…)-Zugriffe an den Nutzungsstellen.
  */
-internal object GlobalSearchUiText {
-    // STRING: chat_global_search_title — de "Weitere Treffer in Verläufen", en "More matches in histories"
-    const val SECTION_TITLE = "Weitere Treffer in Verläufen"
-
-    // STRING: chat_global_search_searching — de "Verläufe werden durchsucht…", en "Searching histories…"
-    const val SEARCHING = "Verläufe werden durchsucht…"
-
-    // STRING: chat_global_search_index_building — de "Suchindex wird aufgebaut…", en "Search index is being built…"
-    const val INDEX_BUILDING = "Suchindex wird aufgebaut…"
-
-    // STRING: chat_global_search_no_index — de "Noch kein Verlauf indiziert", en "No history indexed yet"
-    const val NO_INDEX = "Noch kein Verlauf indiziert"
-
-    // STRING: chat_global_search_empty — de "Keine weiteren Treffer", en "No further matches"
-    const val EMPTY = "Keine weiteren Treffer"
-
-    // STRING: chat_global_search_capped — de "Gekürzt — beste Treffer zuerst", en "Trimmed — best matches first"
-    const val CAPPED = "Gekürzt — beste Treffer zuerst"
-
-    // STRING: chat_global_search_building_partial — de "Suchindex wird noch aufgebaut — Treffer können unvollständig sein", en "Index is still building — results may be incomplete"
-    const val BUILDING_PARTIAL = "Suchindex wird noch aufgebaut — Treffer können unvollständig sein"
-
-    // STRING: chat_global_search_unknown_agent — de "Unbekannter Agent", en "Unknown agent"
-    const val UNKNOWN_AGENT = "Unbekannter Agent"
-
-    // STRING: chat_global_search_jump_label — de "Zum Treffer im Verlauf springen", en "Jump to this match"
-    const val JUMP_LABEL = "Zum Treffer im Verlauf springen"
-}
 
 /** Interner Suchzustand des Abschnitts (null = inaktiv / Debounce-Erstfassung). */
 private data class GlobalSearchSectionState(
@@ -160,7 +134,7 @@ fun GlobalSearchResultsSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                GlobalSearchUiText.SECTION_TITLE,
+                stringResource(R.string.chat_global_search_title),
                 style = MaterialTheme.typography.labelMedium,
                 color = FlipsiColors.TextSecondary,
                 modifier = Modifier.weight(1f),
@@ -184,15 +158,17 @@ fun GlobalSearchResultsSection(
             // Unprimter Index mit laufendem Aufbau (Bildschirm-Lane meldet)
             // → Aufbau-Hinweis; sonst ehrlich: kein Verlauf im Index.
             indexEntryCount == 0 && indexBuilding -> SectionNote(
-                GlobalSearchUiText.INDEX_BUILDING,
+                stringResource(R.string.chat_global_search_index_building),
             )
             indexEntryCount == 0 || state?.indexEmpty == true -> SectionNote(
-                GlobalSearchUiText.NO_INDEX,
+                stringResource(R.string.chat_global_search_no_index),
             )
             state == null || state?.searching == true -> SectionNote(
-                GlobalSearchUiText.SEARCHING,
+                stringResource(R.string.chat_global_search_searching),
             )
-            (state?.result?.total ?: 0) == 0 -> SectionNote(GlobalSearchUiText.EMPTY)
+            (state?.result?.total ?: 0) == 0 -> SectionNote(
+                stringResource(R.string.chat_global_search_empty),
+            )
             else -> {
                 val result = state!!.result!!
                 LazyColumn(
@@ -211,12 +187,12 @@ fun GlobalSearchResultsSection(
                     }
                 }
                 if (result.capped) {
-                    SectionNote(GlobalSearchUiText.CAPPED)
+                    SectionNote(stringResource(R.string.chat_global_search_capped))
                 }
                 // 10-s-Fenster (Index-Aufbau läuft): Treffer können aus einem
                 // TEIL-Index stammen — dezente Ein-Zeilen-Erklärung, kein Fake.
                 if (indexBuilding) {
-                    SectionNote(GlobalSearchUiText.BUILDING_PARTIAL)
+                    SectionNote(stringResource(R.string.chat_global_search_building_partial))
                 }
             }
         }
@@ -254,7 +230,8 @@ private fun AgentGroupBlock(
     // Ehrliche Anzeige ohne Katalog-Eintrag: agentId-gekürzt (Regeln), blank =
     // Unbekannt (Avatar fällt auf den „?“-Initial).
     val displayLabel = GlobalSearchRules.displayAgentLabel(group.agentId, agentNames)
-    val label = displayLabel.ifBlank { GlobalSearchUiText.UNKNOWN_AGENT }
+    val unknownAgent = stringResource(R.string.chat_global_search_unknown_agent)
+    val label = displayLabel.ifBlank { unknownAgent }
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -311,6 +288,8 @@ private fun GlobalHitRow(
     onJump: (SearchIndex.Hit) -> Unit,
 ) {
     val snippet = remember(hit.snippet) { GlobalSearchRules.truncateSnippet(hit.snippet) }
+    // Sprung-A11y-Verb hoisten (stringResource lebt nicht im Modifier-Lambda).
+    val jumpLabel = stringResource(R.string.chat_global_search_jump_label)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -320,7 +299,7 @@ private fun GlobalHitRow(
                 // AKTIONEN-MIT-ERGEBNIS: klickbar NUR bei wirksamem Sprung;
                 // onClickLabel = eigenes A11y-Verb im TalkBack-Handlunghinweis.
                 if (resolvable) {
-                    base.clickable(onClickLabel = GlobalSearchUiText.JUMP_LABEL) {
+                    base.clickable(onClickLabel = jumpLabel) {
                         onJump(hit)
                     }
                 } else {

@@ -220,10 +220,7 @@ fun AssistantPackageCard(
             // Der sichtbare Zustand kommt aus Wunsch + Freigabe; ob der Dienst
             // wirklich läuft, prüft der Rückweg-Effekt oben (Auto-Start).
             val bubbleState = OverlayToggleRules.resolveUiState(bubbleDesired, overlayOk)
-            // STRING: assistant_pkg_bubble_toggle_a11y — de "Overlay-Blase über
-            // allen Apps ein- oder ausschalten", en "Turn the overlay bubble
-            // above all apps on or off"
-            val toggleA11y = "Overlay-Blase über allen Apps ein- oder ausschalten"
+            val toggleA11y = stringResource(R.string.assistant_pkg_bubble_toggle_a11y)
 
             val handleBubbleToggle: (Boolean) -> Unit = { wantOn ->
                 when (OverlayToggleRules.onToggleTap(wantOn, overlayOk)) {
@@ -231,13 +228,8 @@ fun AssistantPackageCard(
                         AssistantBubbleService.setDesired(context, true)
                         val started = AssistantBubbleService.start(context)
                         if (!started) {
-                            // STRING: assistant_pkg_bubble_start_failed — de "Blase
-                            // konnte nicht gestartet werden — Freigabe oder System
-                            // hindern sie; erneut versuchen.", en "The bubble could
-                            // not start — permission or the system blocked it; try
-                            // again."
                             permFlowLine =
-                                "Blase konnte nicht gestartet werden — Freigabe oder System hindern sie; erneut versuchen."
+                                context.getString(R.string.assistant_pkg_bubble_start_failed)
                         }
                     }
                     OverlayToggleRules.TapDecision.OPEN_PERMISSION_SETTINGS -> {
@@ -451,12 +443,8 @@ private fun openOverlayPermissionFlow(
         context.startActivity(intent)
     }.isSuccess
     if (openedDirect) {
-        // STRING: assistant_pkg_bubble_perm_pending — de "Overlay-Freigabe ist
-        // geöffnet — nach der Rückkehr hier wird die Blase aktiviert.", en
-        // "The overlay permission screen is open — the bubble activates when
-        // you return here."
         onResultLine(
-            "Overlay-Freigabe ist geöffnet — nach der Rückkehr hier wird die Blase aktiviert.",
+            context.getString(R.string.assistant_pkg_bubble_perm_pending),
         )
     } else {
         // Fallback: OEM-Kette + Leit-Zeile (löst nichts → manuelle Route).
@@ -469,13 +457,8 @@ private fun openOverlayPermissionFlow(
             // launchFeature ruft onUnavailable bereits mit der OEM-Leit-Zeile —
             // dieser Zweig ist die letzte Sicherheitsnetz-Zeile (leerer Fallback
             // darf nie still sein).
-            // STRING: assistant_pkg_bubble_perm_unreachable — de "Overlay-Freigabe
-            // nicht erreichbar — Systemeinstellungen → Apps → FlipsiBridge → Über
-            // anderen Apps einblenden.", en "Overlay permission screen not
-            // reachable — system settings → apps → FlipsiBridge → display over
-            // other apps."
             onResultLine(
-                "Overlay-Freigabe nicht erreichbar — Systemeinstellungen → Apps → FlipsiBridge → Über anderen Apps einblenden.",
+                context.getString(R.string.assistant_pkg_bubble_perm_unreachable),
             )
         }
     }

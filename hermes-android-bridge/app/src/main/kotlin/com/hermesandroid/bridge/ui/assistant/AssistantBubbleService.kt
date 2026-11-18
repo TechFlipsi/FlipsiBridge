@@ -23,6 +23,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.TextView
 import com.hermesandroid.bridge.MainActivity
+import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.client.RelayClient
 
 /**
@@ -239,9 +240,7 @@ class AssistantBubbleService : Service() {
             )
             // A11y: die Blase ist ein Sprach-Knopf, keine Deko-Fläche.
             importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
-            // STRING: assistant_bubble_a11y — de "Assistenten-Spracheingabe starten",
-            // en "Start assistant voice input"
-            contentDescription = "Assistenten-Spracheingabe starten"
+            contentDescription = getString(R.string.assistant_bubble_a11y)
         }
 
         val params = WindowManager.LayoutParams(
@@ -375,16 +374,10 @@ class AssistantBubbleService : Service() {
             val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                // STRING: assistant_bubble_channel_name — de "Assistenten-Blase",
-                // en "Assistant bubble"
-                "Assistenten-Blase",
+                getString(R.string.assistant_bubble_channel_name),
                 NotificationManager.IMPORTANCE_LOW,
             ).apply {
-                // STRING: assistant_bubble_channel_desc — de "Hält die Overlay-
-                // Blase über allen Apps — Tippen startet die Spracheingabe", en
-                // "Keeps the overlay bubble above all apps — tapping starts voice
-                // input"
-                description = "Hält die Overlay-Blase über allen Apps — Tippen startet die Spracheingabe"
+                description = getString(R.string.assistant_bubble_channel_desc)
                 setShowBadge(false)
             }
             manager.createNotificationChannel(channel)
@@ -408,12 +401,8 @@ class AssistantBubbleService : Service() {
             // minSdk 26 (= O): Kanal-Pflicht — Builder mit Kanal ist immer der Weg.
             val builder = Notification.Builder(this, CHANNEL_ID)
             builder
-                // STRING: assistant_bubble_notif_title — de "Assistenten-Blase aktiv",
-                // en "Assistant bubble active"
-                .setContentTitle("Assistenten-Blase aktiv")
-                // STRING: assistant_bubble_notif_text — de "Tippen auf die Blase startet
-                // die Spracheingabe", en "Tap the bubble to start voice input"
-                .setContentText("Tippen auf die Blase startet die Spracheingabe")
+                .setContentTitle(getString(R.string.assistant_bubble_notif_title))
+                .setContentText(getString(R.string.assistant_bubble_notif_text))
                 .setSmallIcon(android.R.drawable.stat_sys_headset)
                 .setContentIntent(tapIntent)
                 .setOngoing(true)

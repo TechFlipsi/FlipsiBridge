@@ -108,14 +108,15 @@ private fun OssLicensesScreenContent() {
         ) {
             TextButton(
                 onClick = { OssLicensesState.hide() },
+                // 48-dp-Regel: Mindest-Touch-Ziel für den Zurück-Weg.
+                modifier = Modifier.heightIn(min = 48.dp),
             ) {
                 // onb_back ist der bestehende „Zurück“-Key des Wizards —
                 // bewusst wiederverwendet (STRINGS-PARITÄT, kein Zweit-Key).
                 Text(stringResource(R.string.onb_back), color = FlipsiColors.TextSecondary)
             }
-            // STRING: about_oss_title — de "Open-Source-Lizenzen", en "Open-source licenses"
             Text(
-                "Open-Source-Lizenzen",
+                stringResource(R.string.about_oss_title),
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
@@ -130,19 +131,15 @@ private fun OssLicensesScreenContent() {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             OssBaseAttributionCard()
-            // STRING: oss_intro —
-            // de "Wesentliche Abhängigkeiten der App (Name — Version — Lizenz, Copyright darunter). Vollständige Lizenztexte stehen im Quell-Repository des jeweiligen Projekts.",
-            // en "Essential dependencies of the app (name — version — license, copyright below). Full license texts are in each project's source repository."
             Text(
-                "Wesentliche Abhängigkeiten der App (Name — Version — Lizenz, Copyright darunter). Vollständige Lizenztexte stehen im Quell-Repository des jeweiligen Projekts.",
+                stringResource(R.string.oss_intro),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )
             val entries = OssLicenseRules.sortedDisplay(BuildConfig.EDITION_PLAY)
             if (entries.isEmpty()) {
-                // STRING: oss_empty — de "Keine Einträge.", en "No entries."
                 Text(
-                    "Keine Einträge.",
+                    stringResource(R.string.oss_empty),
                     style = MaterialTheme.typography.bodyMedium,
                     color = FlipsiColors.TextSecondary,
                 )
@@ -158,9 +155,9 @@ private fun OssLicensesScreenContent() {
 /**
  * Basis-Attribution (MIT): eigener kurzer Text MIT Verweis auf die
  * vollständige LICENSE (Brief-Preference). Lizenzattributions-Texte sind
- * Rechtstext-Zitierweise — de/en gleichlautend im Marker (Lizenznamen =
- * Eigenamen). Version „vX.Y.Z“ wie im About-Sheet ([AboutInfo.versionLabel]);
- * im Marker ist der Version-Teil als $version-Platzhalter notiert.
+ * Rechtstext-Zitierweise — de/en gleichlautend (Lizenznamen = Eigenamen).
+ * Version wie im About-Sheet ([AboutInfo.versionLabel]); der Version-Teil
+ * steht als %1$s-Platzhalter in strings.xml (oss_license_ref).
  */
 @Composable
 private fun OssBaseAttributionCard() {
@@ -175,20 +172,16 @@ private fun OssBaseAttributionCard() {
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            // STRING: oss_base_attribution —
-            // de "FlipsiBridge basiert auf hermes-android (MIT-Lizenz). Copyright (c) 2026 Raul (hermes-android, Original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge-Modifikationen).",
-            // en "FlipsiBridge is based on hermes-android (MIT license). Copyright (c) 2026 Raul (hermes-android, original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge modifications)."
             Text(
-                "FlipsiBridge basiert auf hermes-android (MIT-Lizenz). Copyright (c) 2026 Raul (hermes-android, Original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge-Modifikationen).",
+                stringResource(R.string.oss_base_attribution),
                 style = MaterialTheme.typography.bodyMedium,
                 color = FlipsiColors.TextPrimary,
             )
-            // STRING: oss_license_ref —
-            // de "Projekt-Version $version. Die vollständige Lizenz (LICENSE-Datei, MIT) liegt im Quell-Repository der App.",
-            // en "Project version $version. The complete license (LICENSE file, MIT) is in the app's source repository."
             Text(
-                "Projekt-Version ${AboutInfo.versionLabel(BuildConfig.VERSION_NAME)}. " +
-                    "Die vollständige Lizenz (LICENSE-Datei, MIT) liegt im Quell-Repository der App.",
+                stringResource(
+                    R.string.oss_license_ref,
+                    AboutInfo.versionLabel(BuildConfig.VERSION_NAME),
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = FlipsiColors.TextSecondary,
             )
@@ -240,17 +233,13 @@ fun OssEntryCard() {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Column(Modifier.weight(1f)) {
-                // STRING: about_oss_title — de "Open-Source-Lizenzen", en "Open-source licenses"
                 Text(
-                    "Open-Source-Lizenzen",
+                    stringResource(R.string.about_oss_title),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
-                // STRING: about_oss_entry_note —
-                // de "Abhängigkeiten der App mit Lizenz und Copyright",
-                // en "App dependencies with license and copyright"
                 Text(
-                    "Abhängigkeiten der App mit Lizenz und Copyright",
+                    stringResource(R.string.about_oss_entry_note),
                     style = MaterialTheme.typography.bodySmall,
                     color = FlipsiColors.TextSecondary,
                 )

@@ -666,4 +666,56 @@
     <string name="call_screengrab_confirm_hint">Screenshot an Agent — zur Bestätigung innerhalb von 3 s erneut tippen.</string>
     <string name="call_screengrab_talk_failed">Sprachturn fehlgeschlagen: </string>
     <string name="call_screengrab_cap_missing">Screenshot-Fähigkeit aus — in Einstellungen › Fähigkeiten einschalten.</string>
+    <!-- W22 MERGE (i18n): Assistent Lane B — Bubble-Dienst (G2) -->
+    <string name="assistant_bubble_a11y">Assistenten-Spracheingabe starten</string>
+    <string name="assistant_bubble_channel_name">Assistenten-Blase</string>
+    <string name="assistant_bubble_channel_desc">Hält die Overlay-Blase über allen Apps — Tippen startet die Spracheingabe</string>
+    <string name="assistant_bubble_notif_title">Assistenten-Blase aktiv</string>
+    <string name="assistant_bubble_notif_text">Tippen auf die Blase startet die Spracheingabe</string>
+    <string name="assistant_pkg_bubble_toggle_a11y">Overlay-Blase über allen Apps ein- oder ausschalten</string>
+    <string name="assistant_pkg_bubble_start_failed">Blase konnte nicht gestartet werden — Freigabe oder System hindern sie; erneut versuchen.</string>
+    <string name="assistant_pkg_bubble_perm_pending">Overlay-Freigabe ist geöffnet — nach der Rückkehr hier wird die Blase aktiviert.</string>
+    <string name="assistant_pkg_bubble_perm_unreachable">Overlay-Freigabe nicht erreichbar — Systemeinstellungen → Apps → FlipsiBridge → Über anderen Apps einblenden.</string>
+    <!-- W22 MERGE (i18n): Assistent Lane B — Mini-Panel + Share-Dialog (G11) -->
+    <string name="assistant_panel_input_hint">Frage oder Nachricht …</string>
+    <string name="assistant_panel_default_name">Assistent</string>
+    <string name="assistant_panel_close_a11y">Mini-Panel schließen</string>
+    <string name="assistant_panel_chip_remove_a11y">Seiten-Kontext entfernen</string>
+    <string name="assistant_panel_mic">Mikro</string>
+    <string name="assistant_panel_mic_a11y">Sprachnachricht aufnehmen</string>
+    <string name="assistant_panel_send">Senden</string>
+    <string name="assistant_panel_send_a11y">An den aktiven Chat senden</string>
+    <string name="assistant_share_dialog_title">An FlipsiBridge senden</string>
+    <string name="assistant_share_chip_prefix">Seite: %1$s</string>
+    <string name="assistant_share_no_url">Kein Link im Geteilten — die Seiten-Aktionen brauchen eine Adresse.</string>
+    <string name="assistant_share_action_send">An Agenten senden</string>
+    <string name="assistant_share_action_send_a11y">Geteilten Inhalt an den aktiven Chat senden</string>
+    <string name="assistant_share_action_ask">Seite fragen</string>
+    <string name="assistant_share_action_ask_a11y">Frage zur geteilten Seite stellen</string>
+    <string name="assistant_share_action_summarize">Zusammenfassen</string>
+    <string name="assistant_share_action_summarize_a11y">Geteilte Seite zusammenfassen lassen</string>
+    <!-- W22 MERGE (i18n): Lane E — OSS-Lizenzen-Screen (PH8-T7) -->
+    <string name="about_oss_title">Open-Source-Lizenzen</string>
+    <string name="about_oss_entry_note">Abhängigkeiten der App mit Lizenz und Copyright</string>
+    <string name="oss_intro">Wesentliche Abhängigkeiten der App (Name — Version — Lizenz, Copyright darunter). Vollständige Lizenztexte stehen im Quell-Repository des jeweiligen Projekts.</string>
+    <string name="oss_empty">Keine Einträge.</string>
+    <string name="oss_base_attribution">FlipsiBridge basiert auf hermes-android (MIT-Lizenz). Copyright (c) 2026 Raul (hermes-android, Original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge-Modifikationen).</string>
+    <string name="oss_license_ref">Projekt-Version %1$s. Die vollständige Lizenz (LICENSE-Datei, MIT) liegt im Quell-Repository der App.</string>
+    <!-- W22 MERGE (i18n): Lane E — AGB-Gate, Ablehnen-Dialog (PH8-T6) -->
+    <string name="agb_accept_btn">Akzeptieren</string>
+    <string name="agb_decline_btn">Ablehnen</string>
+    <string name="agb_decline_title">App beenden?</string>
+    <string name="agb_decline_text">FlipsiBridge kann nur mit akzeptierten Nutzungsbedingungen und Datenschutzhinweisen genutzt werden. Ablehnen beendet die App — dein Gerät wird dabei nicht verändert.</string>
+    <string name="agb_decline_exit">Beenden</string>
+    <string name="agb_decline_stay">Weiter lesen</string>
+    <!-- W22 MERGE (i18n): Lane C — Globale Verlaufs-Suche (PH-6) -->
+    <string name="chat_global_search_title">Weitere Treffer in Verläufen</string>
+    <string name="chat_global_search_searching">Verläufe werden durchsucht…</string>
+    <string name="chat_global_search_index_building">Suchindex wird aufgebaut…</string>
+    <string name="chat_global_search_no_index">Noch kein Verlauf indiziert</string>
+    <string name="chat_global_search_empty">Keine weiteren Treffer</string>
+    <string name="chat_global_search_capped">Gekürzt — beste Treffer zuerst</string>
+    <string name="chat_global_search_building_partial">Suchindex wird noch aufgebaut — Treffer können unvollständig sein</string>
+    <string name="chat_global_search_unknown_agent">Unbekannter Agent</string>
+    <string name="chat_global_search_jump_label">Zum Treffer im Verlauf springen</string>
 </resources>
