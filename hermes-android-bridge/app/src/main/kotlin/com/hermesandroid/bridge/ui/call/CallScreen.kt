@@ -257,20 +257,16 @@ fun CallActiveStrip(
             // Auswahl Freihand (Gate + Fail-Weg in der Bindung, nicht hier —
             // der Strip bleibt Presentation-only).
             if (handsFree) {
-                // STRING: call_stt_handsfree_listening — de "Freihand — lauscht", en "Hands-free — listening"
-                // STRING: call_stt_handsfree — de "Freihand", en "Hands-free"
                 CallPillButton(
                     label = if (sttListening) {
-                        "Freihand — lauscht"
+                        stringResource(R.string.call_stt_handsfree_listening)
                     } else {
-                        "Freihand"
+                        stringResource(R.string.call_stt_handsfree)
                     },
-                    // STRING: call_stt_handsfree_listening_a11y — de "Freihand-Erkennung läuft — tippen für Sprechen-Taste", en "Hands-free recognition active — tap for the talk button"
-                    // STRING: call_stt_handsfree_a11y — de "Freihand-Modus — tippen für Sprechen-Taste", en "Hands-free mode — tap for the talk button"
                     a11y = if (sttListening) {
-                        "Freihand-Erkennung läuft — tippen für Sprechen-Taste"
+                        stringResource(R.string.call_stt_handsfree_listening_a11y)
                     } else {
-                        "Freihand-Modus — tippen für Sprechen-Taste"
+                        stringResource(R.string.call_stt_handsfree_a11y)
                     },
                     background = if (sttListening) FlipsiColors.SignalGreen else FlipsiColors.Ember,
                     content = FlipsiColors.Void,
@@ -296,8 +292,7 @@ fun CallActiveStrip(
                     // LANG DRÜCKEN = Modus-Auswahl Freihand (Mikro-Button lang,
                     // EIN Aufenthaltsort — s. KDoc oben).
                     onLongClick = { onToggleHandsFree(true) },
-                    // STRING: call_stt_long_a11y — de "Lange drücken für Freihand-Sprechen am Gerät", en "Long-press for on-device hands-free speech"
-                    longClickA11y = "Lange drücken für Freihand-Sprechen am Gerät",
+                    longClickA11y = stringResource(R.string.call_stt_long_a11y),
                 )
             }
             SteerPill(

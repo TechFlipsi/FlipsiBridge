@@ -721,4 +721,26 @@
     <string name="chat_global_search_building_partial">Index is still building — results may be incomplete</string>
     <string name="chat_global_search_unknown_agent">Unknown agent</string>
     <string name="chat_global_search_jump_label">Jump to this match</string>
+
+    <!-- W22 MERGE-2: call history + call settings + assistant share leftovers -->
+    <string name="call_stt_failed">Speech recognition failed — use the talk button</string>
+    <string name="call_stt_unavailable">Hands-free speech unavailable on this device — use the talk button</string>
+    <string name="call_stt_handsfree">Hands-free</string>
+    <string name="call_stt_handsfree_listening">Hands-free — listening</string>
+    <string name="call_stt_handsfree_a11y">Hands-free mode — tap for the talk button</string>
+    <string name="call_stt_handsfree_listening_a11y">Hands-free recognition active — tap for the talk button</string>
+    <string name="call_stt_long_a11y">Long-press for on-device hands-free speech</string>
+    <string name="call_history_bubble">Call (%1$s)</string>
+    <string name="call_history_bubble_a11y">Call ended, duration %1$s</string>
+    <string name="call_history_missed">Missed call · Tap to reply</string>
+    <string name="call_history_missed_a11y">Missed call — tap to reply in the chat</string>
+    <string name="call_missed_callback_draft">Please call me back.</string>
+    <string name="settings_call_title">Calls</string>
+    <string name="settings_call_record_title">Record call history</string>
+    <string name="settings_call_record_desc">Ended and missed calls appear in the chat history. Off: calls leave no trace.</string>
+    <string name="settings_call_record_a11y">Toggle call history recording</string>
+    <string name="assistant_assist_content_desc">Encrypted assistant bridge</string>
+    <string name="assistant_share_delivered_toast">Prepared in the chat — review and send it there</string>
+    <string name="assistant_share_ask_template">"Question about this page (%1$s): "</string>
+    <string name="assistant_share_summarize_template">"Briefly summarize the content of this page: %1$s"</string>
 </resources>

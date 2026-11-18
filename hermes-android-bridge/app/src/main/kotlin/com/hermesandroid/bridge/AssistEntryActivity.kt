@@ -3,6 +3,7 @@ package com.hermesandroid.bridge
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
+import com.hermesandroid.bridge.ui.assistant.AssistantBubbleService
 
 /**
  * WELLE 13 P10 (Sir: „Gemini ersetzbar"): Einstiegs-Activity für die
@@ -17,6 +18,20 @@ class AssistEntryActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // W22 MERGE-2 (B-Hook 2): Ecken-Wisch-Panel VOR dem Trampoline — mit
+        // Overlay-Freigabe hängt das Mini-Panel über dem fremden Fenster
+        // (Panel mit Ergebnis: finish/return). Ohne Freigabe zeigt showPanel
+        // false und der bestehende Trampoline-Weg bleibt (Chat + Voice-Turn).
+        // Kontext-URL ehrlich aus dem Assist-Intent gelesen — nichts da =
+        // Panel ohne Chip (die Seiten-Aktionen zeigen dann ihren Link-Pflicht-
+        // Grund statt stiller Fehler).
+        val contextUrl = intent
+            ?.getStringExtra(AssistantBubbleService.EXTRA_CONTEXT_URL)
+            ?.takeIf { it.isNotBlank() }
+        if (AssistantBubbleService.showPanel(this, contextUrl)) {
+            finish()
+            return
+        }
         AssistLaunch.pendingVoice = true
         val main = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)

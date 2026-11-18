@@ -78,7 +78,9 @@ import android.content.pm.PackageManager
 import com.hermesandroid.bridge.R
 import com.hermesandroid.bridge.chat.CallHistoryPrefs
 import com.hermesandroid.bridge.chat.ChatHistoryStore
+import com.hermesandroid.bridge.chat.GlobalSearchRules
 import com.hermesandroid.bridge.chat.HistorySeal  // P24: SealBreach-Fang (Restore/Backfill)
+import com.hermesandroid.bridge.chat.SearchIndex
 import com.hermesandroid.bridge.BuildConfig
 import com.hermesandroid.bridge.client.CallRules
 import com.hermesandroid.bridge.client.ChatBackfillRules
@@ -89,6 +91,7 @@ import com.hermesandroid.bridge.media.MediaProtocol
 import com.hermesandroid.bridge.media.VoiceMemoRecorder
 import com.hermesandroid.bridge.security.CapabilityGate
 import com.hermesandroid.bridge.ui.FlipsiColors
+import com.hermesandroid.bridge.ui.assistant.AssistantShareBus
 import com.hermesandroid.bridge.ui.call.CallActiveStrip
 import com.hermesandroid.bridge.ui.call.CallRingingOverlay
 import com.hermesandroid.bridge.ui.call.CallSpeechRecognizer
@@ -191,6 +194,18 @@ fun ChatScreen(
     var sendErrors by remember { mutableStateOf(mapOf<String, String>()) }
 
     var selectedAgentId by rememberSaveable { mutableStateOf(-1) }
+    // ── W22 MERGE-2 (C-Hook 2): idBySeq-Kaskade (Sprung-Auflösung globaler ───
+    // Suche). Je Zustell-Pfad (Disk-Restore, Backfill-Restore, Live-Append
+    // chatEvents) sammelt die Schleife lokal „agentId:seq → lokale id“ und
+    // schreibt sie EINMAL je Loop in diese Map — der Sprung-Resolver liest
+    // sie, wenn ein Treffer keine msg_id trägt (Alt-Daten).
+    var idBySeq by remember { mutableStateOf<Map<String, Long>>(emptyMap()) }
+    // C-Hook 3: offener globaler Sprung-Anker (Agent-Wechsel-Gate, KEIN
+    // stiller Konsum) + bereits aufgelöste lokale Ziel-Id für den
+    // ConversationBody-Verband (searchOpen/searchFocusTarget setzt der
+    // Screen-Effekt selbst — Brücke wie historyPrependCount).
+    var pendingGlobalJump by remember { mutableStateOf<GlobalSearchRules.JumpAnchor?>(null) }
+    var globalJumpTargetId by remember { mutableStateOf<Long?>(null) }
     // W15/W19: Verlauf startet leer — echte Nachrichten kommen aus dem Relay
     // (chatEvents/chatMedia-Einpflege unten). Kein Beispiel-Verlauf mehr.
     var messages by rememberSaveable(stateSaver = ChatMessageListSaver) { mutableStateOf(listOf<ChatMessage>()) }
@@ -327,6 +342,9 @@ fun ChatScreen(
             // Live-Bubbles (msgIdByLocalId-Verband; Spool-Re-Flush nach
             // Reconnect trifft sie live).
             val restoredMsgIdByLocalId = HashMap<Long, String>()
+            // W22 MERGE-2 (C-Hook 2): seq→id der restaurierten Zeilen — lokal
+            // sammeln, EIN Write nach der Schleife (Sprung-Auflösung Alt-Daten).
+            val builtIdsBySeq = HashMap<String, Long>()
             // PH-FIX-CHAT-A (F1, Restore-Race): Dedup-Schlüssel des Disk-
             // Standes — Live-Einträge mit gleichem Schlüssel werden beim
             // Merge unten gedroppt (ihr persistiertes Zwilling liegt schon
@@ -334,6 +352,8 @@ fun ChatScreen(
             val restoredKeys = HashSet<String>(entries.size)
             for (entry in entries) {
                 val id = nextId++
+                // W22 MERGE-2 (C-Hook 2): seq = Store-Zeilen-Identität je Agent.
+                builtIdsBySeq["${entry.agentId}:${entry.seq}"] = id
                 // W4-B (Zitieren): EIGENE Bubbles persistieren den Zitat-Draht-
                 // Text (Platte-Wahrheit, s. submitQuoted) — der Restore faltet
                 // ihn zurück in reine Antwort + ChatQuote-Snapshot, damit die
@@ -457,6 +477,10 @@ fun ChatScreen(
             if (restoredMsgIdByLocalId.isNotEmpty()) {
                 msgIdByLocalId = msgIdByLocalId + restoredMsgIdByLocalId
             }
+            // W22 MERGE-2 (C-Hook 2): EIN Write je Restore-Loop.
+            if (builtIdsBySeq.isNotEmpty()) {
+                idBySeq = idBySeq + builtIdsBySeq
+            }
         }
         historyRestored = true
     }
@@ -534,6 +558,17 @@ fun ChatScreen(
                 )
             }
             messages = messages + appended
+            // W22 MERGE-2 (C-Hook 2): seq der Live-Ankömmlinge = Persist-ts
+            // (RelayClient.persistChatBubble schreibt Entry.seq = ts) — lokal
+            // je Event sammeln, EIN Write je Ankommens-Batch: frische Treffer
+            // (inkrementeller Index-Feed) bleiben springbar.
+            val builtIdsBySeq = HashMap<String, Long>()
+            unseen.zip(appended).forEach { (event, msg) ->
+                builtIdsBySeq["${event.agentId}:${event.ts}"] = msg.id
+            }
+            if (builtIdsBySeq.isNotEmpty()) {
+                idBySeq = idBySeq + builtIdsBySeq
+            }
             // WELLE-13 P9 (Vorlesen): je Agent-Pref vorlesen_<agentId> —
             // angeschaltet = jede frisch übernommene Agenten-Antwort wird vom
             // GERÄT vorgelesen (Android-TTS-Singleton, Queue statt Überlappung). Der Prefs-Stand
@@ -658,10 +693,14 @@ fun ChatScreen(
             var nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
             val prepended = ArrayList<ChatMessage>()
             val bindings = HashMap<Long, String>()
+            // W22 MERGE-2 (C-Hook 2): seq→id je Backfill-Batch (lokal sammeln,
+            // EIN Write je Batch — Sprung-Auflösung der Disk-Zeilen).
+            val builtIdsBySeq = HashMap<String, Long>()
             for (entry in entries) {
                 val key = ChatTimelineMerge.dedupeKey(agentHash, entry.fromAgent, entry.text, entry.time)
                 if (key in seenKeys) continue
                 val id = nextId++
+                builtIdsBySeq["${agentId}:${entry.seq}"] = id
                 prepended += ChatMessage(
                     id = id,
                     agentId = agentHash,
@@ -681,6 +720,10 @@ fun ChatScreen(
             historyPrependCounts = historyPrependCounts +
                 (agentHash to (historyPrependCounts[agentHash] ?: 0) + prepended.size)
             msgIdByLocalId = msgIdByLocalId + bindings
+            // W22 MERGE-2 (C-Hook 2): EIN Write je Backfill-Batch.
+            if (builtIdsBySeq.isNotEmpty()) {
+                idBySeq = idBySeq + builtIdsBySeq
+            }
         }
     }
 
@@ -1152,6 +1195,16 @@ fun ChatScreen(
             }
         }
     }
+    // ── W22 MERGE-2 (B-Hook 1): Share-/Panel-Zustellung verbrauchen ──────────
+    // AssistantShareBus.consume() beim Kompositionsaufbau (pendingVoice-
+    // Muster): der Prompt landet als Vorlage im Komposer (inputText) — KEIN
+    // Auto-Send, der Nutzer prüft und sendet selbst (ehrlich, der Screen
+    // hat die Zustellung sichtbar übernommen). chipLabel/Kontext-Chip: die
+    // Composer-Chip-Platzierung ist eigenes Verband — Grenze im Report.
+    LaunchedEffect(selectedAgentId, agents) {
+        val delivery = AssistantShareBus.consume() ?: return@LaunchedEffect
+        inputText = delivery.prompt
+    }
     LaunchedEffect(chatMedia, historyRestored) {
         if (!historyRestored) return@LaunchedEffect
         val consumed = consumedMediaKeys.toHashSet()
@@ -1199,6 +1252,10 @@ fun ChatScreen(
         // W4-B (Zitieren): der aktive Antwort-Verweis stirbt mit der
         // Conversation — nie ein Zitat aus Verlaufsliste A in Agent B kleben.
         replyQuote = null
+        // W22 MERGE-2 (C-Hook 3): ein ausstehender (aufgelöster) Sprung-Schalter
+        // stirbt mit dem Schließen — er würde sonst bei der NÄCHSTEN offenen
+        // Conversation plötzlich einen Such-Sprung feuern (kein Alt-Zustand).
+        globalJumpTargetId = null
     }
 
     // Back in der Conversation: erst zurück zur Agenten-Liste; die Route-Back-
@@ -1229,6 +1286,49 @@ fun ChatScreen(
     )
     SideEffect {
         onConversationOpen(conversationOpen)
+    }
+
+    // ── W22 MERGE-2 (C-Hook 3): globaler Sprung-Resolver mit Agent-Wechsel- ──
+    // Gate (KEIN stiller Konsum). Keys re-frieren den Effekt neu: Agent-Liste,
+    // offener Agent, msg_id-Bindungs-Stand, seq-Kaskade — der Anker wartet
+    // bewusst auf den nächsten Key-Diff statt sich still zu verwerfen.
+    // (1) Ziel-Agent nicht offen → Umschalten OHNE Konsum; der openAgent-Key
+    //     feuert nach dem Umschalten erneut. Unbekannte Agent-Id: nichts tun
+    //     (Anker bleibt, ehrlich kein Sprung).
+    // (2) Auflösbar (msgId-Rückweg zuerst, sonst seq-Kaskade) UND Verlauf des
+    //     Zielagenten bereit → Ziel-Id an den Screen-Verband (searchOpen=false
+    //     + searchFocusTarget setzt der ConversationBody-Effekt dort selbst)
+    //     und Konsum.
+    // (3) Unauflösbar → NICHT konsumieren (wartet); der Screen-Effekt meldet
+    //     den Konsum zurück, sobald der Sprung real gelandet ist.
+    LaunchedEffect(
+        pendingGlobalJump,
+        openAgent()?.agentId,
+        agents,
+        msgIdByLocalId.size,
+        idBySeq,
+    ) {
+        val jump = pendingGlobalJump ?: return@LaunchedEffect
+        val opened = openAgent()
+        if (opened?.agentId != jump.agentId) {
+            agents.firstOrNull { it.agentId.isNotBlank() && it.agentId == jump.agentId }
+                ?.let { match -> selectedAgentId = match.id }
+            return@LaunchedEffect
+        }
+        val targetMsgId = if (jump.msgId != null) {
+            msgIdByLocalId.entries.firstOrNull { it.value == jump.msgId }?.key
+        } else {
+            null
+        } ?: idBySeq["${jump.agentId}:${jump.localId}"]
+        // „Verlauf des Zielagenten bereit“ = die Id liegt genau im Filter-
+        // Verband, den der ConversationBody als Gespräch liest (Parität zum
+        // conversation-Argument am Mount unten) — sonst scrollt der Sprung
+        // ins Leere und wäre gelogen.
+        if (targetMsgId == null || allMessages.none { it.id == targetMsgId && it.agentId == opened.id }) {
+            return@LaunchedEffect
+        }
+        globalJumpTargetId = targetMsgId
+        pendingGlobalJump = null
     }
 
     // ═══ W21 ANRUF (P4-P6 + G11/G12): Call-Mount ══════════════════════════════
@@ -1471,9 +1571,7 @@ fun ChatScreen(
                 // SICHTBAR auf Push-to-Talk zurück, der Hinweis sagt warum.
                 callHandsFree = false
                 callSttListening = false
-                callInfoLine =
-                    // STRING: call_stt_failed — de "Spracherkennung fehlgeschlagen — Sprechen-Taste nutzen", en "Speech recognition failed — use the talk button"
-                    "Spracherkennung fehlgeschlagen — Sprechen-Taste nutzen"
+                callInfoLine = context.getString(R.string.call_stt_failed)
             }
         })
     }
@@ -1492,8 +1590,7 @@ fun ChatScreen(
         callHandsFreeChosen = true
         if (toHandsFree) {
             if (!callSttSupported) {
-                // STRING: call_stt_unavailable — de "Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen", en "Hands-free speech unavailable on this device — use the talk button"
-                callInfoLine = "Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen"
+                callInfoLine = context.getString(R.string.call_stt_unavailable)
                 return
             }
             val micGranted = ContextCompat.checkSelfPermission(
@@ -1846,6 +1943,13 @@ fun ChatScreen(
             historySealBreach = historySealBreach,
             // PH-6: dezenter Suchindex-Aufbau-Hinweis (kein Blockieren).
             searchIndexBuilding = searchIndexBuilding,
+            // W22 MERGE-2 (C-Hook 1/3): globaler Such-Abschnitt + Sprung-Brücke —
+            // Treffer-Anker (Hit → JumpAnchor) an den Resolver-Effekt oben;
+            // Ziel-Id geht je Konsum wieder auf null (Screen-Effekt meldet die
+            // Landung zurück).
+            onGlobalJump = { pendingGlobalJump = GlobalSearchRules.jumpAnchor(it) },
+            globalJumpTargetId = globalJumpTargetId,
+            onConsumeGlobalJump = { globalJumpTargetId = null },
             // PH-3 Welle 2: rot-Banner bei Abweichung/Reset unter dem Kopf.
             e2eBanner = e2eBanner,
             onDismissE2eBanner = { RelayClient.clearE2eBanner() },
@@ -2151,6 +2255,15 @@ private fun ConversationBody(
     historySealBreach: Boolean = false,
     // PH-6: dezenter Suchindex-Aufbau-Hinweis (nie blockierend).
     searchIndexBuilding: Boolean = false,
+    // W22 MERGE-2 (C-Hook 1/3): globaler Such-Abschnitt + Sprung-Brücke —
+    // onGlobalJump meldet den Treffer-Anker an den ChatScreen-Resolver
+    // (Agent-Wechsel-Gate dort); der Resolver reicht die aufgelöste lokale Id
+    // zurück (globalJumpTargetId) und der Screen-Effekt unten setzt
+    // searchOpen=false + searchFocusTarget wie beim lokalen Sprung, dann
+    // onConsume.
+    onGlobalJump: (SearchIndex.Hit) -> Unit = {},
+    globalJumpTargetId: Long? = null,
+    onConsumeGlobalJump: () -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     // W22 A2 (P5): Fokus-Griff des Composers — die Verpasst-Anruf-Zeile setzt
@@ -2294,6 +2407,13 @@ private fun ConversationBody(
         ChatSearchRules.matches(searchQuery, conversation)
     }
     val searchActive = searchOpen && ChatSearchRules.active(searchQuery)
+    // W22 MERGE-2 (C-Hook 1): Agenten-Snapshot (Katalog-Namen für Gruppen-
+    // Label je Treffer) + Index-Zähler (ehrlicher Leerzustand des globalen
+    // Abschnitts) — beides je Composition frisch aus dem Store/Flow gelesen,
+    // kein eigenes State, kein Blockieren.
+    val relayAgentsLive by RelayClient.agents.collectAsState()
+    val relayAgentNames = relayAgentsLive.associate { it.agentId to it.displayName }
+    val searchIndexEntryCount = ChatHistoryStore.searchIndexEntryCount()
     LaunchedEffect(searchOpen) {
         if (searchOpen) {
             runCatching { searchFocus.requestFocus() }
@@ -2336,6 +2456,17 @@ private fun ConversationBody(
         if (searchHighlightId == null) return@LaunchedEffect
         delay(1_600L)
         searchHighlightId = null
+    }
+    // W22 MERGE-2 (C-Hook 3): aufgelöster GLOBALER Sprung → dieselbe Ordnung
+    // wie der lokale onJump (searchOpen zu, Query bleibt, searchFocusTarget im
+    // Such-Effekt oben scrollt) — Konsum erst nach dem Set (keine Suspension
+    // dazwischen, JAG3-Ordnung); der offene Anker wartet oben weiter, falls
+    // der Screen hier nie anwendet.
+    LaunchedEffect(globalJumpTargetId) {
+        val target = globalJumpTargetId ?: return@LaunchedEffect
+        searchOpen = false
+        searchFocusTarget = target
+        onConsumeGlobalJump()
     }
     // PH-FIX-CHAT-A (F4): die offene Conversation beim RelayClient melden —
     // Antworten DIESES Agenten erzeugen keine Notification, solange die App
@@ -2548,15 +2679,28 @@ private fun ConversationBody(
                 // Treffer-Liste ersetzt die Timeline (gleicher Slot); Sprung-
                 // Anker: Tap schließt die Liste (Query bleibt) → Timeline +
                 // Scroll + Ember-Highlight je Sprung-Effekt oben.
-                ConversationSearchResults(
-                    matches = searchMatches,
-                    agentName = agent.name.takeIf { agent.agentId.isNotBlank() },
-                    onJump = { matchId ->
-                        searchOpen = false
-                        searchFocusTarget = matchId
-                    },
-                    modifier = Modifier.weight(1f),
-                )
+                // W22 MERGE-2 (C-Hook 1): der weight ist auf die Column
+                // GEWANDERT — die lokale Trefferliste teilt den Slot mit dem
+                // globalen Abschnitt („Weitere Treffer in Verläufen“), dessen
+                // onJump den Anker an den ChatScreen-Resolver meldet
+                // (Agent-Wechsel-Gate dort, KEIN stiller Konsum).
+                Column(modifier = Modifier.weight(1f)) {
+                    ConversationSearchResults(
+                        matches = searchMatches,
+                        agentName = agent.name.takeIf { agent.agentId.isNotBlank() },
+                        onJump = { matchId ->
+                            searchOpen = false
+                            searchFocusTarget = matchId
+                        },
+                    )
+                    GlobalSearchResultsSection(
+                        query = searchQuery,
+                        agentNames = relayAgentNames,
+                        indexEntryCount = searchIndexEntryCount,
+                        indexBuilding = searchIndexBuilding,
+                        onJump = onGlobalJump,
+                    )
+                }
             } else {
                 // WELLE-13 P11a (Chat-Hintergrund): Wallpaper UNTER dem Verlauf —
                 // Standard = dunkles Eigenmuster (Void-Navy), Nutzer-Foto mit
@@ -2624,6 +2768,10 @@ private fun ConversationBody(
                             if (callInfo != null && !callInfo.missed) {
                                 CallHistoryBubble(info = callInfo, time = message.time)
                             } else if (callInfo != null) {
+                                // W22 A2/MERGE-2: Entwurf je Locale (Ressource statt
+                                // Literal — stringResource im Item-Scope, der Click-
+                                // Lambda reicht nur den gelesenen Wert weiter).
+                                val callbackDraft = stringResource(R.string.call_missed_callback_draft)
                                 CallMissedRow(
                                     time = message.time,
                                     onCallBack = {
@@ -2641,8 +2789,7 @@ private fun ConversationBody(
                                         if (searchOpen) searchOpen = false
                                         missedFocusPending = true
                                         if (inputText.isBlank()) {
-                                            // STRING: call_missed_callback_draft — de "Bitte ruf mich zurück.", en "Please call me back."
-                                            onInputChange("Bitte ruf mich zurück.")
+                                            onInputChange(callbackDraft)
                                         }
                                     },
                                 )

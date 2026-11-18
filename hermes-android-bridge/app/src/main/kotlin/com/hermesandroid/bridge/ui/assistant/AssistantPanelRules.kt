@@ -234,8 +234,20 @@ object PanelActionRules {
     /**
      * Baut den Zustell-Prompt je Aktion. null = Aktion nicht verfügbar
      * (Link-Pflicht verletzt) — der Dialog zeigt den Grund statt still.
+     * i18n (W22 MERGE-2): die beiden Seiten-Vorlagen kommen als Parameter
+     * (reine JVM-Logik ohne android.*-Import) — der nicht-komposable Aufrufer
+     * liest sie je Locale (getString/stringResource) und reicht sie ein; der
+     * `%1$s`-Platzhalter wird hier mit Host bzw. URL gefüllt (replace statt
+     * String.format: fremder Text im Argument kann kein %-Konstrukt brechen).
      */
-    fun buildPrompt(action: ShareAction, payload: SharePayload): DeliveryPrompt? {
+    fun buildPrompt(
+        action: ShareAction,
+        payload: SharePayload,
+        // Ressourcen-Vorlage „Seite fragen“ mit %1$s = Host (je Locale).
+        askTemplate: String,
+        // Ressourcen-Vorlage „Zusammenfassen“ mit %1$s = URL (je Locale).
+        summarizeTemplate: String,
+    ): DeliveryPrompt? {
         val url = payload.contextUrl
         return when (action) {
             ShareAction.SEND_TO_AGENT ->
@@ -248,11 +260,8 @@ object PanelActionRules {
                 )
             ShareAction.ASK_PAGE -> {
                 if (url == null) return null
-                // STRING: assistant_share_ask_template — de "Frage zur Seite {host}: ",
-                // en "Question about this page ({host}): "
-                val template = "Frage zur Seite ${hostLabel(url)}: "
                 DeliveryPrompt(
-                    prompt = template,
+                    prompt = askTemplate.replace("%1\$s", hostLabel(url)),
                     contextUrl = url,
                     chipLabel = chipLabel(url),
                     autoSend = false,
@@ -260,12 +269,8 @@ object PanelActionRules {
             }
             ShareAction.SUMMARIZE_PAGE -> {
                 if (url == null) return null
-                // STRING: assistant_share_summarize_template — de "Fasse den Inhalt dieser
-                // Seite kurz zusammen: {url}", en "Briefly summarize the content of this
-                // page: {url}"
-                val template = "Fasse den Inhalt dieser Seite kurz zusammen: $url"
                 DeliveryPrompt(
-                    prompt = template,
+                    prompt = summarizeTemplate.replace("%1\$s", url),
                     contextUrl = url,
                     chipLabel = chipLabel(url),
                     autoSend = true,

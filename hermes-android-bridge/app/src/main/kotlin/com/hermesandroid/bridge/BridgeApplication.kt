@@ -7,6 +7,7 @@ import com.hermesandroid.bridge.model.DeviceCapabilities
 import com.hermesandroid.bridge.power.WakeLockManager
 import com.hermesandroid.bridge.server.BridgeServer
 import com.hermesandroid.bridge.server.ServerProfiles
+import com.hermesandroid.bridge.ui.assistant.AssistantBubbleService
 
 class BridgeApplication : Application() {
     companion object {
@@ -39,5 +40,13 @@ class BridgeApplication : Application() {
         // W16 (Fixliste-Punkt 26): Update-Check beim App-Start (kein Download/
         // Install mehr — nur Info-Push; intern 24h-Fenster + Dedupe je Version).
         com.hermesandroid.bridge.files.UpdateCheck.afterAppStart(this)
+        // W22 MERGE-2 (B-Hook 3): Blasen-Rückweg nach App-Start — der
+        // persistierte Wunsch (isDesired) startet den Dienst sofort wieder,
+        // fail-soft (runCatching; start() prüft die Overlay-Freigabe selbst
+        // und fragt KEINE Permission automatisch an → der Nutzer-Weg bleibt
+        // der Toggle/Permission-Flow in den Einstellungen).
+        if (AssistantBubbleService.isDesired(this)) {
+            runCatching { AssistantBubbleService.start(this) }
+        }
     }
 }

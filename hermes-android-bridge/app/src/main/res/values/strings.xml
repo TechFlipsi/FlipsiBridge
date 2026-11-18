@@ -715,4 +715,26 @@
     <string name="chat_global_search_building_partial">Suchindex wird noch aufgebaut — Treffer können unvollständig sein</string>
     <string name="chat_global_search_unknown_agent">Unbekannter Agent</string>
     <string name="chat_global_search_jump_label">Zum Treffer im Verlauf springen</string>
+
+    <!-- W22 MERGE-2: Anruf-Verlauf + Anruf-Settings + Assistent-Share-Reste -->
+    <string name="call_stt_failed">Spracherkennung fehlgeschlagen — Sprechen-Taste nutzen</string>
+    <string name="call_stt_unavailable">Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen</string>
+    <string name="call_stt_handsfree">Freihand</string>
+    <string name="call_stt_handsfree_listening">Freihand — lauscht</string>
+    <string name="call_stt_handsfree_a11y">Freihand-Modus — tippen für Sprechen-Taste</string>
+    <string name="call_stt_handsfree_listening_a11y">Freihand-Erkennung läuft — tippen für Sprechen-Taste</string>
+    <string name="call_stt_long_a11y">Lange drücken für Freihand-Sprechen am Gerät</string>
+    <string name="call_history_bubble">Anruf (%1$s)</string>
+    <string name="call_history_bubble_a11y">Anruf beendet, Dauer %1$s</string>
+    <string name="call_history_missed">Verpasster Anruf · Zum Antworten tippen</string>
+    <string name="call_history_missed_a11y">Verpasster Anruf — tippen, um im Chat zu antworten</string>
+    <string name="call_missed_callback_draft">Bitte ruf mich zurück.</string>
+    <string name="settings_call_title">Anrufe</string>
+    <string name="settings_call_record_title">Anruf-Verlauf aufzeichnen</string>
+    <string name="settings_call_record_desc">Beendete und verpasste Anrufe erscheinen im Chat-Verlauf. Aus: Anrufe hinterlassen keine Spur.</string>
+    <string name="settings_call_record_a11y">Anruf-Verlauf-Aufzeichnung umschalten</string>
+    <string name="assistant_assist_content_desc">Verschlüsselte Assistenten-Brücke</string>
+    <string name="assistant_share_delivered_toast">Im Chat vorbereitet — dort prüfen und senden</string>
+    <string name="assistant_share_ask_template">"Frage zur Seite %1$s: "</string>
+    <string name="assistant_share_summarize_template">"Fasse den Inhalt dieser Seite kurz zusammen: %1$s"</string>
 </resources>

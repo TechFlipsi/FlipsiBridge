@@ -276,6 +276,12 @@ class AssistantPanelRulesTest {
         contextUrl = null,
     )
 
+    // W22 MERGE-2 (i18n): Test-Vorlagen statt de-Defaults — die Tests
+    // parametrisieren buildPrompt wie die Nutzungsstellen (Roh-Vorlage mit
+    // %1$s übergeben, die Regel füllt Host/URL), gleiche Beweiskraft.
+    private val askTemplate = "Frage zur Seite %1\$s: "
+    private val summarizeTemplate = "Fasse den Inhalt dieser Seite kurz zusammen: %1\$s"
+
     @Test
     fun pageActionsRequireUrlSendDoesNot() {
         assertFalse(PanelActionRules.requiresUrl(ShareAction.SEND_TO_AGENT))
@@ -296,7 +302,9 @@ class AssistantPanelRulesTest {
 
     @Test
     fun sendToAgentPassesTextVerbatimAndAutoSends() {
-        val prompt = PanelActionRules.buildPrompt(ShareAction.SEND_TO_AGENT, urlPayload)
+        val prompt = PanelActionRules.buildPrompt(
+            ShareAction.SEND_TO_AGENT, urlPayload, askTemplate, summarizeTemplate,
+        )
         assertNotNull(prompt)
         assertEquals("https://example.com/artikel", prompt?.prompt)
         assertEquals("example.com", prompt?.chipLabel)
@@ -305,9 +313,11 @@ class AssistantPanelRulesTest {
 
     @Test
     fun askPagePreparesTemplateForTheComposerWithoutAutoSend() {
-        val prompt = PanelActionRules.buildPrompt(ShareAction.ASK_PAGE, urlPayload)
+        val prompt = PanelActionRules.buildPrompt(
+            ShareAction.ASK_PAGE, urlPayload, askTemplate, summarizeTemplate,
+        )
         assertNotNull(prompt)
-        assertTrue(prompt?.prompt?.startsWith("Frage zur Seite example.com: ") == true)
+        assertEquals("Frage zur Seite example.com: ", prompt?.prompt)
         // Vorlage — der Nutzer ergänzt seine Frage, KEIN Auto-Send.
         assertTrue(prompt?.autoSend == false)
         assertEquals("example.com", prompt?.chipLabel)
@@ -315,16 +325,29 @@ class AssistantPanelRulesTest {
 
     @Test
     fun summarizePageSendsDirectlyWithFullUrl() {
-        val prompt = PanelActionRules.buildPrompt(ShareAction.SUMMARIZE_PAGE, urlPayload)
+        val prompt = PanelActionRules.buildPrompt(
+            ShareAction.SUMMARIZE_PAGE, urlPayload, askTemplate, summarizeTemplate,
+        )
         assertNotNull(prompt)
-        assertTrue(prompt?.prompt?.contains("https://example.com/artikel") == true)
+        assertEquals(
+            "Fasse den Inhalt dieser Seite kurz zusammen: https://example.com/artikel",
+            prompt?.prompt,
+        )
         assertTrue(prompt?.autoSend == true)
     }
 
     @Test
     fun pageActionsWithoutUrlRefuseInsteadOfGuessing() {
-        assertNull(PanelActionRules.buildPrompt(ShareAction.ASK_PAGE, textOnlyPayload))
-        assertNull(PanelActionRules.buildPrompt(ShareAction.SUMMARIZE_PAGE, textOnlyPayload))
+        assertNull(
+            PanelActionRules.buildPrompt(
+                ShareAction.ASK_PAGE, textOnlyPayload, askTemplate, summarizeTemplate,
+            ),
+        )
+        assertNull(
+            PanelActionRules.buildPrompt(
+                ShareAction.SUMMARIZE_PAGE, textOnlyPayload, askTemplate, summarizeTemplate,
+            ),
+        )
     }
 
     @Test

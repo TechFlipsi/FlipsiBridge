@@ -27,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.contentDescription
@@ -56,8 +57,7 @@ fun CallSettingsCard(
 ) {
     val context = LocalContext.current
     var recordEnabled by remember { mutableStateOf(CallHistoryPrefs.recordEnabled(context)) }
-    // STRING: settings_call_record_a11y — de "Anruf-Verlauf-Aufzeichnung umschalten", en "Toggle call history recording"
-    val recordA11y = "Anruf-Verlauf-Aufzeichnung umschalten"
+    val recordA11y = stringResource(R.string.settings_call_record_a11y)
     Card(
         modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.large,
@@ -79,9 +79,8 @@ fun CallSettingsCard(
             ) {
                 ResourceIcon(R.drawable.ic_call, tint = FlipsiColors.TextSecondary, size = 20.dp)
                 Spacer(Modifier.width(12.dp))
-                // STRING: settings_call_title — de "Anrufe", en "Calls"
                 Text(
-                    "Anrufe",
+                    stringResource(R.string.settings_call_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -100,10 +99,9 @@ fun CallSettingsCard(
                         .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    // STRING: settings_call_record_desc — de "Beendete und verpasste Anrufe erscheinen im Chat-Verlauf. Aus: Anrufe hinterlassen keine Spur.", en "Ended and missed calls appear in the chat history. Off: calls leave no trace."
+                    // STRING-Ersetzung W22 MERGE-2: Ressource (DE/EN) statt Literal.
                     Text(
-                        "Beendete und verpasste Anrufe erscheinen im Chat-Verlauf. " +
-                            "Aus: Anrufe hinterlassen keine Spur.",
+                        stringResource(R.string.settings_call_record_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = FlipsiColors.TextSecondary,
                     )
@@ -122,9 +120,9 @@ fun CallSettingsCard(
                             .semantics { contentDescription = recordA11y },
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        // STRING: settings_call_record_title — de "Anruf-Verlauf aufzeichnen", en "Record call history"
+                        // W22 MERGE-2: Titel je Locale (Ressource statt Literal).
                         Text(
-                            "Anruf-Verlauf aufzeichnen",
+                            stringResource(R.string.settings_call_record_title),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             modifier = Modifier.weight(1f),

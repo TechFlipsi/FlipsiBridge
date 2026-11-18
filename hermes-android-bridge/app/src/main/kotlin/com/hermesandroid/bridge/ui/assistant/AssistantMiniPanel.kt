@@ -394,6 +394,10 @@ class MiniPanelController(private val service: android.app.Service) {
             url != null -> PanelActionRules.buildPrompt(
                 ShareAction.SUMMARIZE_PAGE,
                 SharePayload(subject = null, text = url, contextUrl = url),
+                // W22 MERGE-2 (i18n): Vorlagen je Locale (Plattform-Context hat
+                // kein stringResource — service.getString).
+                askTemplate = service.getString(R.string.assistant_share_ask_template),
+                summarizeTemplate = service.getString(R.string.assistant_share_summarize_template),
             )
             else -> null
         }

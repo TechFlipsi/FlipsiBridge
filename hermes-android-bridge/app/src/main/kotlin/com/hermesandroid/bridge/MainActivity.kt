@@ -240,9 +240,8 @@ class MainActivity : ComponentActivity() {
         super.onProvideAssistContent(outContent)
         val structured = AssistContentRules.structuredDataJson(
             appName = "FlipsiBridge",
-            // STRING: assistant_assist_content_desc — de "Verschlüsselte
-            // Assistenten-Brücke", en "Encrypted assistant bridge"
-            description = "Verschlüsselte Assistenten-Brücke",
+            // W22 MERGE-2 (i18n): Beschreibung als Ressource (DE/EN).
+            description = getString(R.string.assistant_assist_content_desc),
         )
         runCatching { outContent.setStructuredData(structured) }
             .onFailure {
@@ -270,15 +269,19 @@ class MainActivity : ComponentActivity() {
      */
     private fun handleShareAction(action: ShareAction) {
         val payload = pendingShare ?: return
-        val prompt = PanelActionRules.buildPrompt(action, payload) ?: return
+        val prompt = PanelActionRules.buildPrompt(
+            action,
+            payload,
+            // W22 MERGE-2 (i18n): Seiten-Vorlagen je Locale; die %1$s-Platzhalter
+            // füllt PanelActionRules (Host/URL) — Roh-Vorlage ohne Args lesen.
+            askTemplate = getString(R.string.assistant_share_ask_template),
+            summarizeTemplate = getString(R.string.assistant_share_summarize_template),
+        ) ?: return
         AssistantShareBus.deliver(prompt)
         pendingShare = null
-        // STRING: assistant_share_delivered_toast — de "Im Chat vorbereitet —
-        // dort prüfen und senden", en "Prepared in the chat — review and send
-        // it there"
         Toast.makeText(
             this,
-            "Im Chat vorbereitet — dort prüfen und senden",
+            getString(R.string.assistant_share_delivered_toast),
             Toast.LENGTH_SHORT,
         ).show()
     }

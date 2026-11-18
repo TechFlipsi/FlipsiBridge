@@ -911,10 +911,9 @@ fun CallHistoryBubble(
     time: String,
     modifier: Modifier = Modifier,
 ) {
-    // STRING: call_history_bubble — de "Anruf (%1$s)", en "Call (%1$s)"
-    val label = "Anruf (${CallRules.formatDuration(info.durationSec)})"
-    // STRING: call_history_bubble_a11y — de "Anruf beendet, Dauer %1$s", en "Call ended, duration %1$s"
-    val a11y = "Anruf beendet, Dauer ${CallRules.formatDuration(info.durationSec)}"
+    val duration = CallRules.formatDuration(info.durationSec)
+    val label = stringResource(R.string.call_history_bubble, duration)
+    val a11y = stringResource(R.string.call_history_bubble_a11y, duration)
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -968,10 +967,8 @@ fun CallMissedRow(
     onCallBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // STRING: call_history_missed — de "Verpasster Anruf · Zum Antworten tippen", en "Missed call · Tap to reply"
-    val label = "Verpasster Anruf · Zum Antworten tippen"
-    // STRING: call_history_missed_a11y — de "Verpasster Anruf — tippen, um im Chat zu antworten", en "Missed call — tap to reply in the chat"
-    val a11y = "Verpasster Anruf — tippen, um im Chat zu antworten"
+    val label = stringResource(R.string.call_history_missed)
+    val a11y = stringResource(R.string.call_history_missed_a11y)
     Row(
         modifier = modifier
             .fillMaxWidth()
