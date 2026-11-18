@@ -117,7 +117,7 @@ object CallRules {
         val agentId: String?,
         val chatId: String?,
         val kind: String,
-        val reason: String,
+        val reason: String?,
     )
 
     /** Ergebnis von [inviteDecision] — RelayClient rendert sie (Flows/Signale). */
@@ -170,7 +170,7 @@ object CallRules {
                 agentId = invite.agentId.trim(),
                 chatId = invite.chatId.trim(),
                 kind = sanitizeKind(invite.kind),
-                reason = sanitizeReason(invite.reason),
+                reason = sanitizeReason(invite.reason ?: ""),
                 phase = Phase.RINGING,
                 ringingSinceMs = nowMs,
             ),

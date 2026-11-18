@@ -304,7 +304,7 @@ fun ChatScreen(
         // FEHLERZUSTAND (Banner + Verlauf-löschen-Weg) statt Coroutine-Crash,
         // der Live-Verband läuft verlaufslos weiter. historyRestored wird
         // trotzdem gesetzt → kein Reload-Loop je Rekombposition.
-        val (entries, statusByMsgId): Pair<List<ChatHistoryStore.Entry>?, Map<String, String>> = try {
+        val (entries, statusByMsgId) = try {
             // HAKEN-FIX (1): der Side-Car (Platte = höchster bekannter Chip-Stand
             // je msg_id) wandert in denselben IO-Sprung wie der Verlaus-Load.
             withContext(Dispatchers.IO) {
@@ -446,7 +446,7 @@ fun ChatScreen(
     // leeres Verlauf zeigt nie einen Aufbau-Hinweis).
     LaunchedEffect(historyRestored) {
         if (!historyRestored) return@LaunchedEffect
-        ChatHistoryStore.ensureSearchIndexAsync(historyContext.applicationContext)
+        ChatHistoryStore.ensureSearchIndexAsync(ChatHistoryStore.root(historyContext.applicationContext))
         val indexRoot = ChatHistoryStore.root(historyContext.applicationContext)
         var ticks = 0
         while (ticks < 6) {
@@ -1275,7 +1275,7 @@ fun ChatScreen(
             }
             RelayClient.sendCallAudio(cs.agentId, bytes) { ok, error ->
                 if (!ok) {
-                    callInfoLine = stringResource(R.string.call_screengrab_talk_failed) +
+                    callInfoLine = context.getString(R.string.call_screengrab_talk_failed) +
                         (error ?: context.getString(R.string.chat_send_failed_unknown))
                 }
             }
@@ -1317,7 +1317,7 @@ fun ChatScreen(
             val shot = ActionExecutor.takeScreenshot()
             if (!shot.success) {
                 screengrabBusy = false
-                callInfoLine = stringResource(R.string.call_screengrab_failed_reason, shot.message.take(80))
+                callInfoLine = context.getString(R.string.call_screengrab_failed_reason, shot.message.take(80))
                 return@launch
             }
             val b64 = (shot.data as? Map<*, *>)?.get("image") as? String
@@ -1326,7 +1326,7 @@ fun ChatScreen(
             if (bytes == null) {
                 screengrabBusy = false
                 // SR-Bedarf: call_screengrab_failed
-                callInfoLine = stringResource(R.string.call_screengrab_failed)
+                callInfoLine = context.getString(R.string.call_screengrab_failed)
                 return@launch
             }
             // §7.2 Privacy-Kette: Neukompression (EXIF/Geo strippt inherent),
@@ -1340,9 +1340,9 @@ fun ChatScreen(
                 screengrabBusy = false
                 callInfoLine = if (ok) {
                     // SR-Bedarf: call_screengrab_sent
-                    stringResource(R.string.call_screengrab_sent)
+                    context.getString(R.string.call_screengrab_sent)
                 } else {
-                    stringResource(R.string.call_screengrab_failed_reason, error?.take(80) ?: "?")
+                    context.getString(R.string.call_screengrab_failed_reason, error?.take(80) ?: "?")
                 }
             }
         }
@@ -1357,7 +1357,7 @@ fun ChatScreen(
         }
         if (!screengrabConfirmOpen) {
             // SR-Bedarf: call_screengrab_confirm_hint
-            callInfoLine = stringResource(R.string.call_screengrab_confirm_hint)
+            callInfoLine = context.getString(R.string.call_screengrab_confirm_hint)
             screengrabConfirmOpen = true
             return
         }
