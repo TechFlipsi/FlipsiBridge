@@ -385,6 +385,40 @@ object CallRules {
         return cleaned.take(STT_TURN_MAX_CHARS)
     }
 
+    // ── W22 A2 Fix 2 (Reviewer-A-Fund, HOCH): OEM-BUSY-Restart-Deckel ────────
+    // Ohne Deckel läuft RETRY_SILENT (Stille/NO_MATCH/RECOGNIZER_BUSY) als
+    // unbegrenzte ~3 Hz Create/Destroy-Schleife — kein Backoff, keine Eskala-
+    // tion, die UI behauptet weiter „lauscht". Diese Regel-Paar gibt der
+    // Restart-Schleife eine Treppe und ein Ende:
+    //
+    // - nextRestartDelayMs(attemptsDone): Verzögerung für den (attemptsDone+1)-ten
+    //   Silent-Restart nach der bereits geschehenen Restart-Zahl — Treppe
+    //   300 → 600 → 1200 → 2400 ms, dann Deckel auf 2400 ms.
+    // - shouldEscalateStt(attemptsDone): ab MAX_ATTEMPTS aufeinanderfolgenden
+    //   Silent-Restarts ohne Erfolg (neuer Erfolg = Zähler-Reset bei
+    //   onBeginningOfSpeech/onResults) schaltet die Freihand-Erkennung SICHTBAR
+    //   auf FATAL (Hinweis + Push-to-Talk-Fallback) — kein stiller Tod, kein
+    //   Mikro-Claim im Endlos-Loop.
+    /** Start-Treppenelement der Silent-Restart-Verzögerung. */
+    const val STT_RESTART_BASE_DELAY_MS = 300L
+
+    /**
+     * Silent-Restarts in Folge, bevor ehrlich FATAL eskaliert wird — bei der
+     * Treppensumme 300+600+1200+2400 ms (4 Versuche) eskaliert der 5. Fehler.
+     */
+    const val STT_RESTART_MAX_ATTEMPTS = 5
+
+    /** Verzögerung für den nächsten Silent-Restart (Treppe mit 2400-ms-Deckel). */
+    fun nextRestartDelayMs(attemptsDone: Int): Long =
+        STT_RESTART_BASE_DELAY_MS shl attemptsDone.coerceIn(0, 3)
+
+    /**
+     * Ehrlich aufgeben? true ab [STT_RESTART_MAX_ATTEMPTS] aufeinanderfolgenden
+     * Silent-Restarts (der Aufrufer eskaliert dann auf den FATAL-Weg).
+     */
+    fun shouldEscalateStt(attemptsDone: Int): Boolean =
+        attemptsDone >= STT_RESTART_MAX_ATTEMPTS
+
     // ── W22 A2 (P5): Call-Verlauf im Chat (WhatsApp-Referenz) ────────────────
 
     /**

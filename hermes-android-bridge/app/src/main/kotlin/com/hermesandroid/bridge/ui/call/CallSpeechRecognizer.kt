@@ -30,10 +30,17 @@ import java.util.concurrent.atomic.AtomicReference
  *   startet neu — kein hängender Freihand-Zustand.
  * - Lifecycle-Cancel bei Call-Ende: [stop] räumt die Instanz; die Call-
  *   Bindung ruft es bei JEDEM Phasenwechsel weg von ACTIVE.
- * - Fail-soft: RETRY_SILENT-Fehler (Stille/OEM-BUSY) starten neu; FATAL-
- *   Fehler (Netz/Audio/Server/Permission — [CallRules.sttErrorClass])
- *   melden [Callbacks.onFatal] → die UI schaltet SICHTBAR auf Push-to-Talk
- *   (kein stiller Tod). Ein fehlender Provider ist kein Crash: gleicher Weg.
+ * - Fail-soft: RETRY_SILENT-Fehler (Stille/OEM-BUSY) starten neu — mit
+ *   Restart-Treppe + Deckel (W22 A2 Fix 2: 300→600→1200→2400 ms, nach 5
+ *   folgenlosen Restarts ehrlich [Callbacks.onFatal] → sichtbarer
+ *   Push-to-Talk-Fallback, keine unbegrenzte Create/Destroy-Schleife);
+ *   ein pendierendes Diktat-Partial geht beim Silent-Fehler NICHT lautlos
+ *   verloren, sondern raus als Turn (Fix 4), und der Turn je Äußerung ist
+ *   durch ein delivered-Flag doppelfest gegen Stille-Guard-vs-onResults
+ *   (Fix 3). FATAL-Fehler (Netz/Audio/Server/Permission —
+ *   [CallRules.sttErrorClass]) melden [Callbacks.onFatal] → die UI schaltet
+ *   SICHTBAR auf Push-to-Talk (kein stiller Tod). Ein fehlender Provider ist
+ *   kein Crash: gleicher Weg.
  *
  * Privatsphäre-Gate (Plan Z.38): Freihand läuft NUR, wenn
  * [handsFreeSupported] gilt — ab API 31 VERIFIZIERBAR on-device
@@ -112,6 +119,22 @@ class CallSpeechRecognizer(
     /** onEndOfSpeech-Zeitpunkt (0 = keine offene Stille-Phase; nur Main). */
     private var endOfSpeechAtMs: Long = 0L
 
+    /**
+     * W22 A2 Fix 2: aufeinanderfolgende RETRY_SILENT-Restarts seit dem letzten
+     * Erfolg (nur Main-Thread) — Erfolg (onBeginningOfSpeech/onResults) oder
+     * [stop] setzen zurück; [CallRules.shouldEscalateStt] entscheidet die
+     * ehrliche FATAL-Eskalation.
+     */
+    private var silentRetryAttempts = 0
+
+    /**
+     * W22 A2 Fix 3: wurde die AKTUELLE Äußerung schon als Turn geliefert? Der
+     * Stille-Guard setzt sie beim Versand — ein später eintreffendes onResults
+     * desselben Aussprache-Zyklus darf nicht noch einmal senden. Reset je
+     * neuem Lausch-Zyklus ([startListeningOnMain]) und bei [stop].
+     */
+    private var turnDelivered = false
+
     /** Läuft die Freihand-Erkennung gerade (Lifecycle-Spiegel für die Bindung)? */
     val isRunning: Boolean get() = active.get()
 
@@ -131,6 +154,10 @@ class CallSpeechRecognizer(
             teardownOnMain()
             endOfSpeechAtMs = 0L
             lastPartial = ""
+            // W22 A2 Fix 2/3: frisches Blatt — Retry-Kap-Schuld UND delivered-
+            // Flag sind an eine Lebenszeit gebunden, nicht an den Prozess.
+            silentRetryAttempts = 0
+            turnDelivered = false
             callbacks.onListeningChanged(false)
         }
     }
@@ -152,6 +179,9 @@ class CallSpeechRecognizer(
         teardownOnMain()
         lastPartial = ""
         endOfSpeechAtMs = 0L
+        // W22 A2 Fix 3: neuer Äußerungs-Zyklus → der Stille-Guard-vs-onResults-
+        // Doppel-Turn-Schutz startet neu je Äußerung.
+        turnDelivered = false
         val recognizer = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             // On-Device-PFLICHT-Weg (Z.38); Fallback createSpeechRecognizer nur
             // wenn der on-device-Konstruktor auf dem Gerät fehlt (Hersteller-
@@ -209,6 +239,10 @@ class CallSpeechRecognizer(
             endOfSpeechAtMs = 0L
             val turn = CallRules.sttTurnText(partial)
             if (turn != null) {
+                // W22 A2 Fix 3: dieser Turn IST die Äußerung — ein danach noch
+                // eintreffendes onResults desselben Zyklus darf keinen zweiten
+                // Turn (Doppel-Send) erzeugen.
+                turnDelivered = true
                 callbacks.onTurn(turn)
             }
             if (active.get()) scheduleRestartOnMain()
@@ -221,6 +255,9 @@ class CallSpeechRecognizer(
         override fun onReadyForSpeech(params: Bundle?) {}
 
         override fun onBeginningOfSpeech() {
+            // W22 A2 Fix 2: echtes Sprechen = die Engine lebt — die Restart-
+            // Treppen-Schuld (OEM-BUSY-Sturm VOR diesem Beginn) ist getilgt.
+            silentRetryAttempts = 0
             // Barge-in-Signal §3.1: der Agenten-TTS wird in der Bindung über
             // onPartial gestoppt (nicht-leerer Partial = Nutzer redet) — hier
             // bewusst KEIN weiterer Hook (ein leeres Räuspern soll die Antwort
@@ -241,8 +278,32 @@ class CallSpeechRecognizer(
                 // Stille/OEM-Quirk — kein Modus-Wechsel, nur neu lauschen.
                 CallRules.SttErrorClass.RETRY_SILENT -> {
                     endOfSpeechAtMs = 0L
+                    // W22 A2 Fix 4: ein diktiertes Partial wird NICHT lautlos
+                    // verworfen — falls der OEM onResults nie liefert (Quirk),
+                    // geht der letzte Partial als Turn raus (Stille-Guard-
+                    // Semantik); das delivered-Flag verhindert den Doppel-Turn,
+                    // falls onResults später doch noch kommt.
+                    val turn = CallRules.sttTurnText(lastPartial)
                     lastPartial = ""
-                    if (active.get()) scheduleRestartOnMain()
+                    if (turn != null) {
+                        turnDelivered = true
+                        callbacks.onTurn(turn)
+                    }
+                    // W22 A2 Fix 2: Silent-Restarts MIT Treppen-Backoff und
+                    // Kap — sonst OEM-BUSY = unbegrenzte ~3 Hz Create/Destroy-
+                    // Schleife, in der die UI behauptet, weiter zu lauschen.
+                    silentRetryAttempts++
+                    if (CallRules.shouldEscalateStt(silentRetryAttempts)) {
+                        // Ehrlich aufgeben → sichtbarer Push-to-Talk-Fallback.
+                        active.set(false)
+                        teardownOnMain()
+                        callbacks.onListeningChanged(false)
+                        callbacks.onFatal(error)
+                    } else if (active.get()) {
+                        scheduleRestartOnMain(
+                            CallRules.nextRestartDelayMs(silentRetryAttempts - 1),
+                        )
+                    }
                 }
                 // Ehrlich aufgeben → sichtbarer Push-to-Talk-Fallback.
                 CallRules.SttErrorClass.FATAL -> {
@@ -256,11 +317,23 @@ class CallSpeechRecognizer(
 
         override fun onResults(results: Bundle?) {
             endOfSpeechAtMs = 0L
+            // W22 A2 Fix 2: Erfolg — die Restart-Kap-Schuld ist getilgt.
+            silentRetryAttempts = 0
             val text = textsFrom(results).firstOrNull()
             val turn = CallRules.sttTurnText(text)
             lastPartial = ""
-            if (turn != null) {
+            if (turn != null && !turnDelivered) {
+                // W22 A2 Fix 3: der NEUE Turn gehört dieser onResults — senden
+                // + frischen Lausch-Zyklus selbst übernehmen ...
+                turnDelivered = true
                 callbacks.onTurn(turn)
+            }
+            if (turnDelivered && turn == null) {
+                // ... ABER ein FRÜHERER Weg in diesem Zyklus (Stille-Guard /
+                // Silent-Fehler-Partial) hat Turn + Restart bereits erledigt:
+                // dieses späte onResults darf weder doppelt senden noch einen
+                // zweiten Lausch-Zyklus anstoßen (W22 A2 Fix 3).
+                return
             }
             if (active.get()) scheduleRestartOnMain()
         }

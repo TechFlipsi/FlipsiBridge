@@ -185,4 +185,36 @@ class CallRulesW22Test {
         )
         assertNull(CallRules.callRecordFor(declined, recordEnabled = true))
     }
+
+    // ── W22 A2 Fix 2 (Reviewer-A-Fund, HOCH): OEM-BUSY-Restart-Deckel ────────
+
+    @Test
+    fun silent_restart_backoff_läuft_als_treppe_mit_deckel() {
+        // Der Alt-Stand startete JEDEngine-Silent-Fehler sofort nach 300 ms neu
+        // — OEM-BUSY lief so als unbegrenzte ~3 Hz Create/Destroy-Schleife.
+        // Der Verband: Treppe 300 → 600 → 1200 → 2400 ms, danach Deckel.
+        assertEquals(300L, CallRules.nextRestartDelayMs(0))
+        assertEquals(600L, CallRules.nextRestartDelayMs(1))
+        assertEquals(1200L, CallRules.nextRestartDelayMs(2))
+        assertEquals(2400L, CallRules.nextRestartDelayMs(3))
+        // Deckel: weitere gescheiterte Versuche bleiben bei 2400 ms — die
+        // Verzögerung explodiert nicht ins Absurde (kein 38.4-s-Fehler-Pfad).
+        assertEquals(2400L, CallRules.nextRestartDelayMs(4))
+        assertEquals(2400L, CallRules.nextRestartDelayMs(40))
+        // Verteidigung gegen Unsinn: negative attemptsDone clampen auf 300 ms.
+        assertEquals(300L, CallRules.nextRestartDelayMs(-2))
+    }
+
+    @Test
+    fun silent_restart_escalation_nach_max_attempts() {
+        // 4 gescheiterte Silent-Restarts (300+600+1200+2400 ms) → der 5.
+        // Fehler eskaliert ehrlich FATAL (sichtbarer Hinweis + PTT-Fallback).
+        assertFalse(CallRules.shouldEscalateStt(0))
+        assertFalse(CallRules.shouldEscalateStt(1))
+        assertFalse(CallRules.shouldEscalateStt(3))
+        assertFalse(CallRules.shouldEscalateStt(4))
+        assertTrue(CallRules.shouldEscalateStt(5))
+        assertTrue(CallRules.shouldEscalateStt(6))
+        assertTrue(CallRules.shouldEscalateStt(50))
+    }
 }

@@ -402,12 +402,18 @@ object ChatHistoryStore {
      * Präfix gegen Trennzeichen-Gleichklang, ohne Agent-Hash: die Merge-Datei
      * ist je Agent EINE, der Agent ist implizit).
      * W22 A2: Call-Einträge (leerer Text) dedupen über ihre Call-Felder —
-     * zwei Anrufe derselben Minute (z. B. verpasst + sofortiger Rückruf-
-     * Versuch) wären sonst Schlüssel-Zwillinge und der Merge fände einen Weg.
+     * zwei Anrufe derselben Minute wären sonst Schlüssel-Zwillinge und der
+     * Merge fände einen Weg.
+     * W22 A2 Fix 5 (Reviewer-A-Fund): der Call-Schlüssel trägt zusätzlich
+     * [Entry.seq] (ms) — ZWEI verpasste Anrufe derselben Minute (missed=true,
+     * Dauer 0, gleiche HH:mm, verschiedene seq) sind echte Ereignisse und
+     * bleiben BEIDE stehen (alt: der zweite wurde still verworfen, Rot-Beweis
+     * ChatHistoryStoreCallTest). Dieselbe Lieferung → gleiche seq → 0 neu
+     * (Re-Delivery-Idempotenz hält unverändert).
      */
     private fun mergeDedupeKey(entry: Entry): String =
         entry.callInfo?.let { info ->
-            "${entry.agentId}\u0000call\u0000${info.direction}\u0000${info.missed}\u0000${info.durationSec}\u0000${entry.time}"
+            "${entry.agentId}\u0000call\u0000${info.direction}\u0000${info.missed}\u0000${info.durationSec}\u0000${entry.time}\u0000${entry.seq}"
         } ?: "${entry.agentId}\u0000${entry.fromAgent}\u0000${entry.text.length}:${entry.text}\u0000${entry.time}"
 
     // ── HAKEN-FIX (17.11.2026): Status-Side-Car ──────────────────────────────

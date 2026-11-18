@@ -1397,7 +1397,13 @@ fun ChatScreen(
     // Turn im Call-Kontext gesendet — die Push-to-Talk-Aufnahme (E2E-Chunk)
     // bleibt als Fallback am selben Mikro-Knopf (Lang-Drücken = Modus-Wahl).
     val callSttSupported = remember { CallSpeechRecognizer.handsFreeSupported(context) }
-    var callHandsFree by remember { mutableStateOf(false) }
+
+    // W22 A2 (Fund 8): Nutzer-Wahl Freihand vs Push-to-Talk als Saveable — ein
+    // Tab-Wechsel MITTEN im Anruf remountet den Screen und würde die getätigte
+    // Wahl sonst still überschreiben. Key callId: je NEUEM Anruf startet der
+    // Modus bewusst frisch (A1-Default); die Wahl gilt NUR diesen Anruf.
+    var callHandsFree by rememberSaveable(callSession?.callId) { mutableStateOf(false) }
+    var callHandsFreeChosen by rememberSaveable(callSession?.callId) { mutableStateOf(false) }
     var callSttListening by remember { mutableStateOf(false) }
 
     /**
@@ -1406,10 +1412,15 @@ fun ChatScreen(
      * tierten Anruf als TTS-Chunk, call_chunk_seq §3.3). Die User-Bubble
      * erscheint wie WhatsApp-Transkript im Verlauf; RelayClient persistiert
      * den Disk-Zwilling selbst (sendChat-Verband) — hier NUR die Live-Bubble.
+     * W22 A2 Fix 8 (Reviewer-A-Fund): ein Turn, der erst nach dem Auflegen
+     * (Phase != ACTIVE, z. B. im ENDED-Fenster) ankommt, wird NICHT still
+     * verworfen — er geht als normaler Chat-Text in denselben Thread (das
+     * just erkannte Diktat bleibt sichtbar; Chat-Kontext = derselbe Agent/
+     * Chat, kein eingefrorener Call-Zustand nötig). Ohne Anrufsitzung (cs =
+     * null, Tab schon geräumt) bleibt der Drop — dokumentierte Grenze.
      */
     fun callSendSttTurn(text: String) {
         val cs = callSession ?: return
-        if (cs.phase != CallRules.Phase.ACTIVE) return
         val clean = CallRules.sttTurnText(text) ?: return
         val sentAtMs = System.currentTimeMillis()
         val nextId = (messages.maxOfOrNull { it.id } ?: 0L) + 1L
@@ -1475,6 +1486,10 @@ fun ChatScreen(
     fun callToggleHandsFree(toHandsFree: Boolean) {
         val cs = callSession ?: return
         if (cs.phase != CallRules.Phase.ACTIVE) return
+        // W22 A2 (Fund 8): ab hier ist es eine EXPLIZITE Nutzer-Wahl dieser
+        // Anrufsitzung — sie verdrängt den Auto-Freihand-Start auch nach einem
+        // Remount (Tab-Wechsel) nicht mehr.
+        callHandsFreeChosen = true
         if (toHandsFree) {
             if (!callSttSupported) {
                 // STRING: call_stt_unavailable — de "Freihand-Sprechen auf diesem Gerät nicht verfügbar — Sprechen-Taste nutzen", en "Hands-free speech unavailable on this device — use the talk button"
@@ -1524,7 +1539,10 @@ fun ChatScreen(
                 val micGranted = ContextCompat.checkSelfPermission(
                     context, android.Manifest.permission.RECORD_AUDIO,
                 ) == PackageManager.PERMISSION_GRANTED
-                if (micGranted) {
+                if (micGranted && !callHandsFreeChosen) {
+                    // W22 A2 (Fund 8): Auto-Freihand NUR bis zum ersten Nutzer-
+                    // Takt — hat der Nutzer für DIESEN Anruf bewusst Push-to-
+                    // Talk gewählt, gewinnt die Wahl auch über Remounts.
                     callHandsFree = true
                     callStt.start()
                 }
@@ -1564,7 +1582,16 @@ fun ChatScreen(
     // Phasenwechsel — das Done-Set dedupliziert (kein Doppel-Eintrag, auch
     // nicht über App-Rückkehr/Mount-Ketten). Dauer liefert das PHONE lokal
     // (CallRules.callRecordFor aus activeSinceMs/endedAtMs).
-    val callRecordedIds = remember { HashSet<String>() }
+    // W22 A2 Fix 6 (Reviewer-A-Fund): das Done-Set ist rememberSaveable — ein
+    // remember{Set} überlebt Remounts (Tab-Wechsel/Rotation) NICHT und ein
+    // Re-Mount im ENDED-Fenster persistierte dieselbe call_id ein zweites Mal
+    // (Disk-vs-Disk-Duplikate, Store-seitig kein append-Dedupe).
+    val callRecordedIds: MutableSet<String> = rememberSaveable(
+        stateSaver = listSaver<MutableSet<String>, String>(
+            save = { it.toList() },
+            restore = { it.toHashSet() },
+        ),
+    ) { HashSet<String>() }
     LaunchedEffect(callSession?.phase, callSession?.callId) {
         val cs = callSession ?: return@LaunchedEffect
         if (cs.phase != CallRules.Phase.ENDED) return@LaunchedEffect
@@ -2129,6 +2156,18 @@ private fun ConversationBody(
     // W22 A2 (P5): Fokus-Griff des Composers — die Verpasst-Anruf-Zeile setzt
     // ihn (sichtbares Ergebnis des Taps: Tastatur + Antwort-Entwurf).
     val missedCallFocus = remember { FocusRequester() }
+    // W22 A2 Fix 7 (Reviewer-A-Fund): Missed-Tap bei OFFENEM Suchmodus — der
+    // Composer ist dann aus der Composition, ein sofortiges requestFocus würde
+    // still fehlen und der Entwurf bliebe unsichtbar. Der Tap schließt die
+    // Suche; der Fokus geht erst post-composition (Composer remountet im
+    // nächsten Frame).
+    var missedFocusPending by remember { mutableStateOf(false) }
+    LaunchedEffect(missedFocusPending) {
+        if (missedFocusPending) {
+            missedFocusPending = false
+            runCatching { missedCallFocus.requestFocus() }
+        }
+    }
     // W4-B (Swipe-to-Reply): Reduced-Pass-Faser — EIN Lesen der Anim-Scala
     // je Composition (ChatMotionRules); steuert Geste-Settle UND Sprung-
     // Scroll der Chat-Suche (je Anim-Stelle genau einmal entschieden).
@@ -2593,11 +2632,18 @@ private fun ConversationBody(
                                         // Entwurf, NICHTS geht ohne Nutzer raus.
                                         // (Echter Rückruf = v1.1-Outgoing-Route,
                                         // HOOK-BEDARF im Wellen-Report.)
+                                        // W22 A2 Fix 7: offener Suchmodus ist
+                                        // ZUERST zu schließen — sonst ist der
+                                        // Composer aus der Composition und der
+                                        // Entwurf bliebe unsichtbar; der Fokus
+                                        // folgt post-composition via
+                                        // missedFocusPending.
+                                        if (searchOpen) searchOpen = false
+                                        missedFocusPending = true
                                         if (inputText.isBlank()) {
                                             // STRING: call_missed_callback_draft — de "Bitte ruf mich zurück.", en "Please call me back."
                                             onInputChange("Bitte ruf mich zurück.")
                                         }
-                                        runCatching { missedCallFocus.requestFocus() }
                                     },
                                 )
                             } else {

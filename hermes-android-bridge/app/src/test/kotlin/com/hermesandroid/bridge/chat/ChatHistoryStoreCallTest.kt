@@ -159,4 +159,28 @@ class ChatHistoryStoreCallTest {
         assertTrue(restored[1].callInfo?.missed == false)
         assertEquals(161L, restored[1].callInfo?.durationSec)
     }
+
+    @Test
+    fun backfillDedupeZweiVerpassteGleicherMinuteBleibenBeide() {
+        val root = tmp.newFolder("chat_history")
+        // W22 A2 Fix 5 (Reviewer-A-Fund): zwei VERPASSTE Anrufe derselben
+        // Minute (missed=true, Dauer 0, gleiche HH:mm) — der alte Schlüssel
+        // (Ohne seq) war dafür ein Zwilling: der zweite verpasste Anruf wurde
+        // STILL verworfen. entry.seq (Millisekunden) trennt echte Anrufe,
+        // bleibt aber für dieselbe Lieferung stabil (Idempotenz unten). Die
+        // seqs liegen in derselben Minute — normalizedForDisk baut die
+        // HH:mm-Spalte je seq, beide fallen auf dieselbe Minute.
+        val call1 = callEntry(seq = 1_800_000L, missed = true, durationSec = 0L)
+        val call2 = callEntry(seq = 1_830_000L, missed = true, durationSec = 0L)
+        val fresh = ChatHistoryStore.mergeBackfill(root, "alpha", listOf(call1, call2))
+        assertEquals(2, fresh)
+        val disk = ChatHistoryStore.load(root, "alpha")
+        assertTrue(
+            "Kein Zwilling-Verlust: BEIDE verpassten Anrufe derselben Minute stehen auf der Platte (alt: 1)",
+            disk.size == 2,
+        )
+        assertTrue(disk.all { it.callInfo?.missed == true && it.callInfo?.durationSec == 0L })
+        // Idempotenz hält: dieselbe Lieferung ERNEUT → 0 neu (kein Verdoppeln).
+        assertEquals(0, ChatHistoryStore.mergeBackfill(root, "alpha", listOf(call1, call2)))
+    }
 }

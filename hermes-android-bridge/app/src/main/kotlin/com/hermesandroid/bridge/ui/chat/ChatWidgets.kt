@@ -181,94 +181,46 @@ data class ChatAgent(
  * (11er) werden anhand des Versions-Markers wieder korrekt restauriert;
  * v2-Einträge bekommen date = "" (kein Datum bekannt → kein Chip, kein Fake).
  *
- * W22 A2 (P5): VERSION 4 — v3 plus 4 Call-Slots je Gruppe (Gruppe = 19:
- * hasCall, callDirection, callMissed, callDuration). v3/v2/v1-Bundles
+ * W22 A2 (P5): VERSION 4 — v3 plus 4 Call-Slots je Gruppe. v3/v2/v1-Bundles
  * restaurieren ohne Call (call = null) — die Gruppen-Größe entscheidet am
  * Versions-Marker, kein Verrutschen.
+ *
+ * W22 A2 Fix 1 (Reviewer-A-Fund): die Flach-/Chunk-Logik lebt jetzt als
+ * JVM-reines [SaverRules] (Chunk-Größen = je Version geschriebene Slot-Zahl,
+ * Alt-Stände verifiziert) — dieser Saver ist der nur Compose-seitige Adapter
+ * ChatMessage ⇄ SaverRules.Msg; der Roundtrip wird in SaverRulesTest geprüft.
  */
-private const val MSG_SAVER_LEGACY_GROUP = 11
-private const val MSG_SAVER_GROUP_V2 = 14  // 11 Basis + hasQuote + fromAgent + sender + text
-private const val MSG_SAVER_GROUP_V3 = 15     // v3 = v2 + date (Tageswechsel-Chip)
-private const val MSG_SAVER_GROUP = 19        // v4 = v3 + hasCall + direction + missed + duration
-private const val MSG_SAVER_VERSION = 4
+internal val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
+    save = { list -> SaverRules.flatList(list.map { it.toSaverMsg() }) },
+    restore = { flat -> SaverRules.fromFlat(flat).map { it.toChatMessage() } },
+)
 
-val ChatMessageListSaver = listSaver<List<ChatMessage>, Any>(
-    save = { list ->
-        val flat = list.flatMap { m ->
-            listOf<Any>(
-                m.id, m.agentId, m.fromAgent, m.text, m.time,
-                m.media != null,
-                m.media?.mediaId ?: "",
-                m.media?.kind ?: "",
-                m.media?.name ?: "",
-                m.media?.size ?: 0L,
-                m.media?.localPath ?: "",
-                m.quoted != null,
-                m.quoted?.fromAgent ?: false,
-                m.quoted?.senderName ?: "",
-                m.quoted?.text ?: "",
-                m.date,
-                m.call != null,
-                m.call?.direction ?: "",
-                m.call?.missed ?: false,
-                m.call?.durationSec ?: 0L,
-            )
-        }
-        listOf(MSG_SAVER_VERSION) + flat
+/** W22 A2 Fix 1: Feld-Mirror ChatMessage → Saver-Slots (1:1, kein Feld fehlt). */
+private fun ChatMessage.toSaverMsg(): SaverRules.Msg = SaverRules.Msg(
+    id = id,
+    agentId = agentId,
+    fromAgent = fromAgent,
+    text = text,
+    time = time,
+    media = media?.let {
+        SaverRules.Media(it.mediaId, it.kind, it.name, it.size, it.localPath)
     },
-    restore = { flat ->
-        // Versions-Marker: v1-Legacy beginnt mit der Long-id, v2+ mit Int.
-        val version = (flat.firstOrNull() as? Int) ?: 1
-        val versioned = version >= 2
-        val body = if (versioned) flat.drop(1) else flat
-        val group = when {
-            version >= MSG_SAVER_VERSION -> MSG_SAVER_GROUP
-            version >= 3 -> MSG_SAVER_GROUP_V3
-            versioned -> MSG_SAVER_GROUP_V2
-            else -> MSG_SAVER_LEGACY_GROUP
-        }
-        body.chunked(group).map { g ->
-            val media = if (g[5] as Boolean) {
-                ChatMediaInfo(
-                    mediaId = g[6] as String,
-                    kind = g[7] as String,
-                    name = g[8] as String,
-                    mime = "",
-                    size = g[9] as Long,
-                    localPath = g[10] as String,
-                )
-            } else null
-            val quoted = if (versioned && g[11] as Boolean) {
-                ChatQuote(
-                    fromAgent = g[12] as Boolean,
-                    senderName = g[13] as String,
-                    text = g[14] as String,
-                )
-            } else null
-            ChatMessage(
-                id = g[0] as Long,
-                agentId = g[1] as Int,
-                fromAgent = g[2] as Boolean,
-                text = g[3] as String,
-                time = g[4] as String,
-                media = media,
-                quoted = quoted,
-                // v3-Slot; v2/Legacy-Gruppen haben ihn nicht → "" (kein Chip).
-                date = if (version >= 3 && g.size > 14) {
-                    (g[14] as? String) ?: ""
-                } else "",
-                // v4-Slots (W22 A2); v3-/ältere Gruppen haben sie nicht →
-                // call = null = normale Text-Bubble (kein erfundener Anruf).
-                call = if (version >= MSG_SAVER_VERSION && g.size > 18 && g[15] as Boolean) {
-                    ChatCallInfo(
-                        direction = (g[16] as? String).orEmpty(),
-                        missed = (g[17] as? Boolean) ?: false,
-                        durationSec = (g[18] as? Long) ?: 0L,
-                    )
-                } else null,
-            )
-        }
-    },
+    quote = quoted?.let { SaverRules.Quote(it.fromAgent, it.senderName, it.text) },
+    date = date,
+    call = call?.let { SaverRules.Call(it.direction, it.missed, it.durationSec) },
+)
+
+/** W22 A2 Fix 1: Feld-Mirror Saver-Slots → ChatMessage (1:1, Restore-Weg). */
+private fun SaverRules.Msg.toChatMessage(): ChatMessage = ChatMessage(
+    id = id,
+    agentId = agentId,
+    fromAgent = fromAgent,
+    text = text,
+    time = time,
+    media = media?.let { ChatMediaInfo(it.mediaId, it.kind, it.name, "", it.size, it.localPath) },
+    quoted = quote?.let { ChatQuote(it.fromAgent, it.senderName, it.text) },
+    date = date,
+    call = call?.let { ChatCallInfo(it.direction, it.missed, it.durationSec) },
 )
 
 // ── Anzeige-Regeln (SIRS-04/SIRS-05 — JVM-getestet: ChatBubbleRulesTest) ────
