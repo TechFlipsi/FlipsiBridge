@@ -1,6 +1,28 @@
 # P23 — Deployment-Härtung: Relay als eigener System-User + Sandbox-Vollset
 
-**Status: REPO-VORLAGE — NICHT am Live-System ausgeführt.** Diese Anleitung
+**PH-4-T3 — Signed-Deployment (Integrität, fail-closed):** Der
+Einzeiler-Installer (`install-relay.sh` am Repo-Root) prüft jede
+heruntergeladene Backend-Datei gegen ein SHA-256-Manifest. Zwei dokumentierte
+Wege:
+
+1. **Release-Metadaten-Manifest (Produktion, PFLICHT):** Das Release-Asset
+   `backend.sha256` (koordinator-seitig je Release neben dem Backend-Tar
+   hochgeladen) im `sha256sum`-Format `<hex>  <name>`; jede Zeile deckt eine
+   Downloaddatei ab. Installer-Verband: Asset-URL
+   `https://github.com/TechFlipsi/FlipsiBridge/releases/latest/download/backend.sha256`
+   (Override `FLIPSI_SHA256_ASSET_URL`); Mismatch oder fehlender Eintrag =
+   Abbruch mit erwartet/erhalten (nur Hash-Präfixe).
+2. **Einzel-Hash (Quickstart):** `INSTALL_SHA256=<hex>` prüft die Hauptdatei
+   `tools/android_relay.py` gegen den erwarteten Hash.
+
+Kein Weg verfügbar → Installer läuft mit `UNVERIFIZIERT`-Warnung weiter
+(Dokument-Verband bewusst: fehlende Quelle ist kein Mismatch, verboten ist
+nur der verifizierbar falsche Deploy). Release-Pflicht des Koordinators:
+`backend.sha256` mit den exakt gepackten Dateien (`tools/android_relay.py`
++ `contrib/hermes-relay-daemon.py`) je Release erzeugen und hochladen
+(`sha256sum <dateien> > backend.sha256`).
+
+**Status der oben stehenden P23-Anleitung: REPO-VORLAGE — NICHT am Live-System ausgeführt.** Diese Anleitung
 beschreibt die Migration des systemd-Relays von `User=root` auf den
 dedizierten System-User `flipsibridge` plus geschlossenem Sandbox-Vollset.
 Ausführung = bewusster root-Eingriff am Host, den der Koordinator/Sir mit

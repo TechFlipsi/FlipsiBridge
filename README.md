@@ -47,6 +47,15 @@ curl -fsSL https://raw.githubusercontent.com/TechFlipsi/FlipsiBridge/main/instal
 
 Der Code steht in der App (Setup-Screen). Danach die Handy-App verbinden (URL http://dein-server:8766 oder https://deine-domain.tld via Reverse-Proxy + TLS).
 
+**Integritätsprüfung (Signed-Deployment, PH-4-T3):** Der Installer prüft die
+heruntergeladenen Backend-Dateien gegen das Release-Manifest
+`backend.sha256` (GitHub-Release-Asset, `releases/latest/download/…`) —
+Mismatch = Abbruch (fail-closed). Alternative für Einzeldatei-Verband:
+`INSTALL_SHA256=<hex> bash install-relay.sh` (prüft `tools/android_relay.py`).
+Ohne beide Quellen läuft der Installer mit klarer `UNVERIFIZIERT`-Warnung —
+Produktions-Deploys setzen PFLICHT eine der beiden Quellen. Details:
+[`deployment/README.md`](deployment/README.md).
+
 ### Deployment-Härtung (systemd, eigener Service-User)
 
 Wer den Relay persistiert als systemd-Dienst (`install-relay.sh` legt ihn für
