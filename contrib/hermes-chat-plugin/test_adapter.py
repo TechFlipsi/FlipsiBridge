@@ -2631,3 +2631,138 @@ async def test_f3_meta_push_targets_and_persistence(tmp_path) -> None:
             pass
     print("OK F3: Push-Ziele + Persistenz (Restart-Simulation, kaputte Datei fail-soft)")
 
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PH-4-T2: Relay-Instanz-Identität (Ed25519) — Adapter-Seite. agent.ident wird
+# verifiziert (Sig + Konsistenz relay_id == SHA-256(verify_key)) und TOFU-
+# gepinnt (Fingerprint-Ablage je Relay-URL, FLIPSI_RELAY_IDENTITY_PINS-Override);
+# Pin-Wechsel = WARN (MITM-Verdacht), bewusst NICHT hart blockiert (v1, W23-
+# Kandidat); Frame-Signaturen (v1: crypto.hello) fail-soft mit Warn + Zähler.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _t2_relay_ident_frame(sig_mode: str = "ok") -> dict:
+    """Gültige agent.ident (echte Ed25519-Signatur über kanonische Bytes,
+    PARITÄT zur Signaturformel tools/android_relay.py). sig_mode: 'ok',
+    'bad' (falsche Signatur), 'consistency' (relay_id ≠ SHA-256(verify_key))."""
+    import base64
+    import hashlib
+    import time as _time
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    sk = Ed25519PrivateKey.generate()
+    pub = sk.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw).hex()
+    env = {"type": "agent.ident", "v": 1, "ts": int(_time.time() * 1000),
+           "relay_id": hashlib.sha256(bytes.fromhex(pub)).hexdigest(),
+           "verify_key": pub}
+    env["sig"] = base64.b64encode(
+        sk.sign(adapter_mod._relay_canonical_bytes(env))).decode("ascii")
+    if sig_mode == "bad":
+        env["sig"] = base64.b64encode(b"\x00" * 64).decode("ascii")
+    elif sig_mode == "consistency":
+        env["relay_id"] = "ab" * 32
+    return env
+
+
+def test_t2_agent_ident_tofu_erstpin_zaehler(tmp_path) -> None:
+    """Erster validierter agent.ident → TOFU-Pin je Relay-URL + Zähler;
+    Wiederhaltung mit dem GLEICHEN Key = kein Konflikt."""
+    pins_file = tmp_path / "pins.json"
+    a, _ws = make_adapter({"FLIPSI_RELAY_IDENTITY_PINS": str(pins_file)})
+    assert a._relay_identity_stats == {
+        "ident_ok": 0, "ident_invalid": 0, "ident_pin_conflict": 0,
+        "sig_ok": 0, "sig_bad": 0, "sig_missing": 0}
+    ident = _t2_relay_ident_frame()
+    a._dispatch_frame(dict(ident))
+    stats = a._relay_identity_stats
+    assert stats["ident_ok"] == 1 and stats["ident_invalid"] == 0
+    pins = json.loads(pins_file.read_text(encoding="utf-8"))
+    origin = a._relay_origin(a.relay_url)
+    assert pins[origin]["relay_id"] == ident["relay_id"]
+    assert pins[origin]["mode"] == "tofu"
+    assert a._relay_verify_key == bytes.fromhex(ident["verify_key"])
+    # Wiederholdelivery → ok, kein Konflikt, Pin unverändert.
+    a._dispatch_frame(dict(ident))
+    assert a._relay_identity_stats["ident_ok"] == 2
+    assert a._relay_identity_stats["ident_pin_conflict"] == 0
+    print("OK T2: agent.ident TOFU-Erstpin + Zähler")
+
+
+def test_t2_agent_ident_schlecht_verworfen_ohne_pin_write(tmp_path, caplog) -> None:
+    """Kaputte agent.ident (falsche Sig / Inkonsistenz relay_id vs. Key /
+    falsches Form) → Zähler ident_invalid + Verwurf, KEIN Pin-Write (ein
+    Angriff darf niemals sein eigenes Pin schreiben)."""
+    import logging
+    pins_file = tmp_path / "pins.json"
+    a, _ws = make_adapter({"FLIPSI_RELAY_IDENTITY_PINS": str(pins_file)})
+    for mode in ("bad", "consistency"):
+        a._dispatch_frame(_t2_relay_ident_frame(sig_mode=mode))
+        assert a._relay_identity_stats["ident_ok"] == 0
+    assert a._relay_identity_stats["ident_invalid"] == 2
+    assert not pins_file.exists(), "Pin darf bei ungültiger Identität nichts schreiben"
+    a._dispatch_frame({"type": "agent.ident", "v": 1})  # Form-Gewalt
+    assert a._relay_identity_stats["ident_invalid"] == 3
+    dumped = "\n".join(r.getMessage() for r in caplog.records
+                       if r.levelno >= logging.WARNING)
+    assert "agent.ident" in dumped
+    print("OK T2: ungültige agent.ident fail-close (kein Pin-Write)")
+
+
+def test_t2_relay_ident_pin_wechsel_warn_nicht_block(tmp_path, caplog) -> None:
+    """Pin-Konflikt (anderer Relay-Key) = potenzieller MITM-Hinweis: WARN-Log
+    + ident_pin_conflict-Zähler, bewusst KEINE Blockierung (v1 — W23-Kandidat);
+    der Adapter bleibt voll bedienbar."""
+    import logging
+    pins_file = tmp_path / "pins.json"
+    a, _ws = make_adapter({"FLIPSI_RELAY_IDENTITY_PINS": str(pins_file)})
+    a._dispatch_frame(_t2_relay_ident_frame())      # Erst-Pin (Key A)
+    change = _t2_relay_ident_frame()                # anderer echter Key B
+    a._dispatch_frame(change)
+    assert a._relay_identity_stats["ident_pin_conflict"] == 1
+    assert a._relay_identity_stats["ident_ok"] == 2, \
+        "beide idents sind valide verifiziert (fail-soft) — Konflikt zählt separat"
+    # Pin bleibt AVERAGE der Erst-Pin (der Konflikt wird nicht durch den
+    # Neukommling überschrieben — Rotation/Pin-Update ist Operator-Aufgabe).
+    pins = json.loads(pins_file.read_text(encoding="utf-8"))
+    assert list(pins.values()) and "mode" in list(pins.values())[0]
+    dumped = "\n".join(r.getMessage() for r in caplog.records
+                       if r.levelno >= logging.WARNING)
+    assert "RELAY-IDENTITÄTS-WECHSEL" in dumped
+    print("OK T2: Pin-Wechsel = Warn (nicht block)")
+
+
+def test_t2_relay_frame_sig_fail_soft_zaehler(tmp_path, caplog) -> None:
+    """Frame-Sig-Verifikation (v1: crypto.hello-Verband): Sig fehlt (Legacy-
+    Relay) = Zählerband ohne Verlust; Sig falsch = Warn + sig_bad, der Frame
+    wird STETS weiterverarbeitet (kein Operationsbruch v1)."""
+    import base64
+    import logging
+    a, _ws = make_adapter({"FLIPSI_RELAY_IDENTITY_PINS": str(tmp_path / "pins.json")})
+    ident = _t2_relay_ident_frame()
+    a._dispatch_frame(dict(ident))  # setzt _relay_verify_key
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    hello = {"type": "crypto.hello", "v": 1, "session_id": "t2-hs",
+             "agent_id": "agent-a", "device_id": "phone", "ts": 1730515200000,
+             "relay_id": ident["relay_id"]}
+    # Gültig FORMIERT, aber mit FALSCHEM Signierer (Key B verifiziert gegen
+    # Pin-Key A = sig_bad — das ist der MITM-/Fälschungs-Verband):
+    wrong_signer = Ed25519PrivateKey.generate()
+    bare = {k: v for k, v in hello.items() if k != "sig"}
+    a._relay_verify_frame_sig({**hello, "sig": base64.b64encode(
+        wrong_signer.sign(adapter_mod._relay_canonical_bytes(bare))).decode()})
+    assert a._relay_identity_stats["sig_bad"] == 1
+    assert a._relay_identity_stats["sig_ok"] == 0
+    # fehlende Sig = Legacy-Band, kein Fail:
+    a._relay_verify_frame_sig(bare)
+    assert a._relay_identity_stats["sig_missing"] == 1
+    # Ohne bekanntem Relay-Key: gar kein Band.
+    a2, _ws2 = make_adapter({"FLIPSI_RELAY_IDENTITY_PINS": str(tmp_path / "p2.json")})
+    a2._relay_verify_frame_sig(hello)
+    assert a2._relay_identity_stats["sig_missing"] == 0 and \
+        a2._relay_identity_stats["sig_bad"] == 0
+    dumped = "\n".join(r.getMessage() for r in caplog.records
+                       if r.levelno >= logging.WARNING)
+    assert "Relay-Framesignatur UNGÜLTIG" in dumped
+    print("OK T2: Frame-Sig fail-soft je Zähler (bad/missing/ohne-Key)")

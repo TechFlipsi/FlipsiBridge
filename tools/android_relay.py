@@ -41,6 +41,7 @@ import tempfile
 import threading
 import time
 import uuid
+import datetime
 from collections import deque
 from pathlib import Path
 from typing import Optional, TypeGuard
@@ -1831,6 +1832,205 @@ def _device_keys_path() -> str:
     return os.getenv(
         "ANDROID_RELAY_KEYS",
         os.path.join(_default_state_dir(), "relay-keys.json"))
+
+
+# ── PH-4-T2: Relay-Backend-Identität (Ed25519) ──────────────────────────────
+# EINE Identität je Relay-INSTANZ, einmalig generiert + persistent über
+# Neustarts (Pfad-Verband am TLS-/Config-Stamm: <tls-dir>/../identity, Live
+# = /etc/flipsibridge/identity; Env-Override für Tests/Daemon). Relay-ID =
+# SHA-256(Ed25519-Pub) als Hex — WIRD GELoggt, der private Schlüssel geht
+# NIE in irgendein Log (Audits wie PH-3).
+#
+# KDoc-Begründung „leistungsschonende Signatur v1": TLS (+ optionales mTLS-
+# Gate) trägt die Transport-Integrität JEDES Frames; die Ed25519-Schicht ist
+# Instanz-IDENTITÄT („dieses Relay") + OFFLINE-Nachweisbarkeit (Handshake-
+# Transkripte sind auch außerhalb des TLS-Streams gegen den Instanz-Key
+# belegbar — Forensik/Support). Signiert werden deshalb NUR der Handshake-
+# Verband (crypto.hello + crypto.hello_ack + crypto.session_reset) und die
+# agent.ident-Nachricht — KEIN jeder Chat-Frame (chat.*-Inhalte sind doppelt
+# ratchet-enc mit AAD; das Relay ist bewusst opak und trägt dort außer
+# Transport-Integrität (TLS) keine zusätzliche Signatur). Verification am
+# Phone (hello_ack/session_reset) bleibt App-Kandidat W23 — das sig-Feld
+# ist dort harmlos (unbekannte Felder ignoriert der Parser).
+_RELAY_IDENTITY_ENV = "ANDROID_RELAY_IDENTITY_DIR"
+_RELAY_IDENTITY_FILE = "relay-identity.json"
+_RELAY_IDENTITY_LOCK = threading.Lock()
+# Cache nach Lazy-Load (0600-Datei; der private Schlüssel geht NIE in Logs).
+_RELAY_IDENTITY_CACHE: Optional[dict] = None
+
+
+def _relay_identity_dir() -> Optional[str]:
+    """Pfad-Lotse der Identity-Ablage: 1) Env {_RELAY_IDENTITY_ENV};
+    2) <TLS-DIR>/../identity (P23-Verband /etc/flipsibridge/{tls,identity});
+    3) <state-dir>/identity (Relay-schreibbarer State-Stamm). Erstes Level,
+    dessen Erzeugung klappt, gewinnt; nichts klappbar → None (Identität
+    fällt bewusst auf ephemere RAM-Keys zurück — Warn-Log, Relays-ID dreht
+    je Start, TOFU-Pins am Adapter gehen auf Warn)."""
+    candidates = []
+    env_dir = os.getenv(_RELAY_IDENTITY_ENV, "").strip()
+    if env_dir:
+        candidates.append(env_dir)
+    tls_dir = os.getenv("ANDROID_RELAY_TLS_DIR", "").strip()
+    if tls_dir:
+        candidates.append(os.path.join(os.path.dirname(tls_dir.rstrip("/")),
+                                       "identity"))
+    try:
+        candidates.append(os.path.join(_default_state_dir(), "identity"))
+    except Exception:
+        pass
+    for folder in candidates:
+        try:
+            os.makedirs(folder, mode=0o700, exist_ok=True)
+            probe = os.path.join(folder, ".write-probe")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("ok")
+            os.remove(probe)
+            return folder
+        except Exception:
+            continue
+    return None
+
+
+def _relay_identity_path() -> Optional[str]:
+    folder = _relay_identity_dir()
+    return None if folder is None else os.path.join(folder, _RELAY_IDENTITY_FILE)
+
+
+def _relay_identity() -> Optional[dict]:
+    """Identität der Relay-Instanz laden ODER einmalig erzeugen (Datei 0600,
+    JSON {priv, relay_id, created_at}). Fail-soft: cryptography fehlt
+    oder die Ablage ist unbenutzbar → RAM-Keys (ephemer), Warn-Log. Der
+    private Schlüssel verlässt NIE dieses Modul (nur Sign-Bytes)."""
+    global _RELAY_IDENTITY_CACHE
+    if _RELAY_IDENTITY_CACHE is not None:
+        return _RELAY_IDENTITY_CACHE
+    with _RELAY_IDENTITY_LOCK:
+        if _RELAY_IDENTITY_CACHE is not None:
+            return _RELAY_IDENTITY_CACHE
+        # Wichtig: cryptography IST Relay-Pflicht-Dependency (requirements).
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PrivateKey,
+            )
+            from cryptography.hazmat.primitives import serialization
+        except Exception:
+            logger.warning(
+                "PH-4-T2: cryptography ohne Ed25519 — Relay-Identität deaktiviert")
+            return None
+        priv_hex = None
+        created_at = None
+        fresh_keygen = False
+        persist_ok = False
+        path = _relay_identity_path()
+        if path is not None:
+            try:
+                with open(path, "r", encoding="utf-8") as fh:
+                    stored = json.load(fh)
+                candidate = str(stored.get("priv") or "")
+                if len(candidate) == 64 and not any(
+                        c not in "0123456789abcdef" for c in candidate.lower()):
+                    priv_hex = candidate.lower()
+                    created_at = stored.get("created_at")
+                    persist_ok = True  # geladene Datei = persistenter Stand
+            except FileNotFoundError:
+                pass  # erster Start → unten generieren + schreiben
+            except Exception as exc:
+                logger.warning(
+                    "PH-4-T2: Identity-File unlesbar (%s) — neu generiert",
+                    type(exc).__name__)
+        if priv_hex is None:
+            try:
+                sk = Ed25519PrivateKey.generate()
+                priv_hex = sk.private_bytes(
+                    serialization.Encoding.Raw,
+                    serialization.PrivateFormat.Raw,
+                    serialization.NoEncryption()).hex()
+                created_at = datetime.datetime.now(
+                    datetime.timezone.utc).isoformat()
+                fresh_keygen = True
+            except Exception:
+                logger.warning("PH-4-T2: Ed25519-Keygen fehlgeschlagen")
+                return None
+        try:
+            sk = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(priv_hex))
+            pub_hex = sk.public_key().public_bytes(
+                serialization.Encoding.Raw,
+                serialization.PublicFormat.Raw).hex()
+        except Exception:
+            logger.warning("PH-4-T2: Pubkey-Derivation fehlgeschlagen")
+            return None
+        relay_id = hashlib.sha256(bytes.fromhex(pub_hex)).hexdigest()
+        if fresh_keygen and path is not None:
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump({"priv": priv_hex, "relay_id": relay_id,
+                               "created_at": created_at}, fh)
+                persist_ok = True
+            except Exception as exc:
+                logger.warning(
+                    "PH-4-T2: Identity-File nicht schreibbar (%s) — ephemere Identity",
+                    type(exc).__name__)
+                path = None
+        _RELAY_IDENTITY_CACHE = {
+            "priv": bytes.fromhex(priv_hex), "pub_hex": pub_hex,
+            "relay_id": relay_id, "created_at": created_at,
+            "path": path if persist_ok else None,
+        }
+        logger.info("PH-4-T2: Relay-Identität aktiv (relay_id=%s%s)",
+                    relay_id[:16] + "…",
+                    "" if persist_ok else " [ephemeral-Verband]")
+        return _RELAY_IDENTITY_CACHE
+
+
+def _canonical_meta_bytes(meta: dict) -> bytes:
+    """Kanonische Frame-Bytes der Signatur (flaches Metadaten-Dict): sortierte
+    Keys, keine Spaces — PARITÄT zum Adapter (contrib/hermes-chat-plugin/
+    adapter.py _relay_canonical_bytes) für die Cross-Komponente-Verifikation."""
+    return json.dumps(meta, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _relay_sign_meta(frame: dict) -> None:
+    """Signiert den FLACHEN Metadaten-Envelope eines Frames in-place:
+    frame['sig'] = base64(Ed25519(canonical(frame ohne sig))). Fail-soft:
+    ohne Identität bleibt der Frame unverändert (Legacy-Relay-Nachricht).
+    Der Relay-Transkript-Schutz gilt für die KLAREN Felder; ct bleibt opak
+    (E2E-Integrität transportiert der Ratchet selbst)."""
+    ident = _relay_identity()
+    if ident is None:
+        return
+    try:
+        import base64 as _b64
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        frame["relay_id"] = ident["relay_id"]  # VOR dem Signieren (Bindung!)
+        bare = {k: v for k, v in frame.items() if k != "sig"}
+        sk = Ed25519PrivateKey.from_private_bytes(ident["priv"])
+        sig = sk.sign(_canonical_meta_bytes(bare))
+        frame["sig"] = _b64.b64encode(sig).decode("ascii")
+    except Exception:
+        # Fail-soft: Signatur-Fehlschlag ohne relay_id-Hinterlassung —
+        # sonst trüge der Frame eine ID, deren Bindung nicht belegbar ist.
+        frame.pop("relay_id", None)
+        logger.warning("PH-4-T2: Frame-Signatur fehlgeschlagen — Frame unverändert")
+
+
+def _relay_ident_frame() -> Optional[dict]:
+    """agent.ident-Nachricht (Server→Agent je Connect): {type, v, relay_id,
+    verify_key, ts, sig}. verify_key = Ed25519-Pub (hex), relay_id =
+    SHA-256(verify_key) — die Adapter-Seite prüft die Konsistenz + Signatur
+    (TOFU-Pin). Keine Identität → None (Agent bleibt ohne Pin-Band)."""
+    ident = _relay_identity()
+    if ident is None:
+        return None
+    frame = {
+        "type": "agent.ident", "v": 1,
+        "relay_id": ident["relay_id"],
+        "verify_key": ident["pub_hex"],
+        "ts": int(time.time() * 1000),
+    }
+    _relay_sign_meta(frame)
+    return frame
 
 
 def _load_device_keys() -> dict:
@@ -3933,6 +4133,14 @@ async def _handle_agent_register(state: _RelayState, agent_id: str, data: dict) 
     beim Connect). Cap 64 = Log/DOM-Hygiene (_log_id-Spiegel). Presence
     wird nur bei TATSÄCHLICHER Änderung gepusht (kein Frame-Sturm je
     Reconnect). last_seen pflegt der Aufrufer (_on_agent_message) bereits.
+
+    PH-4-T2: Auf agent.register antwortet der Relay mit agent.ident (signed
+    Instanz-Identität, TOFU-Aushändigung). Bewusst als ANTWORT statt ungefragt
+    je Connect: der Frame-Loop eines Agenten bleibt in seiner Reihenfolge
+    unberührt (kein erstes, ungefragtes Identitäts-Frame vor chat.hello —
+    sonst brechen existierende Agent-Implementierungen, die das erste Frame
+    strikt erwarten, still). Agenten ohne register (Legacy) erfahren die
+    Identität nicht — sie nutzen sie auch nicht (Fail-soft).
     """
     raw_name = data.get("display_name")
     if not isinstance(raw_name, str) or not raw_name.strip():
@@ -3941,9 +4149,19 @@ async def _handle_agent_register(state: _RelayState, agent_id: str, data: dict) 
     display_name = raw_name.strip()[:64]
     async with state.agent_ws_lock:
         entry = state.agents.get(agent_id)
-        if entry is None or entry.get("display_name") == display_name:
-            return
-        entry["display_name"] = display_name
+        changed = entry is not None and entry.get("display_name") != display_name
+        ws = state.agent_ws.get(agent_id)
+        if entry is not None:
+            entry["display_name"] = display_name
+    ident_reply = _relay_ident_frame()
+    if ident_reply is not None and ws is not None and not ws.closed:
+        try:
+            await ws.send_json(ident_reply)
+        except Exception:
+            logger.info("Agent %s: agent.ident-Zustellung fehlgeschlagen", agent_id)
+    if not changed:
+        # Re-Register (Reconnect/Refresh): Name unverändert — kein Presence-Sturm.
+        return
     logger.info("Agent %s: display_name via agent.register aktualisiert", agent_id)
     await _broadcast_agent_presence(state)
 
@@ -4059,6 +4277,9 @@ async def _handle_agent_hello_ack(state: _RelayState, agent_id: str, data: dict)
     }
     if session_device_id:
         frame["device_id"] = str(session_device_id)
+    # PH-4-T2: hello_ack = Rest-Transkript des Handshake-Verbands → signiert
+    # (App-Verifikation = W23-Kandidat; das sig-Feld schadet am Phone nicht).
+    _relay_sign_meta(frame)
     async with state.broker_lock:
         if session_id in state.crypto_sessions:
             state.crypto_sessions[session_id]["acked"] = True
@@ -4104,6 +4325,9 @@ async def _handle_agent_session_reset(state: _RelayState, agent_id: str,
     session_device = session.get("device_id") if isinstance(session, dict) else None
     if session_device:
         frame["device_id"] = str(session_device)
+    # PH-4-T2: session_reset = Enrollment-/Pairing-Sensibel-Verband →
+    # signiert (sensibler Steuerkanal in v1, offline belegbar).
+    _relay_sign_meta(frame)
     await _deliver_to_phone(state, frame)
     logger.warning(
         "PH-3: Session %s auf Agenten-Verlangen zurückgesetzt (Agent %s, "
@@ -6040,6 +6264,9 @@ async def _handle_crypto_hello(request: web.Request, state: _RelayState) -> web.
         **pubs,
         "ts": int(time.time() * 1000),
     }
+    # PH-4-T2: Handshake-Verband signiert (Instanz-Identität + Offline-
+    # Nachweisbarkeit; Fail-soft ohne Identität — kein Feld, Legacy-Verband).
+    _relay_sign_meta(frame)
     delivered = await _deliver_to_agent(state, agent_id, frame)
     logger.info(
         "PH-3: crypto.hello Session %s (Agent %s) %s",

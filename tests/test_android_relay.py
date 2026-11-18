@@ -5017,3 +5017,211 @@ class TestP0J4AadKetteEncE2E:
             assert frame["agent_id"] == "alpha"
 
         asyncio.run(run())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PH-4-T2: Relay-Backend-Identität (Ed25519) — Keygen einmalig + persistent
+# (Env-Verband), Relay-ID = SHA-256(pub) (log-only), agent.ident je
+# agent.register (signed, TOFU-Aushändigung), Signatur-Verband v1 auf dem
+# Handshake-Verbund (crypto.hello / hello_ack / session_reset). Der private
+# Schlüssel geht in KEIN Log.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestP04T2RelayIdentitaet:
+    """Identität am echten Relay-Prozess: Persistenz über Restart, 0600-Datei,
+    signed agent.ident, signierte Handshake-Frames, Priv-Key-Audit."""
+
+    PORT = 19972
+    CODE = "T2IDENT01"
+    TOKEN = "t2-agent-token"
+    SESSION_ID = "t2-ident-session-1"
+
+    # Fixe Agent-Identity (Parität TestPh3CryptoE2E).
+    IK_A_PRIV = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"
+    IK_A_PUB = "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
+    SPK_A_PRIV = "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"
+    SPK_A_PUB = "52a5524b0c32e8a47f239ab6ca8e42c3b9316a54cae4854ecdb5889311cc9a7e"
+
+    @property
+    def identity(self):
+        return {"identity_priv": self.IK_A_PRIV, "identity_pub": self.IK_A_PUB,
+                "prekey_priv": self.SPK_A_PRIV, "prekey_pub": self.SPK_A_PUB}
+
+    def _write_config(self, tmp_path):
+        cfg = tmp_path / "relay-config.json"
+        cfg.write_text(json.dumps({
+            "ANDROID_AGENT_TOKEN_ALPHA": self.TOKEN,
+            "ANDROID_AGENT_DISPLAY_ALPHA": "Alpha",
+            "CHAT_RATE_PER_SECOND": 50,
+            "ANDROID_AGENT_IDENTITY_ALPHA": self.IK_A_PUB,
+            "ANDROID_AGENT_PREKEY_ALPHA": self.SPK_A_PUB,
+            "ANDROID_AGENT_FINGERPRINT_ALPHA":
+                _ph3_adapter.fingerprint_of_pub(bytes.fromhex(self.IK_A_PUB)),
+        }), encoding="utf-8")
+        return str(cfg)
+
+    @staticmethod
+    def _reset_identity_cache():
+        import tools.android_relay as R
+        R._RELAY_IDENTITY_CACHE = None
+
+    def test_t2_identitaet_keygen_persistent_0600_agent_ident(self, tmp_path, monkeypatch, caplog):
+        """Keygen einmalig + persistent: Restart → GLEICHE relay_id; Datei
+        0600; agent.ident je agent.register mit gültigem Sig-Verband
+        (relay_id == SHA-256(verify_key), Ed25519-Sig über kanonische Bytes
+        — PARITÄT Adapter); KEIN Priv-Material in irgendeinem Log."""
+        import base64 as _b64
+        import stat as _stat
+        import aiohttp
+
+        id_dir = tmp_path / "identity"
+        monkeypatch.setenv("ANDROID_RELAY_IDENTITY_DIR", str(id_dir))
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        self._reset_identity_cache()
+        start_relay(pairing_code=self.CODE, port=self.PORT)
+        base = f"http://127.0.0.1:{self.PORT}"
+
+        async def scenario_collect_ident_and_hello():
+            """Connect + register → agent.ident; hello → crypto.hello mit Sig."""
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                await agent.send_json({"type": "agent.register",
+                                       "display_name": "Alpha T2"})
+                ident = await agent.receive_json(timeout=6)
+                # crypto.hello (POST-Weg) — Agent erhält den signierten Frame.
+                keys_req = await session.get(
+                    f"{base}/key_get", params={"agent_id": "alpha"},
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                keys = await keys_req.json()
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"],
+                                                    keys["spk_pub"])
+                hello = peer.make_hello(self.SESSION_ID)
+                resp = await session.post(f"{base}/crypto_hello", json=hello,
+                                          headers={"Authorization": f"Bearer {self.CODE}"})
+                assert resp.status == 200
+                hello_frame = await agent.receive_json(timeout=6)
+                await agent.close()
+                await phone.close()
+                return ident, hello_frame
+
+        try:
+            ident, hello_frame = asyncio.run(scenario_collect_ident_and_hello())
+        finally:
+            stop_relay()
+
+        # agent.ident-Verband je Connect-Register.
+        assert ident["type"] == "agent.ident"
+        assert ident["relay_id"] == _ph3_adapter.sha256_hex_of(
+            bytes.fromhex(ident["verify_key"])) if hasattr(
+            _ph3_adapter, "sha256_hex_of") else True
+        # Konsistenz unabhängig von Test-Doubles rechnerisch prüfen:
+        import hashlib as _hl
+        assert ident["relay_id"] == _hl.sha256(
+            bytes.fromhex(ident["verify_key"])).hexdigest()
+        bare = {k: v for k, v in ident.items() if k != "sig"}
+        sig = _b64.b64decode(ident["sig"], validate=True)
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey, Ed25519PublicKey,
+        )
+        import tools.android_relay as R
+        pub = Ed25519PublicKey.from_public_bytes(bytes.fromhex(ident["verify_key"]))
+        pub.verify(sig, json.dumps(bare, sort_keys=True, separators=(",", ":"),
+                                   ensure_ascii=False).encode("utf-8"))
+
+        # Signatur-Verband v1: crypto.hello trägt sig + relay_id und die Sig
+        # verifiziert gegen DIESELBE Instanz-Identität wie agent.ident.
+        assert hello_frame["type"] == "crypto.hello"
+        assert hello_frame["relay_id"] == ident["relay_id"]
+        hello_bare = {k: v for k, v in hello_frame.items() if k != "sig"}
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(ident["verify_key"])).verify(
+            _b64.b64decode(hello_frame["sig"], validate=True),
+            json.dumps(hello_bare, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode("utf-8"))
+
+        # Persistenz: Identity-Datei 0600, Restart → GLEICHE relay_id.
+        ident_file = id_dir / "relay-identity.json"
+        assert ident_file.exists()
+        assert _stat.S_IMODE(ident_file.stat().st_mode) & 0o777 == 0o600, \
+            "Identity-Datei muss 0600 sein"
+        stored = json.loads(ident_file.read_text(encoding="utf-8"))
+        assert stored["relay_id"] == ident["relay_id"]
+        # priv = 64 hex; der Wert erscheint in KEINEM Log-Zeile.
+        assert len(stored["priv"]) == 64
+        dumped = "\n".join(r.getMessage() for r in caplog.records)
+        assert stored["priv"] not in dumped, "Privater Schlüssel im Log!"
+        assert bytes.fromhex(stored["priv"]).hex() not in dumped
+
+        self._reset_identity_cache()
+        start_relay(pairing_code=self.CODE, port=self.PORT + 1)
+        try:
+            assert R._relay_identity() is not None
+            assert R._relay_identity()["relay_id"] == ident["relay_id"], \
+                "Restart muss DIESELBE relay_id behalten (persistent)"
+        finally:
+            stop_relay()
+
+    def test_t2_hello_ack_signed_transit(self, tmp_path, monkeypatch):
+        """Signatur-Verband v1 am Voll-Handshake: hello_ack (Agent→Relay→Phone)
+        trägt sig + relay_id der Instanz (App-Verifikation W23-Kandidat,
+        Feld harmlos — hier nur Belegbarkeit der Signatur)."""
+        import aiohttp
+
+        id_dir = tmp_path / "identity"
+        monkeypatch.setenv("ANDROID_RELAY_IDENTITY_DIR", str(id_dir))
+        monkeypatch.setenv("ANDROID_RELAY_CONFIG", self._write_config(tmp_path))
+        self._reset_identity_cache()
+        start_relay(pairing_code=self.CODE, port=self.PORT + 2)
+        base = f"http://127.0.0.1:{self.PORT + 2}"
+
+        async def scenario():
+            async with aiohttp.ClientSession() as session:
+                phone = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 2}/ws",
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                agent = await session.ws_connect(
+                    f"ws://127.0.0.1:{self.PORT + 2}/agent_ws",
+                    headers={"Authorization": f"Bearer {self.TOKEN}"})
+                keys_req = await session.get(
+                    f"{base}/key_get", params={"agent_id": "alpha"},
+                    headers={"Authorization": f"Bearer {self.CODE}"})
+                keys = await keys_req.json()
+                peer = _ph3_adapter.PhoneCryptoPeer("alpha", keys["ik_pub"],
+                                                    keys["spk_pub"])
+                hello = peer.make_hello(self.SESSION_ID)
+                await session.post(f"{base}/crypto_hello", json=hello,
+                                   headers={"Authorization": f"Bearer {self.CODE}"})
+                hello_frame = await agent.receive_json(timeout=6)
+                agent_session, ack = _ph3_adapter.AgentCryptoSession.respond_to_hello(
+                    hello_frame, self.identity)
+                await agent.send_json(ack)
+                raw_ack = await _recv_until(phone, "crypto.hello_ack", timeout=6,
+                                            parked=[])
+                await agent.close()
+                await phone.close()
+                return raw_ack
+
+        try:
+            raw_ack = asyncio.run(scenario())
+        finally:
+            stop_relay()
+        import base64 as _b64b
+        assert raw_ack["type"] == "crypto.hello_ack"
+        assert raw_ack["relay_id"], "hello_ack ohne relay_id (Sig-Verband v1)"
+        bare = {k: v for k, v in raw_ack.items() if k != "sig"}
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PrivateKey,
+        )
+        pub_hex = json.loads(
+            (id_dir / "relay-identity.json").read_text(encoding="utf-8"))
+        # Sig prüfen gegen den Pubkey DER ABLAGE (unabhängige Derivation).
+        priv_bytes = bytes.fromhex(pub_hex["priv"])
+        verify_key = Ed25519PrivateKey.from_private_bytes(priv_bytes).public_key()
+        verify_key.verify(
+            _b64b.b64decode(raw_ack["sig"], validate=True),
+            json.dumps(bare, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=False).encode("utf-8"))

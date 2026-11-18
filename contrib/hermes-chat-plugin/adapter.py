@@ -35,6 +35,7 @@ import logging
 import math
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -65,12 +66,44 @@ _INBOUND_ENVELOPE_ALLOWLIST = frozenset(
      # B4 (Multi-Gerät): Backfill-Router-Frame des Relays (ids-only, Klar-
      # Steuer) + Revoke-Verband (Session/Pin-Kappung je Agent).
      "chat.backfill_request", "device.revoked",
+     # PH-4-T2: Relay-Instanz-Identität je Connect (signed; TOFU-Pin-Verband
+     # unten — Chat-Text bleibt Daten, kein Tool-Call-Pfad).
+     "agent.ident",
      # W21 (Anruf P1, roadmap-anruf.md §3.4): Call-Signaling Rückkanal je
      # Geräte-Session (E2E enc) — KEIN Gateway-Push, nur Call-Zustandsmaschine.
      "call_ringing.enc", "call_accepted.enc", "call_declined.enc",
      "call_missed.enc", "call_ended.enc"}
 )
 _PROTOCOL_VERSION = 1
+
+
+def _relay_canonical_bytes(meta: dict) -> bytes:
+    """PH-4-T2: kanonische Bytes der Relay-Framesignatur — sortierte Keys, keine
+    Spaces, ensure_ascii=False. PARITÄT tools/android_relay.py
+    (_canonical_meta_bytes); Änderungen an einer Seite brechen die Verifikation
+    (bewusst: die Formel ist Verbandsverankert, nicht frei wählbar)."""
+    return json.dumps(meta, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False).encode("utf-8")
+
+
+def _relay_verify_sig(bare: dict, verify_key_hex: str, sig_b64: str) -> bool:
+    """Ed25519-Verifikation eines Relay-Metadaten-Envelopes (fail-soft-Rückgabe
+    False bei jeder Unstimmigkeit — nie fatal). verify_key = 64-hex, sig =
+    base64(std) über _relay_canonical_bytes(bare)."""
+    if not isinstance(verify_key_hex, str) or len(verify_key_hex) != 64 \
+            or not isinstance(sig_b64, str) or not sig_b64:
+        return False
+    try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+        Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(verify_key_hex)).verify(
+            base64.b64decode(sig_b64, validate=True),
+            _relay_canonical_bytes(bare))
+        return True
+    except Exception:
+        return False
 
 # PH-3 (Welle 1): E2E-Crypto-Kern — `cryptography` ist die EINE neue Python-
 # Dependency (PH3-CRYPTO-SPEC §0/§1 (i)). Fehlt sie, läuft der Adapter im
@@ -1265,6 +1298,19 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         self._meta_fut: Optional[Any] = None  # concurrent.futures.Future des Drains
         self._meta_state_dir: Optional[str] = _cfg(extra, _META_STATE_DIR_ENV)
 
+        # --- PH-4-T2: Relay-Instanz-Identität (Ed25519, signed) ---------------
+        # Fail-soft-Verband: agent.ident wird verifiziert + TOFU-gepinnt, die
+        # Frame-Signatur (crypto.hello) fail-soft geprüft (Warn-Log + Zähler,
+        # "NIEMAL" heißt: keine Operationsbrüche v1 — harte Scharfe ist ein
+        # W23-Kandidat (KDoc am Handler). Zähler = Diagnose-Band.
+        self._relay_identity_stats: dict[str, int] = {
+            "ident_ok": 0, "ident_invalid": 0, "ident_pin_conflict": 0,
+            "sig_ok": 0, "sig_bad": 0, "sig_missing": 0,
+        }
+        self._relay_verify_key: Optional[bytes] = None   # Ed25519-Pub am Pin
+        self._relay_pin_path_override: Optional[str] = _cfg(
+            extra, "FLIPSI_RELAY_IDENTITY_PINS")
+
         # ── W21 (Anruf P2, roadmap-anruf.md §3.5): Call-Zustandsmaschine + ────
         # generisches Bridge-Tool. Ring-Fenster + Auto-End je Agent konfigurier-
         # bar (env FLIPSI_CALL_RING_TIMEOUT / FLIPSI_CALL_AUTO_END); die Call-
@@ -1962,6 +2008,16 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         if etype == "device.revoked":
             self._handle_device_revoked(envelope)
             return
+        # PH-4-T2: Relay-Identität je Connect (Server→Agent) — TOFU-Pin-Verband
+        # VOR der Namespace-Prüfung (Frame trägt bewusst KEINEN agent_id-Feld
+        # — die WS-Identität ist hier die RELAY-Instanz, nicht der Agent).
+        if etype == "agent.ident":
+            try:
+                self._handle_relay_ident(envelope)
+            except Exception:
+                logger.warning("FlipsiBridge: agent.ident-Verarbeitung fehlgeschlagen",
+                               exc_info=True)
+            return
         if etype == "chat.backfill_request":
             claim_agent = str(envelope.get("agent_id") or "").strip()
             if claim_agent and claim_agent != self.agent_id:
@@ -1989,6 +2045,9 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         # → Session-Key-Ableitung beidseitig; der Relay routet nur opak).
         # Bewusst VOR der chat_id-Pflicht: hello ist Session-Protokoll, kein Chat.
         if etype == "crypto.hello":
+            # PH-4-T2: Relay-Instanz-Signatur fail-soft verifizieren (Zähler-
+            # band; der Frame wird STETS weiterverarbeitet — kein Verbandbruch).
+            self._relay_verify_frame_sig(envelope)
             self._handle_crypto_hello(envelope)
             return
 
@@ -3762,6 +3821,141 @@ class FlipsiBridgeChatAdapter(BasePlatformAdapter):
         base = self._meta_state_dir or os.path.join(
             os.path.expanduser("~"), ".flipsibridge", "chat-state")
         return os.path.join(base, safe + ".chats.json")
+
+    # ───────────── PH-4-T2: Relay-Instanz-Identität (Ed25519, signed) ───────
+    # Der Relay instanziert EINEN Ed25519-Key (persistent am Relay; die
+    # Identity-Datei verlässt den Relay-Host nicht) und aushändigt je Connect
+    # die agent.ident-Nachricht {relay_id, verify_key, ts, sig}. Diese Seite:
+    # (1) Konsistenz (relay_id == SHA-256(verify_key)), (2) Sig-Verifikation
+    # (kanonische Bytes PARITÄT tools/android_relay.py _canonical_meta_bytes),
+    # (3) TOFU-Pin (Fingerprint-Ablage je Relay-URL im Adapter-State — der
+    # Brief nennt „relay-config.json"; die Wahrheit am Code: die Adapter-Seite
+    # hat keinen verlässlichen Zugriff auf die Relay-Config, deshalb lebt der
+    # Pin hier in relay-identity-pins.json je URL, gleiche Verantwortung).
+    # Pin-WECHSEL = potenzieller MITM-Hinweis: WARN-Log, bewusst NICHT hart
+    # blocken (v1 — die Erst-Einführung darf keinen laufenden Betrieb brechen;
+    # jede härtere Scharfe (Fail-Closed bei Pin-Konflikt/Pin-Pflicht) ist ein
+    # bewusster W23-Kandidat). Frame-Signaturen: crypto.hello fail-soft prüfen
+    # mit Warn-Log + Zähler; fehlende Signatur (Legacy-Relay) = Zählerband,
+    # KEIN Verlust.
+    def _relay_ident_pin_path(self) -> Optional[str]:
+        """Ablage der TOFU-Pins: Override FLIPSI_RELAY_IDENTITY_PINS (Tests/
+        isoliert) sonst <Adapter-State>/relay-identity-pins.json (gleiche
+        State-Verband wie _chats_state_path; „je relay-config.json" = je
+        Relay-Ziel ein Eintrag, key = origin <host:port>)."""
+        if self._relay_pin_path_override:
+            return self._relay_pin_path_override
+        safe_base = self._meta_state_dir or os.path.join(
+            os.path.expanduser("~"), ".flipsibridge", "chat-state")
+        return os.path.join(safe_base, "relay-identity-pins.json")
+
+    @staticmethod
+    def _relay_origin(url: str) -> str:
+        """Origin-Schlüssel (host[:port]) einer wss/ws-URL — je Relay-Instanz
+        EIN Pin-Slot (Scheme-agnostisch: derselbe Host über wss/ws bleibt
+        derselbe Relay-Ops-Verband)."""
+        m = re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://([^/?#]+)", str(url or "").strip())
+        return m.group(1).lower() if m else "unbekannt"
+
+    def _relay_pins_load(self) -> dict:
+        try:
+            path = self._relay_ident_pin_path()
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                return dict(data) if isinstance(data, dict) else {}
+        except Exception:
+            logger.debug("FlipsiBridge: Relay-Pin-File unlesbar (TOFU neutral)", exc_info=True)
+        return {}
+
+    def _relay_pins_save(self, pins: dict) -> None:
+        try:
+            path = self._relay_ident_pin_path()
+            if not path:
+                return
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(path), prefix=".relay-pins-", suffix=".tmp")
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                json.dump(pins, fh)
+            os.replace(tmp_path, path)
+        except Exception:
+            logger.debug("FlipsiBridge: Relay-Pin-File nicht schreibbar (TOFU-RAM)", exc_info=True)
+
+    def _handle_relay_ident(self, envelope: dict) -> None:
+        """agent.ident verifizieren + TOFU-pinnen (fail-soft): ungültige Form /
+        Signatur = Zähler + Warn, Frame verworfen (KEIN Pin-Write!); gültig →
+        Pin-Verband (Erst-Pin = TOFU, Abweichung = WARN ohne Block v1)."""
+        verify_key = str(envelope.get("verify_key") or "").strip().lower()
+        relay_id = str(envelope.get("relay_id") or "").strip().lower()
+        sig = str(envelope.get("sig") or "").strip()
+        hex_ok = bool(re.fullmatch(r"[0-9a-f]{64}", verify_key)) and \
+            bool(re.fullmatch(r"[0-9a-f]{64}", relay_id))
+        if not (hex_ok and len(verify_key) == 64 and len(relay_id) == 64):
+            self._relay_identity_stats["ident_invalid"] += 1
+            logger.warning("FlipsiBridge: agent.ident ungültige Form — verworfen")
+            return
+        # Konsistenz-Band: relay_id ist DEFINIERT als SHA-256(verify_key).
+        if hashlib.sha256(bytes.fromhex(verify_key)).hexdigest() != relay_id:
+            self._relay_identity_stats["ident_invalid"] += 1
+            logger.warning(
+                "FlipsiBridge: agent.ident inkonsistent (relay_id ≠ SHA-256(verify_key)) — verworfen")
+            return
+        bare = {k: v for k, v in envelope.items() if k != "sig"}
+        if not _relay_verify_sig(bare, verify_key, sig):
+            self._relay_identity_stats["ident_invalid"] += 1
+            logger.warning(
+                "FlipsiBridge: agent.ident-Signatur UNGÜLTIG — verworfen (kein Pin-Write)")
+            return
+        origin = self._relay_origin(self.relay_url)
+        pins = self._relay_pins_load()
+        pin = pins.get(origin)
+        if pin is None:
+            pins[origin] = {
+                "relay_id": relay_id, "verify_key": verify_key,
+                "pinned_at": int(time.time()), "url": self.relay_url,
+                "mode": "tofu",
+            }
+            self._relay_pins_save(pins)
+            logger.info(
+                "FlipsiBridge: Relay-Identität TOFU-gepinnt (origin=%s relay_id=%s)",
+                origin, relay_id[:16] + "…")
+        elif str(pin.get("relay_id") or "") != relay_id:
+            # Pin-Wechsel = potenzieller MITM-Hinweis (Relay-Key-Rotation ODER
+            # Angriff). v1: WARN + Zähler, NICHT blocken (W23: Fail-Closed).
+            self._relay_identity_stats["ident_pin_conflict"] += 1
+            logger.warning(
+                "FlipsiBridge: RELAY-IDENTITÄTS-WECHSEL am origin %s — gepinnt %s, "
+                "jetzt %s — potenzieller MITM-Hinweis (Pin bleibt, NICHT blockiert v1)",
+                origin, str(pin.get("relay_id"))[:16] + "…", relay_id[:16] + "…")
+        self._relay_identity_stats["ident_ok"] += 1
+        self._relay_verify_key = bytes.fromhex(verify_key)
+
+    def _relay_verify_frame_sig(self, envelope: dict) -> None:
+        """Fail-soft-Sig-Verifikation relay-gesendeter Frames (v1: crypto.hello
+        = Handshake-Verband). Sig fehlt (Legacy-Relay) → Zählerband, kein
+        Verlust; Sig bad → Warn + Zähler, Frame bleibt trotzdem im Betrieb
+        (KEIN Operationsbruch v1 — harte Scharfe = W23-Kandidat)."""
+        if self._relay_verify_key is None:
+            return  # noch keine agent.ident gesehen → kein Verifikationsband
+        sig = envelope.get("sig")
+        if not isinstance(sig, str) or not sig:
+            self._relay_identity_stats["sig_missing"] += 1
+            return
+        bare = {k: v for k, v in envelope.items() if k != "sig"}
+        try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+                Ed25519PublicKey,
+            )
+            Ed25519PublicKey.from_public_bytes(self._relay_verify_key).verify(
+                base64.b64decode(sig, validate=True),
+                _relay_canonical_bytes(bare))
+            self._relay_identity_stats["sig_ok"] += 1
+        except Exception:
+            self._relay_identity_stats["sig_bad"] += 1
+            logger.warning(
+                "FlipsiBridge: Relay-Framesignatur UNGÜLTIG (fail-soft, Zählerband) — typ=%r",
+                str(envelope.get("type") or "")[:24])
 
     def _persist_chats(self, chat_id: str) -> None:
         """Aktuelles _received_at (neueste zuerst, Cap 32) je Agent speichern.
