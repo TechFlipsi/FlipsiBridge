@@ -492,6 +492,13 @@ def _pairing_slot_locked(state: "_RelayState", device_id: Optional[str]) -> bool
     # unsichtbar geblieben).
     if holder_id is not None and holder_id in (getattr(state, "agents", None) or {}):
         return False
+    # W22-FIX 2 (18.11.): Der Legacy-Bucket 'phone' (Client OHNE echte
+    # Geräte-Kennung) hält KEINEN Code-Slot — sonst sperrt der Alt-Bucket
+    # jedes echte mTLS-Gerät dauerhaft aus (Prod-Incident: App außen vor,
+    # obwohl kein echtes Gerät verbunden ist). Echte mTLS-Geräte-Kennungen
+    # bleiben vom Lock geschützt.
+    if holder_id == "phone":
+        return False
     if holder_id is None and device_id is None:
         # Legacy-Parität: beide Seiten ohne Kennung = bisheriges Replace-
         # Verhalten (bestehende Suite hängt daran — und ein Alt-Client kann
@@ -738,6 +745,43 @@ def _seed_device_registry_v1() -> tuple[dict, str]:
     return entries, " + ".join(sources) if sources else "leer (frische Registry)"
 
 
+def _registry_max_idle_days() -> int:
+    """W23 (Sir-Regel 18.11.): Auto-Lösch-Frist in Tagen für offline Geräte.
+    0 = Feature aus. Default 14, begrenzt auf [0, 365]."""
+    try:
+        value = int(os.getenv("ANDROID_RELAY_DEVICE_MAX_IDLE_DAYS", "14"))
+    except (TypeError, ValueError):
+        return 14
+    return max(0, min(365, value))
+
+
+def _registry_sweep(entries: dict) -> list:
+    """W23 (Sir-Regel 18.11.): Geräte ohne Online-Kontakt länger als die
+    Frist werden automatisch aus der Registry gelöscht. Massstab =
+    max(last_seen, enrolled_at) — frisch registrierte Geräte ohne einzigen
+    Connect zählen ab enrolled_at. ADMIN-Geräte bleiben IMMER geschützt
+    (Selbst-Lockout-Schutz: mindestens das Admin-Gerät überlebt jeden
+    Sweep). Rückgabe = Liste der entfernten Kennungen."""
+    days = _registry_max_idle_days()
+    if days <= 0:
+        return []
+    cutoff = (time.time() - days * 86400) * 1000.0
+    removed = []
+    for device_id in list(entries):
+        entry = entries.get(device_id)
+        if not isinstance(entry, dict) or entry.get("admin"):
+            continue
+        try:
+            seen = max(float(entry.get("last_seen") or 0),
+                       float(entry.get("enrolled_at") or 0))
+        except (TypeError, ValueError):
+            continue
+        if 0 < seen < cutoff:
+            del entries[device_id]
+            removed.append(device_id)
+    return removed
+
+
 def _migrate_device_registry() -> dict:
     """Start-Migration (nur LESEND gegenüberallen v1-Quellen): fehlt die v2-
     Datei, wird der v1-Bestand ADOPTIERT (mtls-Geräte bekannt, Key-Device =
@@ -746,6 +790,19 @@ def _migrate_device_registry() -> dict:
     path = Path(_device_registry_path())
     if path.exists():
         entries = _load_device_registry_file()
+        # W23 (Sir-Regel 18.11.): Auto-Sweep offline Geräte (>14 Tage ohne
+        # Kontakt, Admin-Geräte ausgenommen) — mit Persistenz und Log.
+        removed = _registry_sweep(entries)
+        if removed:
+            try:
+                _store_device_registry(entries)
+            except OSError as exc:
+                logger.warning("DEVICE-REGISTRY SWEEP: Persist fehlgeschlagen (%s)", exc)
+            logger.warning(
+                "DEVICE-REGISTRY SWEEP: %d Gerät(e) automatisch gelöscht "
+                "(>%d Tage offline, Admin geschützt): %s",
+                len(removed), _registry_max_idle_days(),
+                [_mask_id(r) for r in removed])
         logger.info("DEVICE-REGISTRY v2 geladen (%d Gerät(e) bekannt)", len(entries))
         return entries
     entries, sources = _seed_device_registry_v1()
