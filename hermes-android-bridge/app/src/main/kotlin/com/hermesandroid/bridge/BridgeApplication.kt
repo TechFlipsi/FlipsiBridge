@@ -25,7 +25,11 @@ class BridgeApplication : Application() {
         // alle Schalter lesen/kein Speichern (Alles nach App-Neustart wieder AUS, Gate lahmgelegt).
         com.hermesandroid.bridge.security.MtlsSupport.init(applicationContext)
         com.hermesandroid.bridge.security.CapabilityGate.init(applicationContext)
-        BridgeServer.start(port = 8765)
+        // Drill-Fund #2: Hartkodierter Port crash die zweite Edition mit
+        // BindException, wenn beide parallel laufen (z. B. github + play am
+        // selben Gerät). Play-Edition weicht daher um +1 aus.
+        val bridgePort = if (BuildConfig.APPLICATION_ID.endsWith(".play")) 8766 else 8765
+        BridgeServer.start(port = bridgePort)
 
         // Initialize relay client and auto-connect if previously configured
         RelayClient.init(applicationContext)

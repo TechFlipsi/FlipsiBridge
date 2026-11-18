@@ -2348,7 +2348,7 @@ object RelayClient {
                 )
                 val sessionId = "fb-" + CryptoEngine.hex(CryptoEngine.secureRandomBytes(8))
                 val chatId = "chat-" + CryptoEngine.hex(CryptoEngine.secureRandomBytes(6))
-                val hello = peer.makeHello(sessionId, chatId)
+                val hello = peer.makeHello(sessionId, chatId, deviceId = PairingManager.deviceId())
                 pendingCryptoPeers[sessionId] = peer
                 if (!postJson(base, "/crypto_hello", hello)) {
                     pendingCryptoPeers.remove(sessionId)

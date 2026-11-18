@@ -144,7 +144,12 @@ class PhoneCryptoPeer(
      * bleibt erlaubt — der Skipped-Key-Cache deckt jede Reihenfolge ab).
      */
     @Synchronized
-    fun makeHello(sessionIdIn: String, chatIdIn: String, nowMs: Long = System.currentTimeMillis()): JsonObject {
+    fun makeHello(
+        sessionIdIn: String,
+        chatIdIn: String,
+        nowMs: Long = System.currentTimeMillis(),
+        deviceId: String? = null,
+    ): JsonObject {
         require(sessionIdIn.length in 8..128) { "session_id 8-128 Zeichen" }
         require(chatIdIn.length in 8..128) { "chat_id 8-128 Zeichen" }
         val ekPair = keyGen()
@@ -168,6 +173,10 @@ class PhoneCryptoPeer(
             addProperty("v", PROTOCOL_VERSION)
             addProperty("session_id", sessionIdIn)
             addProperty("agent_id", agentId)
+            // Drill-Fund #1 (B2-Routing): Der Relay bindet die E2E-Session an
+            // die Geräte-Kennung — ohne Feld/Header fällt er auf den Legacy-
+            // Bucket zurück und Call-Signaling erreicht das echte Gerät nie.
+            if (deviceId != null) addProperty("device_id", deviceId)
             addProperty("ik_pub", CryptoEngine.hex(ik.pub))
             addProperty("ek_pub", CryptoEngine.hex(ekPair.pub))
             addProperty("spk_pub", CryptoEngine.hex(spk.pub))
