@@ -2967,7 +2967,9 @@ object RelayClient {
         // remoteEnd prüft+beendet atomar, veraltete Main-Schreibungen fliegen raus.
         var firedEnd: CallRules.CallSession? = null
         _callSession.update { cur ->
-            CallRules.remoteEnd(cur, callId, System.currentTimeMillis())
+            // cur ist nullable (kein aktiver Auftrag): unverändert lassen;
+            // remoteEnd(null-Sicherheit) nur für laufende Sitzungen bewerten.
+            cur?.let { CallRules.remoteEnd(it, callId, System.currentTimeMillis()) }
                 ?.let { firedEnd = it; it } ?: cur
         }
         val ended = firedEnd

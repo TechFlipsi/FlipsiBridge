@@ -1688,7 +1688,7 @@ fun ChatScreen(
             save = { it.toList() },
             restore = { it.toHashSet() },
         ),
-    ) { HashSet<String>() }
+    ) { mutableStateOf(HashSet<String>()) }.value
     LaunchedEffect(callSession?.phase, callSession?.callId) {
         val cs = callSession ?: return@LaunchedEffect
         if (cs.phase != CallRules.Phase.ENDED) return@LaunchedEffect
