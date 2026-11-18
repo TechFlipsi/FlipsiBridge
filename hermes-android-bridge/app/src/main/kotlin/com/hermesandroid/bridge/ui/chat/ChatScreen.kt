@@ -1312,6 +1312,9 @@ fun ChatScreen(
 
     fun callScreengrabExecute() {
         val cs = callSession ?: return
+        // J1-FIX: G12-Konsent ist call-scoped — nur im LAUFENDEN Call (ENDED/
+        // Zombie-Session kann keinen Screengrab mehr auslösen).
+        if (cs.phase != CallRules.Phase.ACTIVE) return
         screengrabBusy = true
         mediaScope.launch {
             val shot = ActionExecutor.takeScreenshot()
@@ -1352,7 +1355,7 @@ fun ChatScreen(
     fun callScreengrabTap() {
         if (screengrabBusy) return
         if (!CapabilityGate.isEnabled(CallRules.CAP_SCREEN_CAPTURE)) {
-            callInfoLine = "Screenshot-Fähigkeit aus — in Einstellungen › Fähigkeiten einschalten."
+            callInfoLine = context.getString(R.string.call_screengrab_cap_missing)
             return
         }
         if (!screengrabConfirmOpen) {

@@ -163,7 +163,13 @@ object CallRules {
             return if (current.callId == invite.callId) InviteDecision.Refreshed
             else InviteDecision.Busy
         }
-        if (current != null && current.phase == Phase.ACTIVE) return InviteDecision.Busy
+        if (current != null && current.phase == Phase.ACTIVE) {
+            // J1-FIX: Duplikat der EIGENEN aktiven call_id (Spool-Flush/Re-Delivery
+            // nach Annahme) darf den laufenden Call NICHT als Busy+decline töten —
+            // verwerfen (kein Signal), der Anruf läuft weiter.
+            return if (current.callId == invite.callId) InviteDecision.Invalid
+            else InviteDecision.Busy
+        }
         return InviteDecision.Opened(
             CallSession(
                 callId = invite.callId!!.trim(),

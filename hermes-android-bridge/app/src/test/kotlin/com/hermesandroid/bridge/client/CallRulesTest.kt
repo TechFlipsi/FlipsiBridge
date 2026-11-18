@@ -311,6 +311,29 @@ class CallRulesTest {
     }
 
     @Test
+    fun invite_duplikat_der_eigenen_call_id_waehrend_active_wird_verworfen_nicht_busy() {
+        // J1-FIX: Spool-Flush-Re-Invite nach Annahme darf den laufenden Call
+        // NICHT per Busy+decline töten — Invalid (kein Signal) statt Busy.
+        val active = CallRules.CallSession(
+            callId = "call-abc12345", agentId = "agent-1", chatId = "chat-1",
+            kind = "voice", reason = "", phase = CallRules.Phase.ACTIVE,
+            ringingSinceMs = 0L,
+        )
+        val dup = CallRules.inviteDecision(
+            active,
+            CallRules.InviteSpec("call-abc12345", "agent-1", "chat-1", "voice", ""),
+            System.currentTimeMillis(),
+        )
+        assertTrue(dup is CallRules.InviteDecision.Invalid)
+        val other = CallRules.inviteDecision(
+            active,
+            CallRules.InviteSpec("call-other99", "agent-1", "chat-1", "voice", ""),
+            System.currentTimeMillis(),
+        )
+        assertTrue(other is CallRules.InviteDecision.Busy)
+    }
+
+    @Test
     fun screengrab_name_mit_und_ohne_call_id() {
         assertEquals("agent-shot-42.jpg", CallRules.screengrabName(null, 42L))
         assertEquals("agent-shot-42.jpg", CallRules.screengrabName("", 42L))

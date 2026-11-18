@@ -152,6 +152,9 @@ object RelayClient {
     // degradiert dort ehrlich auf Heads-up (§3.6-Wunsch, Bedarf notiert).
     private const val CALL_NOTIFY_CHANNEL = "fb_call"
     private const val CALL_NOTIFY_ID = 8000
+private const val CALL_NOTIFY_ID = 8000
+        // J1-FIX: Anzeige-Fenster der ENDED-Session im StateFlow (10 s).
+        private const val ENDED_KEEP_MS = 10_000L
 
     // --- Termux revival watchdog ---
     // When the relay is unreachable past these thresholds, fire the
@@ -897,6 +900,9 @@ object RelayClient {
     // coroutine left to clear it, killing auto-reconnect for the process.
     @Synchronized
     fun connect(serverUrl: String, pairingCode: String) {
+        // J1-FIX: Räumweg für stale Klingel-Notification — starb der Prozess während
+        // des Klingelns, putzt jeder neue Connect das Ongoing-Schild weg.
+        stopCallRingNotification()
         disconnect()
 
         // W4-D (Multi-Server-Profil-Wechsel + Onboarding-Wizard): ein abweichend
@@ -2926,8 +2932,9 @@ object RelayClient {
             }
             // Duplikat-Invite (Spool-Flush) — Klingeln bleibt stehen, Fenster neu.
             CallRules.InviteDecision.Refreshed -> {
-                Log.i(TAG, "ANRUF: Duplikat-Invite (call ${(callId ?: "").take(12)}) — Klingeln gehalten")
-                scheduleRingTimeout(callId ?: "")
+                // J1-FIX: KEIN Timer-Reschedule — der 45-s-Ring-Deckel läuft vom
+                // ersten Klingeln an (Spool-Duplikate dehnen das Fenster sonst endlos).
+                Log.i(TAG, "ANRUF: Duplikat-Invite (call ${(callId ?: "").take(12)}) — Klingeln gehalten, Fenster unverändert")
             }
             is CallRules.InviteDecision.Opened -> {
                 _callSession.value = decision.session
@@ -2957,17 +2964,19 @@ object RelayClient {
             return
         }
         handleRotateHint(json, agentId, peer)
-        val session = _callSession.value ?: run {
-            // Parität Adapter-Verwurf: fremdes/spätes Ende ohne lokalen Auftrag.
-            Log.i(TAG, "ANRUF: call_end.enc ohne lokalen Anruf-Auftrag — verworfen (call ${(callId ?: "").take(12)})")
-            return
+        // J1-FIX: CAS-Übergang (IO-Frame-Verbraucher vs. Main-Accept/Decline) —
+        // remoteEnd prüft+beendet atomar, veraltete Main-Schreibungen fliegen raus.
+        var firedEnd: CallRules.CallSession? = null
+        _callSession.update { cur ->
+            val ended = CallRules.remoteEnd(cur, callId, System.currentTimeMillis())
+            if (ended != null) { firedEnd = ended; ended } else cur
         }
-        val ended = CallRules.remoteEnd(session, callId, System.currentTimeMillis())
+        val ended = firedEnd
         if (ended == null) {
-            Log.w(TAG, "ANRUF: call_end für fremde/laufende call_id ${(callId ?: "").take(12)} — verworfen")
+            Log.i(TAG, "ANRUF: call_end ohne passenden lokalen Anruf-Auftrag — verworfen (call ${(callId ?: "").take(12)})")
             return
         }
-        Log.i(TAG, "ANRUF: Agent hat aufgelegt (call ${session.callId.take(12)})")
+        Log.i(TAG, "ANRUF: Agent hat aufgelegt (call ${ended.callId.take(12)})")
         endCallLocalState(ended)
     }
 
@@ -3077,16 +3086,24 @@ object RelayClient {
         callRingTimeoutJob?.cancel()
         callRingTimeoutJob = scope?.launch {
             kotlinx.coroutines.delay(CallRules.RING_TIMEOUT_MS)
-            val session = _callSession.value ?: return@launch
-            if (session.callId != callId ||
-                !CallRules.ringWindowPassed(session, System.currentTimeMillis())
-            ) {
-                return@launch
+            val now = System.currentTimeMillis()
+            var fired: CallRules.CallSession? = null
+            // J1-FIX: CAS-Übergang (Timer IO vs. Main-Accept) — RINGING wird nur
+            // atomar geprüft+beendet, ein paralleles Annehmen kann nicht mehr vom
+            // Timeout überrollt werden (kein missed+accepted-Doppelsignal).
+            _callSession.update { cur ->
+                if (cur != null && cur.callId == callId &&
+                    cur.phase == CallRules.Phase.RINGING &&
+                    CallRules.ringWindowPassed(cur, now)
+                ) {
+                    val ended = CallRules.ringTimeout(cur, now)
+                    if (ended != null) { fired = ended; ended } else cur
+                } else cur
             }
-            val ended = CallRules.ringTimeout(session, System.currentTimeMillis())
+            val ended = fired ?: return@launch
             Log.i(TAG, "ANRUF: Klingel-Fenster aus — verpasst (call_missed.enc, call ${callId.take(12)})")
-            if (ended != null) endCallLocalState(ended)
-            sendCallSignal(CallRules.FRAME_MISSED, session.agentId, session.chatId, session.callId)
+            endCallLocalState(ended)
+            sendCallSignal(CallRules.FRAME_MISSED, ended.agentId, ended.chatId, ended.callId)
         }
     }
 
@@ -3159,6 +3176,15 @@ object RelayClient {
         _callSession.value = ended
         stopCallRingNotification()
         cancelCallTimers()
+        // J1-FIX: ENDED-Räumung — die beendete Session bleibt max. 10 s für die
+        // „Anruf beendet“-Anzeige im Flow, danach gilt wieder null = kein Anruf
+        // (kein StateFlow-Leak, Screengrab-Tap nach Call-Ende läuft ins Leere).
+        scope?.launch {
+            kotlinx.coroutines.delay(ENDED_KEEP_MS)
+            _callSession.update { cur ->
+                if (cur != null && cur.phase == CallRules.Phase.ENDED) null else cur
+            }
+        }
         try {
             android.os.Handler(android.os.Looper.getMainLooper()).post {
                 runCatching { ChatSpeechSpeaker.stopAll() }
