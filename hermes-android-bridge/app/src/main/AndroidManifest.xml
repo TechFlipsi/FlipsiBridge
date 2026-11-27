@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- HTTP server -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Termux-Watchdog: Nur nach explizitem Opt-in in der UI (RUN_COMMAND) -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" tools:ignore="ProtectedPermissions" />
+    <!-- Wake screen for background actions -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Overlay HUD -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <!-- Foreground service to keep bridge alive -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <!-- Microphone for ambient sound / voice capture (Phase 1 Ohren) -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Screenshots via MediaProjection (Phase 2 enhancement) -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <!-- Phase 4 Datei-Zugriff: voller Lesezugriff auf den gemeinsamen Speicher
+         ("Alle Dateien zugreifen" - vom Nutzer in den Einstellungen zu erteilen,
+         weil MANAGE_EXTERNAL_STORAGE ein Sonderrecht ohne Laufzeit-Dialog ist) -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
+    <!-- W16 (Punkt 26): REQUEST_INSTALL_PACKAGES ENTFERNT — der APK-Selbst-
+         install-Weg (UpdateInstaller + /apk_install) ist raus; Updates laufen je
+         Edition über Play Store bzw. GitHub-Release, in-app nur der Update-Check. -->
+    <!-- Query all installed apps (Android 11+) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-permission android:name="android.permission.CALL_PHONE" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <!-- Phase 10 Geräte-Hardware: Kamera-Foto auf Befehl, Taschenlampe, Netz-Status -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+    <!-- v0.11.0 Verbindungskern: Boot-Start + echte Foreground-Schleuder -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- v0.12.0 (Akku P2-4): SCHEDULE_EXACT_ALARM entfernt — der Code nutzt
+         ausschließlich setAndAllowWhileIdle (ungenau genügt beim 5-min-Takt,
+         die Permission war deklariert, aber NIEMALS genutzt). -->
+    <!-- v0.11.0: Aktiv-Aufforderung "Akku nicht einschränken" (UI-Zeile) -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- Health Connect (v0.11.0, read-only): nur lesen -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-feature android:name="android.hardware.telephony" android:required="false" />
+    <uses-feature android:name="android.hardware.telephony.gsm" android:required="false" />
+    <uses-feature android:name="android.hardware.location.gps" android:required="false" />
+
+    <!-- Health Connect (v0.11.0): Sichtbarkeit der Health Connect-App für Consent/Status-Prüfung -->
+    <queries>
+        <package android:name="com.google.android.apps.healthdata" />
+    </queries>
+
+    <application
+        android:name=".BridgeApplication"
+        android:label="FlipsiBridge"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:theme="@style/Theme.HermesBridge">
+
+        <!-- W4-01 (App-Lane A, W4-01a Tastatur/Header-Fix): windowSoftInputMode
+             fehlte (Befund 12:38-Peek, EXECUTIONSTATE §343) → Standard-Pan schob
+             die GESAMTE Compose-Struktur (inkl. Conversation-Header) unter die
+             Tastatur. adjustResize drückt ab sofort NUR den nachgeordneten
+             Inhalt: Header/Divider/Banner bleiben fix OBEN (sie leben außerhalb
+             jeder ime-gepolsterten Streckung, ChatScreen.ConversationBody), die
+             Liste wird über weight(1f) geschweigt und NUR die ChatInputBar
+             trägt imePadding()+navigationBarsPadding().
+             edge-to-edge-Grundstand (Befund 09.11., verbatim geprüft):
+             enableEdgeToEdge/WindowCompat.setDecorFitsSystemWindows = 0 Treffer
+             im ganzen App-Tree → klassischer Decor-fits-Pfad; die Insets-
+             Schienen (ime/navigationBars) addieren heute 0 dp und bleiben
+             wirksam, sobald edge-to-edge später aktiviert wird. targetSdk 34:
+             adjustResize bleibt wirksam (R6-Risiko → UX-Beweis NUR über den
+             Emulator-Drill, Stand-PC-Re-Drill = spätere Build-Welle).
+             Drill-Vertrag (Reduced-Pass RP3): Tastatur auf → Header + Agent-
+             Name sichtbar, Liste scrollt ans Ende, InputBar über Tastatur;
+             Rotation + Darkmode-Mini-Check. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- W22 LANE B (G11): Share-Target — „Teilen → FlipsiBridge“ aus
+                 JEDEM Browser/App (universeller Fallback, wo die Assistenten-
+                 Rolle fehlt). Browser liefern Seiten-Links als text/plain
+                 (EXTRA_TEXT); http/https-Kontext whitelisted die App-Logik
+                 (ShareIntake, JVM-getestet) — ein data-Schema-Filter wäre für
+                 ACTION_SEND unzuverlässig, deshalb text/plain + Logik-Gate. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- WELLE 13 P10: Standard-Assistenten-Rolle — dieser Einstieg
+             macht FlipsiBridge zum Assistenten-Kandidaten (RoleManager prüft
+             das ASSIST-Intent-Filter-Signat); der Trigger trampolint in die
+             App und startet den Voice-Chat. Keine Permission nötig. -->
+        <activity
+            android:name=".AssistEntryActivity"
+            android:exported="true"
+            android:showWhenLocked="false"
+            android:directBootAware="false"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!-- Health Rationale (v0.12.2): OHNE diese Activity zeigt Health Connect
+             die App NICHT in der Connected-Apps-Liste (Screenshot-Befund 01.11.).
+             Zwei Routen: klassische androidx-Action + Android-14 VIEW_PERMISSION_USAGE-Alias. -->
+        <activity
+            android:name=".health.HealthRationaleActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+        <activity-alias
+            android:name="ViewPermissionUsageActivity"
+            android:exported="true"
+            android:targetActivity=".health.HealthRationaleActivity"
+            android:permission="android.permission.START_HEALTH_PERMISSION_RATIONALE">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
+
+        <!-- W16 (Punkt 26): FileProvider für APK-Selbstupdate ENTFERNT — ohne
+             Installer-Pfad gibt es keinen ausgetauschten Datei-URI mehr;
+             die @xml/file_paths-Abfall-Datei ist mitgelöscht. -->
+
+        <!-- Accessibility service declaration -->
+        <service
+            android:name=".service.BridgeAccessibilityService"
+            android:exported="true"
+            android:foregroundServiceType="specialUse|mediaProjection"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+            <!-- J2-F3 (11.11.2026): specialUse verlangt die Subtype-Property
+                 (Play-Review-/Policy-Ebene); FGS-Deklaration in PH-8/9. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="accessibility_remote_bridge" />
+        </service>
+
+        <!-- Notification listener service -->
+        <service
+            android:name=".service.BridgeNotificationListener"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Microphone recorder service (Phase 1 Ohren) -->
+        <service
+            android:name=".audio.MicrophoneRecorderService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
+        <!-- v0.11.0: eigener Verbindungs-FGS (unabhängig vom A11y-Service) -->
+        <service
+            android:name=".service.BridgeConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- W22 LANE B (G2): Overlay-Bubble-Dienst — hält die Assistenten-
+             Blase (SYSTEM_ALERT_WINDOW, Sonderrecht OHNE Laufzeit-Dialog;
+             die Freigabe läuft über ACTION_MANAGE_OVERLAY_PERMISSION — die
+             uses-permission SYSTEM_ALERT_WINDOW ist OBEN bereits deklariert).
+             FGS-Typ specialUse in BEIDEN Editionen (Manifest-Deklaration und
+             startForeground-Typ sind deckungsgleich, sonst wirft Android 14
+             IllegalArgumentException — J4-Lektion); FOREGROUND_SERVICE und
+             FOREGROUND_SERVICE_SPECIAL_USE sind oben deklariert und werden
+             im play-Overlay NICHT entfernt. Play-Konsolen-Deklaration des
+             Subtyps: PH-8/9 („overlay bubble for user-initiated assistant
+             access“). -->
+        <service
+            android:name=".ui.assistant.AssistantBubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="assistant_overlay_bubble" />
+        </service>
+
+        <!-- v0.11.0: Boot-/Update-Restart der Brücke ("jederzeit Zugriff") -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+            </intent-filter>
+        </receiver>
+
+        <!-- v0.11.0: Doze-sichere Reconnect-Weckrufe -->
+        <receiver
+            android:name=".client.ReconnectAlarmReceiver"
+            android:exported="false" />
+
+    </application>
+</manifest>

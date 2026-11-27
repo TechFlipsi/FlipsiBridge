@@ -1,0 +1,118 @@
+# FlipsiBridge Relay systemd-Unit mit EIGENEM System-User (P23)
+#
+# STATUS: STANDARD-UNIT des install-relay.sh (seit 28.11.) — der Installer lädt
+# diese Vorlage, patcht den Zielordner und installiert sie als
+# flipsibridge-relay.service. Der Installer legt den System-User und die
+# /etc/flipsibridge-Struktur an. Migrations-/Rollback-Hinweise für
+# Bestandsinstallationen: deployment/README.md. Vollständige Sicherheits-
+# Einrichtung (TLS, mTLS, Proxy-Regeln): docs/SECURITY-SETUP.md.
+#
+# Ziele (P23): Relay läuft NICHT mehr als root, sondern als dedizierter
+# System-User `flipsibridge` (nologin, keine Shell) mit geschlossenem
+# systemd-Sandbox-Vollset. Alle Pfad-/IP-/Domänen-Werte sind PLATZHALTER und
+# vor dem Ein Rollen an die eigene Infra anzupassen (O3: keine echten Infra-
+# Angaben in der öffentlichen Doku — siehe deployment/README.md §9).
+#
+# Geprüft gegen systemd 255 (Ubuntu 24.04); Optionen sind ab systemd 247
+# verfügbar und ohne Abhängigkeiten fail-safe (unbekannte Optionen = Warnung
+# im Journal, keine Startverweigerung).
+
+[Unit]
+Description=FlipsiBridge Relay (phone WebSocket bridge for agents)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# ── P23 Kern: eigener System-User (nologin, keine Shell, kein Login-Ziel) ────
+# anlegen mit:
+#   adduser --system --group --home-dir /opt/flipsibridge \
+#           --no-create-home --shell /usr/sbin/nologin flipsibridge
+User=flipsibridge
+Group=flipsibridge
+# Neue Dateien (State, Registry, Prekey-Backups) fallen mit 0600 an —
+# File-Permissions-Pflicht 0600/0640 (siehe deployment/README.md §5).
+UMask=0077
+
+# ── Exec/Arbeitsverzeichnis (PLATZHALTER anpassen) ───────────────────────────
+WorkingDirectory=/opt/flipsibridge
+ExecStart=/usr/bin/python3 /opt/flipsibridge/contrib/hermes-relay-daemon.py
+ExecStop=/bin/kill -TERM $MAINPID
+TimeoutStopSec=25
+KillSignal=SIGTERM
+Restart=always
+RestartSec=5s
+# Daemon beendet sich mit EXIT 2, wenn der Relay-Thread tot ist (Watchdog) —
+# Restart=always + RestartSec fängt das.
+
+# ── Environment/Secrets (0640 root:flipsibridge, siehe §5) ───────────────────
+# EnvironmentFile liest systemd ALS ROOT (Werte landen nur im Unit-Prozess).
+# Die Datei NICHT unter /root/ ablegen — der Service-User braucht sie nicht
+# direkt, aber eine /etc-Ablage ist die auditierbare, migrationsfähige Lage.
+EnvironmentFile=-/etc/flipsibridge/relay.env
+# Beispiel-Inhalte von /etc/flipsibridge/relay.env (Platzhalter!):
+#   ANDROID_BRIDGE_TOKEN=<Kopplungs-Code, nie in Commits/Doku>
+#   ANDROID_RELAY_HOST=192.0.2.24            (RFC 5737 Beispiel-IP)
+#   ANDROID_RELAY_PORT=8766
+#   ANDROID_RELAY_TLS=1
+#   ANDROID_RELAY_CERT=/etc/flipsibridge/tls/relay.crt
+#   ANDROID_RELAY_KEY=/etc/flipsibridge/tls/relay.key
+#   ANDROID_RELAY_TRUSTED_PROXY_IP=192.0.2.10
+# PH-4 O4 ergänzbar (alle nur VERSCHÄRFEN möglich, clampt fail-closed):
+#   ANDROID_RELAY_AUTH_MAX_ATTEMPTS=3
+#   ANDROID_RELAY_AUTH_BLOCK_SECONDS=600
+#   ANDROID_RELAY_FRAME_MAX_AGE_MS=120000
+#   ANDROID_RELAY_REPLAY_WINDOW=64
+#   ANDROID_RELAY_CHAT_SPOOL_MAXLEN=200
+#   ANDROID_RELAY_CHAT_SPOOL_MAX_BYTES=4194304
+#   ANDROID_RELAY_PAIRING_TTL_SECONDS=300
+#   ANDROID_RELAY_PAIRING_PENDING_MAX=4
+# Debug-Body-Logging: per Default OFF — NUR für punktuelle Diagnose setzen:
+#   ANDROID_RELAY_DEBUG_BODY_LOGGING=1
+
+# ── Dateisystem-Sandbox ──────────────────────────────────────────────────────
+# strict = gesamtes FS read-only, nur die freigegebenen Pfade sind schreibbar.
+ProtectSystem=strict
+# State liegt unter /opt/flipsibridge (relay-keys.json, relay-devices.json,
+# relay-config.json, pairing_password.json, Prekey-Backups). Alternativ State
+# nach /var/lib/flipsibridge verziehen — dann ReadWritePaths entsprechend.
+# /etc/flipsibridge/tls = mTLS-Geräte-Registry (je Request frisch gelesen,
+# Edits wirken ohne Restart) — muss für den Service-User schreibbar sein.
+ReadWritePaths=/opt/flipsibridge /etc/flipsibridge/tls
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectProc=invisible
+ProcSubset=pid
+
+# ── Kernel-/Prozess-Sandbox ──────────────────────────────────────────────────
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+# Relay = rein TCP/WebSocket: keine ungenutzten Adressfamilien.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# ── Syscall-Whitelist ────────────────────────────────────────────────────────
+# @system-service ist die systemd-Referenz-Whitelist für Netzwerk-Daemons;
+# CPython 3.11+ / aiohttp läuft komplett darin. SystemCallErrorNumber=EPERM
+# verhindert Prozess-Tod bei Einzelfehlversuchen; zusätzlich Arch-Lock.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# ── Logging/Netz-Abhänge ─────────────────────────────────────────────────────
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,194 @@
+package com.hermesandroid.bridge.security
+
+import android.content.Context
+import android.content.SharedPreferences
+import com.hermesandroid.bridge.BuildConfig
+
+/**
+ * FlipsiBridge Capability-Gating (Issue #107-Umsetzung).
+ *
+ * Jede Geräte-Fähigkeit ist einzeln opt-in. Standard: alles AUS.
+ * Gesperrte Endpunkte liefern 403 mit klarer Fehlermeldung — der Server
+ * registriert idealerweise nur Tools der freigeschalteten Capabilities,
+ * aber dieses Gate ist die letzte Verteidigungslinie im Gerät selbst.
+ *
+ * Kategorie "core" (ping, battery, apps, current_app, screen-lesen) ist
+ * immer erlaubt — sie ist für den Verbindungstest nötig und nicht invasiv.
+ */
+object CapabilityGate {
+
+    /** Alle Endpunkte mit ihrer Capability-Kategorie. */
+    private val routeCapability: Map<Pair<String, String>, String> = mapOf(
+        // core — immer erlaubt
+        Pair("GET", "/ping") to "core",
+        Pair("GET", "/battery") to "core",
+        Pair("GET", "/apps") to "core",
+        Pair("GET", "/current_app") to "core",
+        Pair("GET", "/screen") to "screen",
+        Pair("GET", "/screen_hash") to "screen",
+        Pair("POST", "/find_nodes") to "screen",
+        Pair("POST", "/describe_node") to "screen",
+        Pair("POST", "/diff_screen") to "screen",
+        // interaction — Bedienen des Geräts
+        Pair("POST", "/tap") to "interaction",
+        Pair("POST", "/tap_text") to "interaction",
+        Pair("POST", "/type") to "interaction",
+        Pair("POST", "/swipe") to "interaction",
+        Pair("POST", "/scroll") to "interaction",
+        Pair("POST", "/long_press") to "interaction",
+        Pair("POST", "/drag") to "interaction",
+        Pair("POST", "/pinch") to "interaction",
+        Pair("POST", "/wait") to "interaction",
+        Pair("POST", "/press_key") to "interaction",
+        Pair("POST", "/open_app") to "interaction",
+        Pair("POST", "/intent") to "interaction",
+        Pair("POST", "/broadcast") to "interaction",
+        Pair("POST", "/media") to "interaction",
+        // screen_capture — MediaProjection
+        Pair("GET", "/screenshot") to "screen_capture",
+        Pair("POST", "/screen_record") to "screen_capture",
+        // notifications
+        Pair("GET", "/notifications") to "notifications",
+        Pair("GET", "/events") to "notifications",
+        Pair("POST", "/events/stream") to "notifications",
+        // clipboard
+        Pair("GET", "/clipboard") to "clipboard",
+        Pair("POST", "/clipboard") to "clipboard",
+        // INVASIV — standardmäßig nicht mal sichtbar in der UI:
+        Pair("GET", "/location") to "location",
+        Pair("POST", "/send_sms") to "sms",
+        Pair("POST", "/call") to "calls",
+        Pair("GET", "/contacts") to "contacts",
+        Pair("POST", "/mic_start") to "microphone",
+        Pair("POST", "/mic_stop") to "microphone",
+        Pair("GET", "/mic_status") to "microphone",
+        Pair("GET", "/mic_file") to "microphone",
+        // files (Phase 4) — lesen/suchen im gemeinsamen Speicher
+        Pair("GET", "/files") to "files",
+        Pair("GET", "/files_search") to "files",
+        Pair("GET", "/files_count") to "files",
+        Pair("GET", "/files_permission") to "files",
+        Pair("POST", "/files_permission") to "files",
+        Pair("GET", "/file") to "files",
+        Pair("POST", "/photo") to "device",
+        Pair("POST", "/torch") to "device",
+        Pair("GET", "/network") to "device",
+        Pair("POST", "/volume") to "device",
+        Pair("POST", "/alarm") to "device",
+        Pair("POST", "/timer") to "device",
+        // v0.10.8 (Review-Blocking-6-Fix): Outbound-Action mit EIGENER Capability.
+        Pair("POST", "/notify_reply") to "notify_reply",
+        // v0.10.8 (Review-Blocking-5-Fix): Destruktive Operationen teilen sich
+        // den Schalter NICHT mehr mit dem Lesezugriff.
+        Pair("POST", "/files_push") to "files_write",
+        Pair("POST", "/files_delete") to "files_write",
+        // v0.11.0: Health Connect (read-only) — eigene Capability, Default AUS.
+        Pair("POST", "/health_data") to "health",
+        // misc ohne eigene Kategorie
+        Pair("POST", "/speak") to "interaction",
+        Pair("POST", "/stop_speaking") to "interaction",
+        Pair("GET", "/widgets") to "screen",
+    )
+
+    /** Anzeigbare Capabilities (für die UI-Liste).
+     *  PH-7/PS-G-1: play-Edition benennt sms ehrlich um (Intent-Entwurf,
+     *  PS-A-14). W16 (Punkt 26): die Capability „selfupdate“ entfällt ganz —
+     *  Updates laufen je Edition über Play Store/GitHub, in-app nur noch der
+     *  Update-Check (UpdateCheck, ohne Install-Fähigkeit). */
+    val userFacing: List<Pair<String, String>> by lazy {
+        val base = listOf(
+            "screen" to "Bildschirm lesen",
+            "interaction" to "Gerät bedienen (tippen, swipen)",
+            "screen_capture" to "Screenshots & Aufnahme",
+            "notifications" to "Benachrichtigungen lesen & beantworten",
+            "clipboard" to "Zwischenablage",
+            "health" to "Gesundheitsdaten lesen (Health Connect)",
+            "location" to "Standort (invasiv)",
+            "sms" to "SMS senden (invasiv)",
+            "calls" to "Anrufe (invasiv)",
+            "contacts" to "Kontakte lesen (invasiv)",
+            "microphone" to "Mikrofon (invasiv)",
+            "device" to "Geräte-Hardware (Foto, Taschenlampe, Lautstärke, Netz, Wecker)",
+            "files" to "Dateien lesen (Download, Dokumente, Fotos …)",
+            "files_write" to "Dateien schreiben & löschen (destruktiv!)",
+            "notify_reply" to "Antworten in Benachrichtigungen senden",
+        )
+        when {
+            BuildConfig.EDITION_PLAY ->
+                base.map { if (it.first == "sms") "sms" to "SMS-Entwurf öffnen (GitHub-Edition: Direktversand)" else it }
+            else -> base
+        }
+    }
+
+    private const val PREFS = "flipsibridge_caps"
+    // J6 (JÄGER-RFULL): DIESE Datei schreibt RelayClient (PREFS_NAME) —
+    // legacy_had_relay + relay_server_url leben hier, nicht in flipsibridge_caps.
+    private const val BRIDGE_PREFS = "hermes_bridge_prefs"
+    private const val MIGRATION_KEY = "migrated_v0_10_8"
+    private var prefs: SharedPreferences? = null
+
+    fun init(context: Context) {
+        prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        migrateLegacyInstall(context)
+    }
+
+    /**
+     * v0.10.8 (Review-Blocking-3-Fix): Migration für Bestandsinstallationen.
+     * Eine installierte App, die das Upgrade bekommt, hat in "hermes_bridge_prefs"
+     * bereits eine Relay-URL + Pairing-Code gespeichert (vor dem Gating lief sie
+     * mit vollem Zugriff). In diesem Fall bekommen wir EINMALIG alle Capabilities
+     * eingeschaltet — bisheriges Verhalten bleibt erhalten, Release-Note weist
+     * darauf hin. Frische Installationen (nie verbunden, keine relay_server_url)
+     * starten strikt bei AUS. Der Migration-Key verhindert Wiederholung; was der
+     * User danach ausschaltet, bleibt aus.
+     */
+    private fun migrateLegacyInstall(context: Context) {
+        val p = prefs ?: return
+        if (p.getBoolean(MIGRATION_KEY, false)) return
+        // J6 (JÄGER-RFULL, Fix-Welle 2): legacy_had_relay wird von RelayClient
+        // in DIESEN Prefs geschrieben ("hermes_bridge_prefs", PREFS_NAME bei
+        // RelayClient) — der alte Code las aus flipsibridge_caps, hatteRelay
+        // war damit IMMER false und die „Bestandsinstallation behält alles
+        // aktiv“-Migration griff nie. Zusätzlich relay_server_url prüfen: Der
+        // Marker wird erst beim nächsten connect() gesetzt — eine Alt-
+        // Installation, die nach dem Upgrade noch nie neu verbunden hat,
+        // hat nur die URL gespeichert.
+        val bridgePrefs =
+            context.getSharedPreferences(BRIDGE_PREFS, Context.MODE_PRIVATE)
+        val hadRelayBefore = bridgePrefs.getBoolean("legacy_had_relay", false) ||
+            !bridgePrefs.getString("relay_server_url", null).isNullOrBlank()
+        if (hadRelayBefore) {
+            for ((cap, _) in userFacing) {
+                p.edit().putBoolean("cap_$cap", true).apply()
+            }
+        }
+        p.edit().putBoolean(MIGRATION_KEY, true).apply()
+    }
+
+    fun isEnabled(capability: String): Boolean {
+        if (capability == "core") return true
+        // Migration: Wer das Original-Setup nutzte, hatte implizit alles —
+        // aber FlipsiBridge-Neuinstallationen starten strikt bei AUS.
+        return prefs?.getBoolean("cap_$capability", false) ?: false
+    }
+
+    fun setEnabled(capability: String, enabled: Boolean) {
+        prefs?.edit()?.putBoolean("cap_$capability", enabled)?.apply()
+    }
+
+    /** Prüft einen Endpunkt. Gibt null zurück wenn erlaubt, sonst Fehlermeldung.
+     *  v0.10.8 (Review-Blocking-2-Fix): DENY UNKNOWN — Routen, die nicht in
+     *  routeCapability eingetragen sind, werden abgewiesen (früher: null = erlaubt,
+     *  was jeden zukünftigen Endpunkt ungeschützt durchgelassen hätte).
+     *  "core"-Routen sind immer erlaubt (Verbindungstest). */
+    fun checkEndpoint(method: String, path: String): String? {
+        val cap = routeCapability[Pair(method.uppercase(), path)]
+            ?: return "Unbekannte Route $method $path ist nicht freigegeben (deny-unknown-Gate)."
+        return if (isEnabled(cap)) null else "Capability '$cap' ist deaktiviert. In der FlipsiBridge-App freischalten."
+    }
+
+    /** Welche Capabilities sind aktiv — fürs /ping-Handshake (Server-Tool-Filterung). */
+    fun activeCapabilities(): List<String> {
+        return userFacing.map { it.first }.filter { isEnabled(it) } + "core"
+    }
+}

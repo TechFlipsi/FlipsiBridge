@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- PH-7 / PS-G-1 (11.11.2026): Play-Edition Manifest-Overlay.
+     Schneidet die Play-restricted Berechtigungen aus dem Merge (tools:node="remove")
+     und deklariert das Launcher-Query-Intent als Package-Visibility-Ersatz für
+     QUERY_ALL_PACKAGES (PS-A-10). Der Codepfad bleibt EIN Weg — Feature-Branches
+     laufen über BuildConfig (Dispatcher/Executor/Gate/Resolver/RelayClient).
+
+     Entfernt im play-Build (ROADMAP PS-A):
+       - QUERY_ALL_PACKAGES                  (#10  Restricted; Launcher-Query reicht)
+       - SEND_SMS                            (#14  Restricted; Ersatz = SMS-Intent-Entwurf)
+       - REQUEST_IGNORE_BATTERY_OPTIMIZATIONS (#18 Restricted; Ersatz = Settings-Liste)
+       - com.termux.permission.RUN_COMMAND   (PS-G-7-Default: raus)
+     W16 (Fixliste-Punkt 26): REQUEST_INSTALL_PACKAGES ist aus dem BASE-Manifest
+     selbst entfernt (In-App-Install komplett raus) — kein remove-Node mehr nötig.
+     Behalten laut PS-A (Deklarations-/Disclosure-Arbeit = PH-8/9):
+       MANAGE_EXTERNAL_STORAGE (#9, File-Use-Case-Deklaration), CALL_PHONE (#15),
+       Accessibility/Notification-Listener/Health (#19-21) etc. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <queries>
+        <!-- /apps-Inventar ohne QUERY_ALL_PACKAGES: alle Apps mit Launcher-Intent. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <!-- J1-F03 (11.11.2026): OEM-Einstellungs-Intents sind explizite
+             Komponenten OHNE Launcher-Intent — ohne Paket-Visibility wären sie
+             unsichtbar und alle OEM-Kandidaten fielen still weg. Policy-sauber:
+             namentlich genannte Paket-Zielangaben. -->
+        <package android:name="com.miui.securitycenter" />
+        <package android:name="com.xiaomi.safecenter" />
+        <package android:name="com.miui.powerkeeper" />
+        <package android:name="com.samsung.android.lox" />
+        <package android:name="com.samsung.android.sm" />
+        <package android:name="com.coloros.safecenter" />
+        <package android:name="com.oppo.safe" />
+        <package android:name="com.oneplus.security" />
+        <package android:name="com.coloros.oppoguardelf" />
+        <package android:name="com.vivo.permissionmanager" />
+        <package android:name="com.iqoo.secure" />
+        <package android:name="com.huawei.systemmanager" />
+    </queries>
+
+    <!-- J1-F01/J2-F2 + Welle-7-Beweis (11.11.2026, play): FGS dataSync hat ab
+         targetSdk 35 ein 6h/24h-Budget (Service.onTimeout, ohne stopSelf = Crash)
+         — die permanente Brücke läuft im play-Bau NUR als specialUse (kein
+         Budget-Timeout); der Subtype deckt die Play-Konsole-Deklaration (PH-8/9,
+         Begründung: persistente Nutzer-eigene Gerätebrücke). SERVICE-Elemente
+         gehören in <application> (Welle-3-AAPT-Fail), und das Overlay MUSS das
+         Main-Element REPlacieren — reine Deklaration vereinigt die FGS-Types
+         (Welle-7-Beweis: merged 'specialUse|dataSync'). -->
+    <application>
+        <service
+            android:name=".service.BridgeConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            tools:node="replace">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="persistent_device_bridge" />
+        </service>
+    </application>
+
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.SEND_SMS"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
+        tools:node="remove" />
+    <uses-permission
+        android:name="com.termux.permission.RUN_COMMAND"
+        tools:node="remove" />
+    <!-- Welle-7-Beweis (play): FGS_DATA_SYNC-Declaration klebte im Merge — mit
+         specialUse-only-Service ist die Permission Totholz und würde eine
+         dataSync-Deklaration in der Konsole erzwingen. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
+        tools:node="remove" />
+</manifest>

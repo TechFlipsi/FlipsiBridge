@@ -1,0 +1,244 @@
+---
+name: android
+description: Control an Android phone remotely — navigate apps, tap, type, swipe, and automate Uber, WhatsApp, Spotify, Maps, Settings, Tinder
+version: 1.1.0
+metadata:
+  hermes:
+    tags: [android, phone, automation, accessibility]
+    category: android
+---
+
+# Android Device Control
+
+You can control an Android phone remotely using the `android_*` tools. The phone runs a companion app called **Hermes Bridge**. The agent talks HTTP to a relay on the server; the phone dials out to that relay over WebSocket — no USB, no ADB, no physical connection needed.
+
+## How It Works
+
+```
+Hermes Agent  ──HTTP──>  Relay (this server :8766)  ──WebSocket──>  Hermes Bridge app
+                                                                    ├── Reads screen via AccessibilityService
+                                                                    ├── Performs taps, types, swipes
+                                                                    └── Authenticated via pairing code
+```
+
+## Setup / Connecting a Phone
+
+Configuration is owned by the user, not by the agent: `ANDROID_BRIDGE_URL` (the relay address, e.g. `http://127.0.0.1:8766` or a TLS relay/reverse proxy) and `ANDROID_BRIDGE_TOKEN` (the pairing code from the Hermes Bridge app). The plugin's install prompt or `hermes config` saves both on the user's machine — ask the user to complete that step; the pairing code never travels through the model.
+
+Then call:
+```
+android_setup()
+```
+
+(no arguments — the pairing code is read from the configured secret, never accepted as a tool argument)
+
+1. Starts the relay on this server using the configured settings
+2. Returns `user_instructions` telling the user where the phone connects: the ANDROID_BRIDGE_URL host, or ANDROID_RELAY_HOST with TLS (ANDROID_RELAY_CERT + ANDROID_RELAY_KEY), or a TLS reverse proxy in front of the relay
+
+**Relay the `user_instructions` field from the result directly to the user.**
+
+After the user taps Connect in the app, the phone dials out to this relay via WebSocket. Call `android_ping()` to verify the connection is live.
+
+**Do NOT ask about:**
+- USB, ADB, or developer options
+- The phone's IP address (the phone connects out to the relay — not the other way around)
+
+**Risk-gated tools ask for approval:** `android_send_sms`, `android_call`, `android_file_delete`, `android_send_intent`, `android_broadcast` and `android_setup` surface Hermes' human-approval prompt before they run; unattended runs (cron/gateway without an approver) refuse them. `android_macro` refuses those tools as steps — call them individually.
+
+## Available Tools
+
+You have these 58 tools. Use them by name — they are function calls.
+
+### Connectivity
+- `android_ping()` — check if phone is connected and responding
+- `android_setup()` — start the relay with the user's configured settings (no arguments)
+
+### Reading the Screen
+
+**Screenshots are NOT for finding UI elements.** Vision-based reading is slow,
+expensive, and unreliable for precise interaction. The accessibility tree gives
+you exact element text, node IDs, and tap targets — always use it first.
+
+- `android_read_screen(include_bounds=False)` — get the full accessibility tree as JSON. Returns every visible UI element with text, className, nodeId, clickable, etc. **Always call this before interacting. This is your default screen-reading tool.**
+- `android_find_nodes(text=..., class_name=..., clickable=True)` — search the accessibility tree for specific elements without pulling the whole tree. Use to locate a known button/field directly.
+- `android_screenshot()` — capture a screenshot as base64 PNG. **Only** for: showing the user what's on screen, verifying visual layout, or apps the accessibility tree can't see (canvas/game rendering). Never use it to search for where to tap — use `android_read_screen`, `android_find_nodes`, or `android_tap_text` instead.
+- `android_current_app()` — get the package name and activity of the foreground app.
+
+### Opening Apps
+- `android_open_app(package)` — launch any app by package name. **This is the primary way to open apps. Do NOT try to find and tap app icons.** Example: `android_open_app("com.instagram.android")`
+- `android_get_apps()` — list all installed apps with package names. Use this if you don't know the package name.
+
+### Tapping
+- `android_tap(x, y, node_id)` — tap by coordinates or node ID. Prefer node_id from read_screen.
+- `android_tap_text(text, exact=False)` — tap the first element matching text. **Most convenient for buttons, menu items, links.**
+
+### Typing
+- `android_type(text, clear_first=False)` — type into the currently focused input field. Tap the field first.
+
+### Gestures
+- `android_swipe(direction, distance="medium")` — swipe up/down/left/right. Distances: short, medium, long.
+- `android_scroll(direction, node_id=None)` — scroll a specific element or the whole screen.
+
+### Keys
+- `android_press_key(key)` — perform a global action. Options: `back`, `home`, `recents`, `notifications`, `quick_settings`, `lock_screen`, `take_screenshot`, `wake` (turn the screen on without unlocking), `power` (opens the long-press power dialog — reboot/emergency; almost never what you want to wake the device). Volume/keyboard keys (`volume_up`, `enter`, etc.) are not supported.
+
+### Waiting
+- `android_wait(text, class_name, timeout_ms=5000)` — poll until an element appears. Use after navigation or loading.
+
+### Microphone
+- `android_mic_record(duration=0)` — start a visible 16 kHz mono recording; `0` records until stopped, with a 30-minute safety cap.
+- `android_mic_stop()` — stop and finalize the WAV.
+- `android_mic_status()` — inspect recorder phase and completed-file metadata.
+- `android_mic_fetch(remote_path="")` — stream the latest or named WAV to a temporary `MEDIA:` file.
+
+## Rules
+
+### CRITICAL: Do not loop
+- **Maximum 5-7 tool calls per user request.** After that, STOP and report what you did and what you see.
+- **Do NOT keep taking screenshots in a loop.** Take ONE screenshot, analyze it, act, then report.
+- **If an action doesn't work after 2 attempts, STOP and tell the user** what happened.
+- **After completing the user's request, STOP and report the result.** Do not keep interacting with the screen.
+
+### Workflow pattern
+For any task, follow this pattern and then STOP:
+1. `android_open_app(package)` — open the app
+2. `android_read_screen()` — see what's on screen (accessibility tree, not a screenshot)
+3. 1-3 actions (tap, type, swipe) — do what the user asked, preferring `android_tap_text` / node IDs from the tree
+4. `android_read_screen()` — verify the result (screenshot only if visual confirmation was requested)
+5. **Report to the user and STOP.** Do not take further actions unless the user asks.
+
+### Other rules
+1. **ALWAYS open apps with `android_open_app(package)`** — never try to find and tap the icon on the home screen or app drawer.
+2. **Prefer `android_read_screen()` over `android_screenshot()`** — read_screen is faster and structured. Only use screenshot when the accessibility tree is insufficient (canvas/image-heavy apps).
+3. **Prefer `android_tap_text("Button Text")` over coordinates** — it's more reliable.
+4. **If you don't know a package name**, call `android_get_apps()` and search the results.
+5. **Confirm destructive actions** (purchases, sends, deletions) with the user before executing.
+6. **Handle permission dialogs** — look for "Allow"/"Deny" buttons. Tap "Allow" or "While using the app".
+7. **Go back**: `android_press_key("back")`. **Go home**: `android_press_key("home")`.
+
+---
+
+## Common Package Names
+
+| App | Package |
+|-----|---------|
+| Uber | com.ubercab |
+| Bolt | com.bolt.client |
+| WhatsApp | com.whatsapp |
+| Spotify | com.spotify.music |
+| Google Maps | com.google.android.apps.maps |
+| Chrome | com.android.chrome |
+| Gmail | com.google.android.gm |
+| Instagram | com.instagram.android |
+| X/Twitter | com.twitter.android |
+| Tinder | com.tinder |
+| Settings | com.android.settings |
+
+---
+
+## App-Specific Procedures
+
+### Uber — Order a ride
+
+1. `android_open_app("com.ubercab")`
+2. `android_wait(text="Where to?", timeout_ms=8000)`
+3. `android_tap_text("Where to?")`
+4. `android_type("<destination>", clear_first=True)`
+5. `android_wait(text="<destination keyword>")` then tap suggestion
+6. `android_read_screen()` — read price and car options
+7. **STOP** — Report options and price to user, wait for confirmation
+8. After confirmation: `android_tap_text("UberX")` then `android_tap_text("Confirm UberX")`
+9. `android_wait(text="Finding your driver", timeout_ms=10000)`
+
+**Pitfalls:** Uber may block accessibility taps on some versions — fall back to screenshot + coordinates. Always mention surge pricing to user.
+
+### WhatsApp — Send a message
+
+1. `android_open_app("com.whatsapp")`
+2. `android_wait(text="Chats")`
+3. Existing chat: `android_tap_text("<contact name>")`
+4. New chat: `android_tap_text("New chat")` → type contact name → tap match
+5. `android_tap_text("Type a message")`
+6. `android_type("<message text>")`
+7. **STOP** — Confirm with user before sending
+8. `android_tap_text("Send")` or `android_press_key("enter")`
+
+**Pitfalls:** Message input is `android.widget.EditText`. Read screen after typing to verify before sending.
+
+### SMS / Messages — Read, draft, reply
+
+**Reading messages — use the accessibility tree, NOT screenshots.**
+Screenshot + vision loops are slow and burn tokens; the tree has the text already.
+
+1. Incoming messages arrive as notifications — `android_notifications()` returns sender + preview with no UI navigation at all. Poll it (or `android_events()`) instead of opening the app.
+2. For thread history: `android_open_app("com.google.android.apps.messaging")` → `android_tap_text("<contact>")` → `android_read_screen()`. Scroll with `android_scroll("up")` and re-read for older messages.
+3. To locate a specific message or conversation, `android_find_nodes(text="<keyword>")` is much cheaper than reading the whole screen.
+
+**Drafting without sending (review-first workflow):**
+```
+android_send_intent("android.intent.action.SENDTO",
+                    data_uri="smsto:<number>",
+                    extras={"sms_body": "<draft text>"})
+```
+This opens the compose screen pre-filled — the user reviews and hits send themselves. Prefer this over `android_send_sms` whenever the user wants to approve messages; `android_send_sms` sends immediately and must be confirmed with the user first.
+
+**Contact lookup:** `android_search_contacts("<name>")` returns numbers directly — don't navigate the Contacts app.
+
+**Pitfalls:** Default SMS app package varies (`com.google.android.apps.messaging` on Pixel, `com.samsung.android.messaging` on Samsung) — check `android_get_apps()` if open_app fails. Notification previews may be truncated; open the thread for full text.
+
+### Spotify — Play music
+
+1. `android_open_app("com.spotify.music")`
+2. `android_wait(text="Search", timeout_ms=8000)`
+3. `android_tap_text("Search")`
+4. `android_wait(class_name="android.widget.EditText")`
+5. `android_type("<query>", clear_first=True)`
+6. `android_wait(text="Songs", timeout_ms=5000)`
+7. `android_read_screen()` then tap desired result
+
+**Playback:** `android_tap_text("Play")`, `android_tap_text("Next")`, `android_tap_text("Pause")`
+
+**Pitfalls:** Spotify uses custom views — screenshot may be more useful than read_screen.
+
+### Google Maps — Get directions
+
+1. `android_open_app("com.google.android.apps.maps")`
+2. `android_wait(text="Search here", timeout_ms=8000)`
+3. `android_tap_text("Search here")`
+4. `android_type("<destination>", clear_first=True)`
+5. Tap suggestion → `android_tap_text("Directions")`
+6. `android_read_screen()` — report time, distance, route to user
+7. Start navigation only if user confirms: `android_tap_text("Start")`
+
+**Pitfalls:** Maps uses heavy canvas rendering — prefer `android_screenshot()`. Exit navigation with `android_press_key("back")`.
+
+### Settings — Change system settings
+
+1. `android_open_app("com.android.settings")`
+2. `android_wait(text="Settings", timeout_ms=5000)`
+3. Navigate by tapping section names:
+   - "Network & internet" → WiFi, mobile data
+   - "Connected devices" → Bluetooth, NFC
+   - "Display" → Brightness, dark mode
+   - "Sound & vibration" → Volume
+   - "Apps" → App management
+4. `android_read_screen()` to find specific toggles
+
+**Pitfalls:** Settings UI varies across manufacturers (Samsung, Pixel, Xiaomi). Always read_screen to discover actual labels. Use `android_scroll("down")` if setting not visible.
+
+### Tinder — View profiles and interact
+
+1. `android_open_app("com.tinder")`
+2. `android_wait(timeout_ms=8000)`
+3. `android_read_screen()` + `android_screenshot()` — Tinder is image-heavy
+4. Report profile details to user
+
+**IMPORTANT:** Always confirm with user before swiping or messaging.
+- Like: `android_swipe("right")`
+- Pass: `android_swipe("left")`
+- Super Like: `android_swipe("up")`
+
+**Pitfalls:** Tinder uses custom UI — accessibility tree is limited, prefer screenshots. "It's a Match!" popup: tap anywhere to dismiss.
+---
+
+*This file is kept in sync with [`hermes-android-plugin/skill.md`](../hermes-android-plugin/skill.md) — the path the hermes plugin loader registers. Keep both identical when editing.*

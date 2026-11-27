@@ -1,0 +1,26 @@
+[Unit]
+Description=FlipsiBridge Botnet-Wächter (Relay-Log-Alarm, still wenn OK)
+Documentation=https://github.com/TechFlipsi/FlipsiBridge
+After=flipsibridge-relay.service
+
+[Service]
+Type=oneshot
+# Wächter liest nur das Journal des Relays und stellt ggf. EINEN Alarm zu.
+# Schwellwerte/Cooldown/Notify via EnvironmentFile (Standardwerte siehe Skript:
+# RELAY_BOTNET_WINDOW_MIN / _IPS / _FAILS / _COOLDOWN_MIN / _STATE; Notify-Skript
+# ist PFLICHT-ENV: RELAY_BOTNET_NOTIFY=/pfad/zum/notify-skript).
+ExecStart=/usr/bin/python3 /opt/flipsibridge/tools/relay_botnet_watch.py
+EnvironmentFile=-/root/.secrets/flipsibridge-botnet-watch.env
+# SECURITY: read-only Home-Zugriff (notify-discord.sh liegt unter /root),
+# State-Datei außerhalb des Homes (Default: /var/lib/flipsibridge/).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

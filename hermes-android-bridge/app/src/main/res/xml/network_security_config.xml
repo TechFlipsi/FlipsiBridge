@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FlipsiBridge Netzwerk-Härtung (WELLE-13-PRIVATSPHÄRE-FIX 11.11.2026):
+  - Standard: Klartext (HTTP/ws) VERBOTEN — auch im LAN.
+  - Ausnahme: GENAU EIN DNS-Name — `dashboard.lan` (statisch, Heim-DNS/hosts-
+    Eintrag, nicht identifizierend) — für den HTTP-Direktmodus im Heim-LAN,
+    weil das lokale Dashboard lokal nur HTTP spricht. ALLE anderen Hosts
+    (eigene Relay-Domain & Co) müssen HTTPS/WSS mit echtem Zertifikat sein.
+
+  PRIVATSPHÄREN-FIX: das vorher harte SPKI-Pin-Set gegen die private
+  Betreiber-Relay-Domain wurde ENTFERNT (Privatsphären-Gate-G: keine privaten
+  Domains/Hashes im Release). Pinning für NUTZER-Relays bleibt als Funktion
+  über PinSource (Runtime, nur wenn der Nutzer selbst einen Pin-Verband
+  einrichtet) — kein Default-Pin, kein Default-Host im Build.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- EIN generischer Heim-LAN-DNS-Name (hosts-Eintrag) -->
+        <domain includeSubdomains="false">dashboard.lan</domain>
+    </domain-config>
+</network-security-config>

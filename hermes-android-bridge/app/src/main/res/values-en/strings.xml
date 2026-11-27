@@ -1,0 +1,909 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  W4 (App-Lane C): values-en/strings.xml — English je Key für
+  res/values/strings.xml (deutsche Default-Fassung) + die Lane-C-Keys
+  (chat_tab_*, mediathek_*, settings_language_title, settings_language_desc,
+  language_option_*). Die resources/values-en/ DECKT damit ALLE Keys des
+  Basis-strings.xml + meiner Keys ab. Andere Lanes führen EIGENE values-en-
+  Dateien im SELBEN Directory (res/values-en/merged im Build, je Key genau
+  EINE Quelle — W4-Konvention, cf. onboarding_multi_server.xml von Lane D):
+  deren Keys NICHT hier doppelt aufführen (Duplicate-Ressourcen = aapt-Fehler).
+-->
+<resources>
+    <string name="app_name">FlipsiBridge</string>
+    <string name="tagline">Your agent on your phone — hands, eyes and voice.</string>
+
+    <string name="accessibility_description">FlipsiBridge accessibility service — lets the agent read the screen and operate the device.</string>
+
+    <string name="section_status">Status</string>
+    <string name="status_a11y">Accessibility</string>
+    <string name="status_server">Local server</string>
+    <string name="status_relay">Relay connection</string>
+    <string name="status_auth">Pairing code</string>
+
+    <string name="section_permissions">Permissions</string>
+    <string name="perm_a11y_title">Accessibility service</string>
+    <string name="perm_a11y_desc">Lets the agent read and operate the screen (tap, swipe, open apps).</string>
+    <string name="perm_overlay_title">Status overlay</string>
+    <string name="perm_overlay_desc">Small status display above all apps while the bridge is active.</string>
+    <string name="perm_screenrec_title">Screen recording</string>
+    <string name="perm_screenrec_desc">For screenshots. Android confirms per session — standard Android pop-up.</string>
+    <string name="perm_revival_title">Termux auto-revival (opt-in)</string>
+    <string name="perm_revival_desc">Restarts the local stack when the connection is gone for good. Off by default.</string>
+
+    <string name="section_connection">Connection</string>
+    <string name="conn_hint">Address of the relay on your server. With wss:// the connection is encrypted.</string>
+    <string name="conn_url_hint">my-relay.example.com:8766</string>
+    <string name="conn_connect">Connect</string>
+    <string name="conn_disconnect">Disconnect</string>
+    <string name="conn_connecting">Connecting …</string>
+    <string name="snack_connecting">Connecting to server …</string>
+    <string name="server_no_active_snack">No server profile — please add a server.</string>
+    <string name="caps_section_hint">What the agent may do on the phone — everything off by default.</string>
+
+    <string name="section_pairing">Pairing</string>
+    <string name="pairing_hint">Tap to copy the code. The agent asks for it during phone setup.</string>
+    <string name="pairing_regen">Generate new code</string>
+
+    <!-- W16 Fixliste 32: Media gallery opens via the chat ⋮-menu overlay (tab row removed);
+         chat_tab_chat/chat_tab_mediathek dropped -->
+    <string name="mediathek_title">Media</string>
+    <string name="mediathek_back_a11y">Back to chat</string>
+    <string name="mediathek_empty_title">No media yet</string>
+    <string name="mediathek_empty_hint">Pictures, voice messages and files from this chat appear here.</string>
+    <string name="mediathek_section_media">Pictures &amp; videos</string>
+    <string name="mediathek_section_voices">Voice messages</string>
+    <string name="mediathek_section_files">Files</string>
+    <string name="mediathek_stale_hint">This file is no longer on the device.</string>
+    <string name="mediathek_ref_hint">Reference only — the file is not stored on the device.</string>
+    <string name="mediathek_view_fullscreen">Show picture full size</string>
+    <string name="mediathek_play_voice">Play voice message</string>
+    <string name="mediathek_stop_voice">Stop playback</string>
+    <string name="mediathek_save_file">Save to Downloads</string>
+    <string name="mediathek_saved_file">✓ Saved (Downloads)</string>
+
+    <!-- W4 App-Lane C: in-app language selection (Settings → Language) -->
+    <string name="settings_language_title">Language</string>
+    <string name="settings_language_desc">App language — independent of the system.</string>
+    <string name="language_option_system">System default</string>
+    <string name="language_option_de">Deutsch</string>
+    <string name="language_option_en">English</string>
+
+    <!-- W4 App-Lane B: quoting (long-press → reply-with-quote) -->
+    <string name="chat_quote_a11y">Quote message</string>
+    <string name="chat_quote_block_a11y">Quoted message from %1$s</string>
+    <string name="chat_reply_strip_label">Reply to %1$s</string>
+    <string name="chat_reply_cancel_a11y">Remove reply reference</string>
+
+    <!-- W4 App-Lane B: chat search (magnifier wiring: bar + hits + jump) -->
+    <string name="chat_search_open_a11y">Search the chat history</string>
+    <string name="chat_search_close_a11y">Close search</string>
+    <string name="chat_search_hint">Search the chat history</string>
+    <string name="chat_search_clear_a11y">Clear search input</string>
+    <string name="chat_search_empty">No matches</string>
+    <string name="chat_search_hit_a11y">Search hit</string>
+
+    <!-- W4-FIX-JAG2 (S7): pin warning on profile switch to an unpinned host -->
+    <string name="ms_switch_nopin_warn">Note: this relay host has no certificate pin — connections rely on system trust only. Pinning covers the own relay only.</string>
+
+    <!-- ── Wave 13 / Settings lane: settings redesign (P2) — EN ─────────────── -->
+    <string name="settings_home_title">Settings</string>
+    <string name="settings_info_a11y">Open about FlipsiBridge</string>
+    <string name="about_sheet_title">About FlipsiBridge</string>
+    <string name="about_version_label">Version</string>
+    <!-- W16 P20+27: Tiefe aus dem About-Sheet (Route 3, Vollansicht) -->
+
+    <!-- Wave 13 / P4: permissions with purpose + status + system jump -->
+    <string name="settings_permissions_title">Permissions</string>
+    <string name="settings_permissions_desc">Every permission with purpose and status — changes happen in the Android system settings.</string>
+    <string name="perm_status_granted">Granted</string>
+    <string name="perm_status_missing">Not granted</string>
+    <string name="perm_open_system_settings">System settings</string>
+    <string name="perm_notifications_title">Notifications</string>
+    <string name="perm_notifications_desc">Shows status and messages as an Android notification while the bridge runs.</string>
+    <string name="perm_mic_title">Microphone</string>
+    <string name="perm_mic_desc">For voice messages — recording only while you record.</string>
+    <string name="perm_camera_title">Camera</string>
+    <string name="perm_camera_desc">For photos you send in chat or let the agent take.</string>
+    <string name="perm_location_title">Location</string>
+    <string name="perm_location_desc">When you ask the agent about your location.</string>
+    <string name="perm_allfiles_title">All files</string>
+    <string name="perm_allfiles_desc">File access for tasks you give the agent yourself (e.g. searching downloads).</string>
+    <string name="perm_sms_title">SMS</string>
+    <string name="perm_sms_desc">Only for SMS tasks you explicitly give the agent (GitHub edition only).</string>
+    <string name="perm_calls_title">Calls</string>
+    <string name="perm_calls_desc">Place calls that you order the agent to make.</string>
+    <string name="perm_contacts_title">Contacts</string>
+    <string name="perm_contacts_desc">Read contacts when you ask the agent for them.</string>
+    <string name="perm_battery_title">Battery optimization</string>
+    <string name="perm_battery_desc">Exemption from battery optimization so the bridge stays reachable.</string>
+
+    <!-- Wave 13 / P10: default assistant (RoleManager) -->
+    <string name="settings_assistant_title">Default assistant</string>
+    <string name="settings_assistant_desc">Open FlipsiBridge instead of another assistant via the assistant button.</string>
+    <string name="assistant_action">Set as default assistant</string>
+    <string name="assistant_status_held">FlipsiBridge is set as the default assistant.</string>
+    <string name="assistant_status_other">Another assistant is currently set — Android shows you the choice.</string>
+    <string name="assistant_unavailable">On this Android (below 10) no default assistant can be set.</string>
+    <!-- W16 P12/P20: roleAvailable gate + result handler + fallback -->
+    <string name="assistant_role_unavailable_hint">The assistant role is currently not offered on this device. You can set it via system settings instead.</string>
+    <string name="assistant_dialog_failed">Assistant dialog not understood</string>
+    <string name="assistant_dialog_failed_text">Android returned no result. You can also set the role manually: System settings → Apps → Default apps → Digital assistant app.</string>
+    <string name="assistant_open_default_apps">Open digital assistant app</string>
+    <!-- Wave 13 / P7b: legal (short texts, collapsible) -->
+    <string name="settings_legal_title">Legal</string>
+    <string name="settings_legal_desc">Imprint, privacy and terms of use.</string>
+    <string name="legal_imprint_title">Imprint</string>
+    <string name="legal_imprint_body">Provider: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Austria.\n\nScope: development and provision of the FlipsiBridge app — a tool for remote-controlling your own Android device via a relay server you run yourself.\n\nAuthorized representative: Fabian Kirchweger.</string>
+    <string name="legal_privacy_title">Privacy</string>
+    <string name="legal_privacy_body">Controller: TechFlipsi / Fabian Kirchweger, Marktplatz 11/3, 4625 Offenhausen, Austria.\n\nData processed: the app only handles the data the bridge needs — server address, pairing code, connection and device status, plus the messages you write and actions you order. Chat content and history stay on the device.\n\nServer operator: FlipsiBridge connects only to the relay server you set up yourself. Whoever operates that server is responsible for processing on it; the app sends no data to any TechFlipsi server.\n\nEncryption: end-to-end encryption is built into the app (Settings → Encryption); whether it is active depends on your server and client configuration.\n\nYour rights (Art 15–21 GDPR): access, rectification, erasure, restriction, data portability and objection — in writing to the address above. You may also lodge a complaint with the Austrian Data Protection Authority.\n\nLegal basis: contract performance or your explicit consent (Art 6 (1) (b) and (a) GDPR). No profiling or automated decision-making takes place.</string>
+    <string name="legal_terms_title">Terms of use</string>
+    <string name="legal_terms_body">Use: FlipsiBridge is provided free of charge for private use.\n\nWarranty: the app is provided as is; statutory warranty is excluded to the extent legally permissible.\n\nLiability: TechFlipsi is liable only for intent and gross negligence and for personal injury. No liability for damage caused by improper use, third-party systems or data loss.\n\nYour duties: use the app only on devices you own or are authorized to use, and within applicable law.\n\nChanges: these terms may change; the current version lives in the app under Settings → About.</string>
+    <string name="legal_accept">I accept</string>
+    <string name="support_a11y">Support button: support the app with a one-time donation</string>
+    <string name="support_sheet_title">Support</string>
+    <string name="support_sheet_info">A voluntary thank-you for the ongoing development — nothing is locked, a purchase is never required.</string>
+
+    <!-- W15 (I18n-Fix): App-weite UI-Strings — English je Key -->
+    <string name="common_cancel">Cancel</string>
+    <string name="common_open">Open</string>
+    <string name="common_later">Later</string>
+    <string name="common_close">Close</string>
+    <string name="common_settings">Settings</string>
+    <string name="common_chat">Chat</string>
+    <string name="common_e2e_title">E2E encryption</string>
+    <string name="common_sprache">Language</string>
+    <string name="nav_tab_dashboard">Dashboard</string>
+    <string name="nav_tab_e2e">E2E</string>
+    <string name="badge_active">Active</string>
+    <string name="badge_missing">missing</string>
+    <string name="badge_needed">needed</string>
+    <string name="badge_check">check</string>
+    <string name="badge_possible">available</string>
+    <string name="badge_not_active">Inactive</string>
+    <string name="badge_on">ON</string>
+    <string name="badge_off">OFF</string>
+    <string name="a11y_open_setting">Open setting</string>
+    <string name="home_step_connect">Set up the connection</string>
+    <string name="home_state_connected">Connected</string>
+    <string name="home_state_pairing_needed">Pairing required</string>
+    <string name="home_state_connecting">Connecting…</string>
+    <string name="home_state_disconnected">Disconnected</string>
+    <string name="home_state_fallback">Bridge state</string>
+    <string name="conn_url_label">Server address (relay URL)</string>
+    <string name="conn_url_label_short">Server address</string>
+    <string name="conn_url_placeholder">https://your-relay.example</string>
+    <string name="toast_record_granted">Screen recording approved</string>
+    <string name="toast_record_denied">Screen recording not approved</string>
+    <string name="toast_notifications_granted">Notifications allowed</string>
+    <string name="toast_notifications_denied">Notifications denied</string>
+    <string name="toast_health_granted">Health permissions granted (%1$d)</string>
+    <string name="toast_health_partial">Only partially granted — missing: %1$s</string>
+    <string name="toast_health_dialog_error">Health dialog did not open (%1$s) — install/open Health Connect</string>
+    <string name="snack_url_missing">Enter the server address</string>
+    <string name="snack_disconnected">Connection closed</string>
+    <string name="snack_code_copied">Pairing code copied</string>
+    <string name="snack_code_regen">New code generated — enter it on the server</string>
+    <string name="snack_caps_all_on">All %1$d capabilities active</string>
+    <string name="snack_caps_all_off">All capabilities turned off</string>
+    <string name="snack_caps_partial">%1$d of %2$d capabilities active — invasive stay off</string>
+    <string name="snack_a11y_first">Enable accessibility first (control &amp; read)</string>
+    <string name="action_undo">Undo</string>
+    <string name="settings_group_server">Server</string>
+    <string name="settings_group_app">App</string>
+    <string name="settings_group_agents">Agents</string>
+    <string name="settings_group_lock">App lock</string>
+    <string name="settings_group_crypto">Encryption</string>
+    <string name="caps_section_title">Agent capabilities</string>
+    <string name="caps_section_sub">What the agent may do on the device — each group can be expanded.</string>
+    <string name="caps_master_title">All capabilities</string>
+    <string name="caps_master_on">The agent may do everything listed below.</string>
+    <string name="caps_master_off">One switch for all %1$d capabilities — confirm invasive ones first.</string>
+    <string name="caps_master_a11y_all">All enabled</string>
+    <string name="caps_master_a11y_count">%1$d of %2$d enabled</string>
+    <string name="caps_row_a11y_on">Enabled</string>
+    <string name="caps_row_a11y_off">Off</string>
+    <string name="caps_dialog_title">Turn on all capabilities?</string>
+    <string name="caps_dialog_text">This also enables these invasive capabilities:</string>
+    <string name="caps_dialog_sensitive_play">Location, calls, contacts and microphone give the agent access to sensitive data. Android grants (e.g. Health consent) are unaffected and must be given separately. The SMS draft only opens the SMS app — no direct sending.</string>
+    <string name="caps_dialog_sensitive_github">Location, SMS, calls, contacts and microphone give the agent access to sensitive data. Android grants (e.g. Health consent) are unaffected and must be given separately.</string>
+    <string name="caps_dialog_without_invasive">Enable without invasive</string>
+    <string name="caps_dialog_enable_all">Enable all</string>
+    <string name="caps_compact_desc">%1$d of %2$d capabilities active — toggle them in the Agents tab.</string>
+    <string name="countbadge_a11y">%1$d of %2$d capabilities enabled</string>
+    <string name="caps_group_view">View &amp; state</string>
+    <string name="caps_group_control">Operate device</string>
+    <string name="caps_group_write">Write &amp; self-care</string>
+    <string name="caps_group_invasive">Invasive — explicitly enable</string>
+    <string name="cap_label_screen">Read screen</string>
+    <string name="cap_desc_screen">Read app titles and text from the display</string>
+    <string name="cap_label_screen_capture">Screenshots &amp; recording</string>
+    <string name="cap_desc_screen_capture">Image or video of the screen (Android asks each time)</string>
+    <string name="cap_label_notifications">Read notifications</string>
+    <string name="cap_desc_notifications">Title/content of incoming notifications</string>
+    <string name="cap_label_clipboard">Clipboard</string>
+    <string name="cap_desc_clipboard">Read and set content</string>
+    <string name="cap_label_files">Read files</string>
+    <string name="cap_desc_files">Browse and fetch downloads, documents, photos, music</string>
+    <string name="cap_label_health">Health data</string>
+    <string name="cap_desc_health">Health Connect: steps, pulse, sleep and more — read only</string>
+    <string name="cap_label_interaction">Operate device</string>
+    <string name="cap_desc_interaction">Tap, scroll, open apps, press keys</string>
+    <string name="cap_label_device">Device hardware</string>
+    <string name="cap_desc_device">Photo, torch, volume, network status, alarm/timer</string>
+    <string name="cap_label_notify_reply">Send replies</string>
+    <string name="cap_desc_notify_reply">Reply directly in notifications (e.g. WhatsApp)</string>
+    <string name="cap_label_files_write">Write/delete files</string>
+    <string name="cap_desc_files_write">Place or delete files (destructive!)</string>
+    <string name="cap_label_location">Location</string>
+    <string name="cap_desc_location">Query GPS position</string>
+    <string name="cap_label_sms">Send SMS</string>
+    <string name="cap_desc_sms">Send messages in your name</string>
+    <string name="cap_label_calls">Start call</string>
+    <string name="cap_desc_calls">Place calls</string>
+    <string name="cap_label_contacts">Read contacts</string>
+    <string name="cap_desc_contacts">Read the address book</string>
+    <string name="cap_label_microphone">Microphone</string>
+    <string name="cap_desc_microphone">Record surroundings (stored as a recording file)</string>
+    <string name="cap_label_sms_draft">Open SMS draft</string>
+    <string name="cap_desc_sms_draft">Opens the SMS app with a pre-filled draft (GitHub edition: direct sending)</string>
+    <string name="pairing_card_title">Pairing code</string>
+    <string name="pairing_card_desc">Authentication: bridge and app on the server.</string>
+    <string name="pairing_copy_a11y">Copy pairing code</string>
+    <string name="pairing_change_hint">Only change together with the server side (new code there).</string>
+    <string name="pairing_event_restored">Storage was cleared — code restored automatically (no action needed)</string>
+    <string name="pairing_event_regenerated">Code is new — enter it on the server (banner above shows the step)</string>
+    <string name="pairing_regen_title">Generate a new pairing code?</string>
+    <string name="pairing_regen_text">The server only knows the configured code. Enter the new code on the server first, then the connection will work again.</string>
+    <string name="pairing_regen_confirm">Generate</string>
+    <string name="banner_regen_title">Pairing code was regenerated</string>
+    <string name="banner_regen_text">Step: copy the code in Settings → enter it on the server → then connect.</string>
+    <string name="banner_regen_badge">NEW CODE</string>
+    <string name="banner_broken_title">Pairing code was rejected</string>
+    <string name="banner_broken_text">Pairing rejected — regenerate the code in Settings or enter it on the server, then connect again.</string>
+    <string name="banner_broken_badge">PAIRING</string>
+    <string name="banner_connected_title">Connected — bridge is up</string>
+    <string name="banner_connected_text">The agent can use the device — adjust capabilities in the Agents tab.</string>
+    <string name="banner_connected_badge">Active</string>
+    <string name="banner_connecting_title">Connecting…</string>
+    <string name="banner_connecting_text">The reconnect loop runs (1–30 s intervals, then every 5 min).</string>
+    <string name="banner_connecting_badge">CONNECTING</string>
+    <string name="banner_failed_title">Not connected</string>
+    <string name="banner_failed_badge">OFFLINE</string>
+    <string name="banner_idle_url">Enter the address below and connect. Reconnect runs in 5-minute mode.</string>
+    <string name="banner_idle_no_url">Set up the pairing code on the server in Settings, then connect below.</string>
+    <string name="hint_stack_unreachable">Server unreachable — the helper stack is starting, further attempts run automatically.</string>
+    <string name="hint_retry_generic">Server unreachable — new attempts run automatically. Check the URL in Settings if it keeps failing.</string>
+    <string name="reconnect_retry_in">Next attempt in %1$s</string>
+    <string name="retry_unit_seconds">s</string>
+    <string name="retry_unit_minutes">min</string>
+    <string name="reconnect_retry_hint">Close the app completely and reopen it for an immediate attempt.</string>
+    <string name="banner_detail_dismiss">Hide hint</string>
+    <string name="hint_url_invalid">Server address is invalid — check the URL in Settings and connect again.</string>
+    <string name="hint_connect_error">Server unreachable — check the URL in Settings and restore the connection.</string>
+    <string name="hint_revival_failed">Termux helper stack could not start — open Termux and check its permission.</string>
+    <string name="hint_connect_failed">Connection failed — check the server address and connect again.</string>
+    <string name="perm_basis_title">Foundation of remote control</string>
+    <string name="perm_a11y_row_title">Accessibility (control &amp; read)</string>
+    <string name="perm_a11y_row_desc">Remote control, screen queries, text recognition</string>
+    <string name="perm_battery_row_title">Battery: no restrictions</string>
+    <string name="perm_battery_row_desc">MAIN reason for a stable connection — HyperOS/Doze must not idle the bridge</string>
+    <string name="perm_notifications_row_title">Show notifications</string>
+    <string name="perm_notifications_row_desc">So connection notices appear (Android 13+)</string>
+    <string name="perm_autostart_row_title">Autostart</string>
+    <string name="perm_autostart_row_desc">Lets the bridge start on its own after a phone reboot — opens your OEM autostart toggle (%1$s).</string>
+    <string name="perm_data_title">Data &amp; display</string>
+    <string name="perm_files_row_title">Access all files</string>
+    <string name="perm_files_row_desc">Full read/write access to downloads and folders</string>
+    <string name="perm_files_fallback">Setting unreachable — please do it manually: Settings → Apps → FlipsiBridge → Permissions</string>
+    <string name="perm_a11y_fallback">Accessibility settings unreachable</string>
+    <string name="perm_record_row_title">Screen recording (MediaProjection)</string>
+    <string name="perm_record_row_desc">The Android prompt appears again each session</string>
+    <string name="perm_health_row_title">Allow health data</string>
+    <string name="perm_health_row_desc">Health Connect permissions (steps/pulse/sleep …) — the capability is switched on too</string>
+    <string name="badge_health_default_off">OFF by default</string>
+    <string name="badge_health_missing">Health Connect missing</string>
+    <string name="badge_health_rights">%1$d / %2$d granted</string>
+    <string name="perm_overlay_row_title">HUD overlay</string>
+    <string name="perm_overlay_row_desc">Small status sign above everything (optional)</string>
+    <string name="health_missing_title">Health Connect missing</string>
+    <string name="health_missing_text">Health Connect is not installed or not active on this device. After installing it from the Play Store, tap the “Allow health data” row again.</string>
+    <!-- W15c (MIT, hunter finding): Health rationale texts moved from the
+         activity into resources — resolved live under the AppLanguageGate. -->
+    <string name="health_rationale_title">Why FlipsiBridge reads health data</string>
+    <string name="health_rationale_intro">FlipsiBridge is the bridge for my voice assistant — the agent with its own server. From Health Connect it may — ONLY with my consent here in Health Connect — READ these values: steps, distance, calories burned, heart rate, sleep and weight.</string>
+    <string name="health_rationale_usage">The data feeds the daily overview (e.g. report pulse, steps over the day, sleep window). Nothing is WRITTEN to Health Connect, nothing is deleted without permission, no data sharing with third parties — the server runs in the home network.</string>
+    <string name="health_rationale_change">Change anytime: Health Connect → Data and access → FlipsiBridge → toggle each permission on/off.</string>
+    <string name="health_rationale_ok">Got it</string>
+    <!-- W18 rest i18n: disclosure dialog (PH-7/PS-G-2) — literals → resources -->
+    <string name="disclosure_consent_note">Your consent is logged with a date — revocable at any time in the system settings.</string>
+    <string name="disclosure_confirm">Understood — enable</string>
+    <string name="disclosure_dismiss">Not now</string>
+    <string name="health_update_title">Health Connect outdated</string>
+    <string name="health_update_text">The Health Connect component needs an update (Play Store). Then try again.</string>
+    <string name="health_denied_title">No health permissions granted</string>
+    <string name="health_denied_text_v34">The system dialog was cancelled, denied or silently blocked. Open the Health Connect settings and grant the rights for FlipsiBridge there.</string>
+    <string name="health_denied_text_old">The permission dialog was cancelled or denied. Please try again or set the rights in Health Connect manually.</string>
+    <string name="health_open">Open Health Connect</string>
+    <string name="termux_title">Termux revival (special case)</string>
+    <string name="termux_desc">Only with a Termux helper stack on the device — OFF by default</string>
+    <string name="termux_hint">Reconnect loop: 1–30 s intervals, then endlessly every 5 min with an alarm. The loop stops on pairing problems — no spam warnings.</string>
+    <string name="footer_title">Local control (USB/LAN)</string>
+    <string name="footer_url">http://%1$s:8765 — home Wi-Fi only</string>
+    <string name="footer_desc">Normal operation runs via the relay server (above) — so the agent has access on the go too.</string>
+    <!-- W16 (Punkt 26): update check/info push — NO in-app install anymore -->
+    <string name="update_channel_name">Updates</string>
+    <string name="update_channel_desc">Notice when a newer FlipsiBridge version is available</string>
+    <string name="update_notify_title">Update available</string>
+    <string name="update_notify_text">FlipsiBridge %1$s is available</string>
+    <string name="crypto_title">End-to-end encryption</string>
+    <string name="crypto_no_session">No active E2E session yet — the handshake runs automatically when the agent connects.</string>
+    <string name="crypto_active_session">Active session per agent: compare fingerprints (Chat → fingerprint-check button).</string>
+    <string name="crypto_session_fp">Session fingerprint (%1$s)</string>
+    <string name="crypto_agent_fp">Agent identity fingerprint</string>
+    <string name="crypto_compare_hint">Check: tap the fingerprint-check button in the chat — the agent confirms automatically (✓ match / ✗ mismatch = red).</string>
+    <string name="crypto_banner_close_a11y">Close notice</string>
+    <string name="chat_list_title">Agents</string>
+    <string name="chat_list_title_sub">Direct chat with the paired agents — live via the relay.</string>
+    <string name="dash_agents_sub">Live status of the paired agents.</string>
+    <!-- W26 (agents central, App-Brief paragraph 2): cron counter +
+         manages-cron per agent tile (sources: cron.status per agent_id +
+         agent.info caps per version-fail-soft) + the jump into the cron tab
+         per agent context (clock icon, 48 dp touch target). -->
+    <string name="dash_cron_managed_suffix">manages: cron</string>
+    <!-- W26 (add agent, admin device per gate): invitation world —
+         create/list/revoke per relay contract (the code lives only in the
+         create ack; lists carry only the masked look per PII rule). -->
+    <string name="invite_card_title">Add agent</string>
+    <string name="invite_card_hint">A new agent connects to the relay with an invitation code instead of its token — one-time code, expiring after the TTL.</string>
+    <string name="invite_create_action">Create invitation code</string>
+    <string name="invite_created_snack">Invitation code created — valid for %1$d min.</string>
+    <string name="invite_created_snack_open">Invitation code created.</string>
+    <string name="invite_error_snack">Action failed (%1$s).</string>
+    <string name="invite_revoked_snack">Invitation revoked.</string>
+    <string name="invite_timeout_snack">No reply from the relay — the button is free again, please try again.</string>
+    <string name="invite_send_failed_snack">Not sent — no relay connection.</string>
+    <string name="invite_copy_snack">Invitation code copied</string>
+    <!-- W26d (F1): plain words per error family (ErrorWordsRules) — snacks
+         carry understandable reasons instead of machine codes. -->
+    <string name="error_word_too_many">too many open invitations — revoke old ones first</string>
+    <string name="error_word_not_found">target not found — probably already removed</string>
+    <string name="error_word_denied">denied — only an admin device can do this</string>
+    <string name="error_word_invalid">details unusable — please check and try again</string>
+    <string name="error_word_error">error in the exchange — please try again</string>
+    <string name="error_word_agent_unknown">agent unknown — refresh the agent list</string>
+    <string name="invite_pending_hint">Waiting for the relay …</string>
+    <string name="invite_list_title">Active invitations</string>
+    <string name="invite_list_empty">No active invitations.</string>
+    <string name="invite_hint_unlabeled">Invitation</string>
+    <string name="invite_meta_ttl">%1$d min</string>
+    <string name="invite_meta_uses">%1$d uses</string>
+    <!-- W26d (F4): remaining time instead of entry TTL (the expires_at data is there). -->
+    <string name="invite_meta_remaining">expires in %1$d min</string>
+    <string name="invite_meta_remaining_soon">expires in %1$d min — almost gone</string>
+    <string name="invite_meta_expired">expired</string>
+    <!-- W26d (F3): end status of the last shown code. -->
+    <string name="invite_code_lapsed">The code has expired.</string>
+    <string name="invite_code_revoked">The code has been revoked.</string>
+    <string name="invite_copy_a11y">Copy code</string>
+    <string name="invite_ttl_hint">Valid %1$d min · single use</string>
+    <string name="invite_code_display_hint">Copy the code and hand it to the agent service — it connects with this instead of its token.</string>
+    <string name="invite_revoke_a11y">Revoke invitation</string>
+    <string name="invite_revoke_title">Revoke invitation?</string>
+    <string name="invite_revoke_text">Code %1$s becomes invalid — agents that have not used it yet will no longer connect with it.</string>
+    <string name="invite_revoke_confirm">Revoke</string>
+
+    <string name="dash_open_cron_a11y">Open scheduled tasks of %1$s</string>
+    <plurals name="dash_agent_cron_count">
+        <item quantity="one">%1$d task</item>
+        <item quantity="other">%1$d tasks</item>
+    </plurals>
+
+    <string name="dash_no_agents">No agents yet</string>
+    <string name="dash_no_agents_desc">After connecting to the relay, all paired agents appear here with live status — who is online, who is currently working and on what.</string>
+    <string name="dash_no_messages">No messages yet</string>
+    <string name="dash_last_active">Last active %1$s</string>
+    <string name="dash_no_activity">No activity yet</string>
+    <string name="dash_working">working … (%1$s)</string>
+    <!-- W18 chain: Sub-agent slots (agent.status) — title.
+         Slot labels come from the server (machine word), no client special cases. -->
+    <string name="dashboard_sub_agents_title">Sub-agents</string>
+    <string name="dash_model_label">Model %1$s</string>
+    <!-- W15c (hunter B5/A): dashboard labels as resources — DashboardRules
+         returns LabelRes (R constant + args), the UI resolves them live.
+         Days/agent counts are plural resources (“1 day ago”/“1 agent”
+         stays correct in singular, DE and EN alike). -->
+    <string name="dash_busy">Busy</string>
+    <string name="dash_just_now">just now</string>
+    <string name="dash_minutes_ago">%1$d min ago</string>
+    <string name="dash_hours_ago">%1$d h ago</string>
+    <string name="dash_online_count">%1$d online</string>
+    <string name="dash_busy_count">%1$d busy</string>
+    <plurals name="dash_days_ago">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <plurals name="dash_agent_count">
+        <item quantity="one">%1$d agent</item>
+        <item quantity="other">%1$d agents</item>
+    </plurals>
+    <string name="a11y_open_agent_chat">Open chat with %1$s</string>
+    <string name="chat_list_search_hint">Search agents</string>
+    <string name="chat_filter_all">All</string>
+    <string name="chat_filter_online">Online</string>
+    <string name="chat_filter_offline">Offline</string>
+    <string name="chat_list_empty_result">No agent matches the search.</string>
+    <string name="chat_list_no_messages">No messages yet</string>
+    <string name="chat_list_back_a11y">Back to agent list</string>
+    <string name="chat_error_close_a11y">Close error message</string>
+    <string name="chat_send_failed">Chat: send failed — %1$s. Check the connection and send again.</string>
+    <string name="chat_send_failed_unknown">unknown error</string>
+    <string name="chat_backfill_progress">Syncing chat history …</string>
+    <!-- HIG-W19 (english): honest empty states without demo data + media
+         errors per locale — no "Media:" prefix, WHAT + ACTION over literals -->
+    <string name="chat_empty_no_agents">No agents linked yet</string>
+    <string name="chat_empty_no_agents_hint">Open Settings › Servers and link an agent.</string>
+    <string name="chat_empty_first_message">No messages yet — write the first message to %1$s.</string>
+    <string name="chat_media_permission_missing">Microphone permission missing — grant it in Settings › Permissions.</string>
+    <string name="chat_media_too_short">Voice message too short — record it again a little longer.</string>
+    <string name="chat_media_record_failed">Recording failed — try again.</string>
+    <string name="chat_media_generic_error">Voice message unreadable — try again.</string>
+    <string name="chat_media_unreadable">Media: file not readable — fetch again in the gallery view.</string>
+    <string name="chat_media_too_large">Media: too large (max %1$s)</string>
+    <string name="chat_e2e_missing">Chat: no active E2E session — fingerprint check only possible once connected</string>
+    <!-- W18-1a: hidden chat.fp_check control frame — result line (ChatScreen
+         FpCheckNotice), NEVER a chat bubble -->
+    <string name="chat_fp_check_ok">Fingerprint check passed — the fingerprints match.</string>
+    <string name="chat_fp_check_failed">Fingerprint check FAILED — fingerprints diverge (banner above).</string>
+    <string name="chat_status_queued">⏱ Queued</string>
+    <string name="chat_status_queued_desc">Message waiting in the relay spool</string>
+    <string name="chat_status_delivered">✓✓ Delivered</string>
+    <string name="chat_status_delivered_desc">Delivered to the agent</string>
+    <string name="chat_status_read">✓✓ Read</string>
+    <string name="chat_status_read_desc">Read by the agent</string>
+    <string name="chat_status_failed">✕ Failed</string>
+    <string name="chat_status_failed_desc">Send failed</string>
+    <string name="chat_status_sent">✓ Sent</string>
+    <string name="chat_status_sent_desc">Sent to the relay</string>
+    <string name="chat_upload_failed">✕ %1$s</string>
+    <string name="chat_upload_done">✓ Transferred (%1$d chunks)</string>
+    <string name="chat_upload_progress">⏳ Upload %1$d/%2$d chunks</string>
+    <string name="chat_upload_failed_desc">Upload failed: %1$s</string>
+    <string name="chat_upload_progress_desc">Upload running: %1$d of %2$d chunks</string>
+    <string name="chat_reply_after_s">Reply after %1$s s</string>
+    <string name="chat_reply_after_long_s">Reply after %1$s seconds</string>
+    <string name="chat_tts_chip">🔊 Reading aloud · Stop</string>
+    <string name="chat_tts_stop_a11y">Stop read-aloud</string>
+    <string name="chat_input_hint">Write a message</string>
+    <string name="chat_input_hint_recording">Voice message recording…</string>
+    <string name="chat_attach_a11y">Add attachment (photo, file, voice message)</string>
+    <string name="chat_model_picker_a11y">Choose model: %1$s</string>
+    <string name="media_photo_tap_a11y">Photo %1$s — tap to enlarge</string>
+    <string name="media_photo_full_a11y">Photo %1$s (full screen)</string>
+    <string name="media_voice_title">Voice message</string>
+    <string name="media_voice_fetching_a11y">Voice message is being fetched</string>
+    <string name="media_voice_fetch_a11y">Fetch the voice message to the device</string>
+    <string name="media_voice_failed">Not retrievable — fetch again</string>
+    <string name="media_voice_pending">Not stored on the device yet</string>
+    <string name="media_voice_missing_file">Voice message — file missing</string>
+    <string name="media_voice_no_service">Voice message — fetch service unavailable</string>
+    <!-- W16 B2 (Fixliste 31/30b): WhatsApp-style voice bubble + hold-to-record. -->
+    <string name="media_voice_pause_a11y">Pause voice message</string>
+    <string name="chat_tts_voice_prepare">Generating audio …</string>
+    <string name="chat_tts_voice_prepare_a11y">Voice message audio is being generated — one moment</string>
+    <string name="chat_voice_too_short">Recording too short — discarded</string>
+    <string name="chat_voice_recording_swipe_hint">‹ Swipe to cancel</string>
+    <string name="chat_voice_recording_cancel_active">Release = cancel</string>
+    <string name="chat_voice_recording_cancel_a11y">Cancel recording</string>
+    <string name="chat_voice_recording_holding_a11y">Recording, %1$s — release to send the voice message</string>
+    <string name="media_image_load_failed">Image could not be loaded — file not available (fetch again in the gallery view).</string>
+    <string name="composer_title">Model</string>
+    <string name="composer_auto">Auto</string>
+    <string name="composer_auto_sub">Agent default</string>
+    <string name="composer_chip_auto_a11y">A = Auto: agent default model from config is in use — tap to open model &amp; thinking</string>
+    <string name="composer_chip_manual_a11y">M = Manual: a different model was chosen for this chat — tap to open model &amp; thinking</string>
+    <string name="composer_chip_auto">A</string>
+    <string name="composer_chip_manual">M</string>
+    <string name="composer_chip_a11y">Open model &amp; thinking — shows the active model</string>
+    <string name="composer_active_line">Active: %1$s · Thinking: %2$s</string>
+    <string name="composer_active_line_model">Active: %1$s</string>
+    <string name="composer_no_list">No model list has arrived from the server — Auto stays active.</string>
+    <string name="composer_read_aloud">Read agent replies aloud on the device</string>
+    <string name="lock_title">FlipsiBridge is locked</string>
+    <string name="app_lock_ok">OK</string>
+    <string name="lock_subtitle">Enter the PIN to open chat and settings</string>
+    <string name="lock_locked">Locked — %1$d s remaining</string>
+    <string name="lock_error_locked">Too many attempts — locked for %1$d s</string>
+    <string name="lock_error_attempts">Wrong PIN — %1$d attempts left</string>
+    <string name="lock_error_final">Wrong PIN — the next failed attempt locks briefly</string>
+    <string name="lock_device_unlock">Unlock with device lock</string>
+    <string name="lock_device_confirm">Confirm device lock</string>
+    <string name="lock_settings_title">PIN lock</string>
+    <string name="lock_active_desc">Active — chat content is only visible after entering the PIN/device lock.</string>
+    <string name="lock_inactive_desc">Off — the app opens without a lock. With a PIN you protect chat and settings.</string>
+    <string name="lock_set">Set PIN</string>
+    <string name="lock_change">Change PIN</string>
+    <string name="lock_remove">Remove PIN</string>
+    <string name="lock_biometric_title">Open with device lock</string>
+    <string name="lock_biometric_need_pin">Set a PIN first.</string>
+    <string name="lock_biometric_no_credential">No device lock set up — create a screen lock in the system first.</string>
+    <string name="lock_biometric_hint">Fingerprint/face/device PIN instead of the app PIN.</string>
+    <string name="lock_auto_title">Auto-lock</string>
+    <string name="lock_auto_desc">Locks the app after it was in the background for that long.</string>
+    <string name="lock_auto_30s">After 30 seconds</string>
+    <string name="lock_auto_3m">After 3 minutes</string>
+    <string name="lock_auto_never">Never</string>
+    <string name="lock_privacy_note">PIN and salt stay local on the device (sealed in the Android keystore) — no network sync.</string>
+    <string name="lock_field_current">Enter current PIN</string>
+    <string name="lock_field_new">New PIN (4–6 digits)</string>
+    <string name="lock_field_repeat">Repeat new PIN</string>
+    <string name="lock_msg_changed">PIN changed.</string>
+    <string name="lock_msg_set">PIN set — the app locks from now on.</string>
+    <string name="lock_msg_format">4–6 digits required.</string>
+    <string name="lock_msg_keystore">Keystore unavailable — the PIN could not be saved.</string>
+    <string name="lock_msg_generic">Error (%1$s) — try again.</string>
+    <string name="lock_msg_removed">App lock removed — the app opens without a PIN again.</string>
+    <string name="lock_msg_remove_failed">Removal failed — please try again.</string>
+    <string name="lock_msg_locked_retry">Too many attempts — try again later.</string>
+    <string name="lock_msg_wrong">Wrong PIN.</string>
+    <string name="lock_msg_mismatch">PINs do not match — enter again.</string>
+    <string name="lock_confirm">Confirm</string>
+    <string name="lock_next">Next</string>
+
+    <!-- W15 (Lücken-Schluss): EN je Key -->
+    <string name="chat_send_a11y">Send</string>
+    <string name="media_kind_image">Photo</string>
+    <string name="media_kind_video">Video</string>
+    <string name="media_kind_file">File</string>
+    <string name="media_attach_title">Send attachment</string>
+    <string name="media_attach_photo">Photo or video</string>
+    <string name="media_attach_voice_record">Record voice message</string>
+    <string name="media_voice_fetch_btn">⬇ Fetch</string>
+    <string name="media_voice_fetching_btn">⏳ Fetching…</string>
+    <string name="media_voice_play_a11y">Play voice message</string>
+    <string name="media_voice_stop_a11y">Stop playback</string>
+    <string name="media_saved_downloads">✓ Saved (Downloads)</string>
+    <string name="media_save_downloads">⬇ Save to Downloads</string>
+    <string name="media_saved_app_folder">File in app folder: %1$s</string>
+    <string name="media_saved_a11y">Saved to Downloads</string>
+    <string name="media_save_a11y">Save file to Downloads</string>
+    <string name="composer_thinking_title">Thinking</string>
+    <string name="composer_read_aloud_title">Read aloud</string>
+    <string name="composer_effort_a11y">Thinking level</string>
+    <string name="composer_effort_off">Off</string>
+    <string name="composer_effort_light">Light</string>
+    <string name="composer_effort_high">High</string>
+    <string name="composer_effort_max">Max</string>
+    <string name="e2e_xdh_unavailable">Encryption unavailable on this device</string>
+
+    <!-- W16 Fixliste 30a: composer = WA pill + inline round send/mic button -->
+    <string name="chat_mic_a11y_start">Record a voice message</string>
+    <string name="chat_mic_a11y_stop">Finish voice message and send</string>
+
+    <!-- W16 Fixliste 16: compact AI-Act marking inside the bubble meta row -->
+    <string name="chat_ki_badge">AI</string>
+    <string name="chat_ki_badge_a11y">Generated by AI</string>
+
+    <!-- W16 Fixliste 32: ⋮-menu in the chat header + agent profile/chat design/delete -->
+    <string name="chat_menu_a11y">More options</string>
+    <string name="chat_menu_view_agent">View agent</string>
+    <string name="chat_menu_design">Chat design</string>
+    <string name="chat_menu_model">Model &amp; thinking</string>
+    <string name="chat_menu_mediathek">Open media gallery</string>
+    <string name="chat_menu_fp">FP check</string>
+    <string name="chat_menu_delete">Delete chat</string>
+    <string name="agent_avatar_a11y">Agent profile picture</string>
+    <string name="agent_avatar_change">Change profile picture</string>
+    <string name="agent_avatar_remove">Remove profile picture</string>
+    <string name="agent_avatar_failed">Couldn\'t add this photo — pick the photo again.</string>
+    <string name="agent_sheet_name_label">Name</string>
+    <string name="agent_sheet_hint">The name comes from the bridge (stored session) — read-only here.</string>
+    <string name="design_sheet_title">Chat design</string>
+    <string name="design_sheet_state_default">Background: built-in pattern</string>
+    <string name="design_sheet_state_photo">Background: gallery photo</string>
+    <string name="design_wallpaper_standard">Built-in pattern (default)</string>
+    <string name="design_wallpaper_photo">Choose gallery photo</string>
+    <string name="chat_delete_title">Delete chat?</string>
+    <string name="chat_delete_text">All messages of this chat will be deleted — this cannot be undone. The encrypted session (E2E keys) is kept.</string>
+    <string name="chat_delete_confirm">Delete</string>
+    <string name="snack_code_in_use">This code is already connected to another device — disconnect it on that device to pair here.</string>
+    <string name="pw_card_title">Pairing password</string>
+    <string name="pw_card_hint">Extra password for new pairings on this server. Stored only as a hash (PBKDF2 with salt) — never in plain text.</string>
+    <string name="pw_status_on">Password protection active</string>
+    <string name="pw_status_off">Password protection inactive</string>
+    <string name="pw_input_label">New password (min. 8 characters)</string>
+    <string name="pw_button_set">Set password</string>
+    <string name="pw_button_clear">Remove protection</string>
+    <string name="pw_min_error">Password too short — at least 8 characters.</string>
+    <string name="pw_saved">Pairing password set — only the hash was stored.</string>
+    <string name="pw_cleared">Pairing password removed.</string>
+    <string name="pw_error">Server refused or is unreachable — check connection and code.</string>
+    <string name="pw_prompt_title">Pairing password required</string>
+    <string name="pw_prompt_text">This server requires code AND password. Please enter the pairing password (min. 8 characters).</string>
+    <string name="pw_prompt_confirm">Save and connect</string>
+    <string name="pw_prompt_dismiss">Cancel</string>
+    <string name="onb_pw_label">Pairing password</string>
+    <string name="onb_pw_needed_note">The server requires code AND password — enter the password and connect again.</string>
+    <string name="onb_pw_needed_title">Pairing password required</string>
+    <string name="onb_pw_needed_text">The server requires code AND password — the code itself was correct. Enter the password and connect again.</string>
+    <string name="mtls_title">mTLS certificate</string>
+    <string name="mtls_choose">Choose certificate</string>
+    <string name="mtls_unavailable">Certificate selection unavailable here</string>
+    <string name="mtls_device_ok">Device certificate active: %1$s</string>
+    <string name="mtls_device_none">No device certificate yet — the server issues one (button).</string>
+    <string name="mtls_request">Request certificate</string>
+    <string name="mtls_enrolling">Requesting …</string>
+    <string name="mtls_enroll_ok">Certificate installed (%1$s) — presented to the relay on the mTLS handshake.</string>
+    <string name="mtls_no_profile">No server profile — connect a server first.</string>
+    <string name="mtls_no_code">No pairing code in the profile — create one on the server and refresh the profile.</string>
+    <string name="mtls_code_used">Code already used — please generate a new pairing code on the server.</string>
+    <string name="mtls_enroll_error">Certificate request failed (%1$s) — check the pairing code and try again.</string>
+    <!-- W20 Multi-Gerät: Geräte-Verwaltung (B7) -->
+    <string name="dev_card_title">Devices</string>
+    <string name="dev_card_hint">Devices are paired to the relay. Removing signs a device out — it needs a new approval afterwards.</string>
+    <string name="dev_empty">No devices reported — neither a known (registry) device nor one currently connected.</string>
+    <string name="dev_idle_removal_hint">Automatically removed after 14 days without a connection.</string>
+    <!-- W26d (R5): the hint per REAL env value (device_idle_days, relay.state
+         frame) — 0 = sweep off ⇒ the hint stays away entirely. -->
+    <string name="dev_idle_removal_hint_days">Automatically removed after %1$d days without a connection.</string>
+    <!-- W26d (F6): the honest notice instead of a silently hidden card (two
+         devices with the same id length make the own admin mask ambiguous). -->
+    <string name="invite_mask_ambiguous_hint">Several devices share the same device-id length — this device therefore cannot be identified as an admin device. Give the devices distinct names (Settings › Devices), and the invitation management will reappear.</string>
+    <string name="dev_this_device">This device</string>
+    <string name="dev_admin_badge">Admin</string>
+    <string name="dev_remove_action">Remove</string>
+    <string name="dev_revoke_title">Remove device?</string>
+    <string name="dev_revoke_text">%1$s will be signed out and cannot reconnect until it is approved again. The encrypted session (E2E) for this device ends.</string>
+    <string name="dev_revoke_confirm">Remove</string>
+    <string name="dev_pairing_title">Pairing request</string>
+    <string name="dev_pairing_alias_suggest">Suggested: %1$s</string>
+    <string name="dev_pairing_meta">ID: %1$s · IP: %2$s</string>
+    <string name="dev_pairing_meta_noip">ID: %1$s</string>
+    <string name="dev_pairing_ttl">%1$s remaining</string>
+    <string name="dev_pairing_accept">Accept</string>
+    <string name="dev_pairing_deny">Deny</string>
+    <!-- W23-9 (Lane U9): device rename + wizard name prompt (W23-9) -->
+    <string name="device_rename">Rename</string>
+    <string name="device_alias_label">Device name</string>
+    <string name="device_alias_save">Save</string>
+    <string name="device_alias_saved">Name saved</string>
+    <string name="device_alias_prompt">The relay did not respond — try renaming again later.</string>
+    <string name="device_alias_error">The relay declined the rename.</string>
+    <string name="onb_step_header_name">Your device</string>
+    <string name="onb_step_text_name">Give this device a name so you can recognise it in the device list — e.g. \"Kitchen tablet\" or \"Garage phone\". Optional: you can continue without one.</string>
+    <string name="onb_device_name_skip">Skip</string>
+
+    <!-- W21 CALL (P4-P6): call UI — ringing card, active strip, grants, ring channel -->
+    <string name="call_ring_kind_voice">Incoming voice call</string>
+    <string name="call_ring_kind_generic">Incoming call</string>
+    <string name="call_ringing_a11y">Incoming call from %1$s — card with accept and decline</string>
+    <string name="call_ring_icon_a11y">Call icon</string>
+    <string name="call_action_decline">Decline</string>
+    <string name="call_action_decline_a11y">Decline call</string>
+    <string name="call_action_accept">Accept</string>
+    <string name="call_action_accept_a11y">Accept call</string>
+    <string name="call_active_a11y">Call with %1$s in progress, %2$s</string>
+    <string name="call_active_status">Call active · %1$s</string>
+    <string name="call_action_hangup">Hang up</string>
+    <string name="call_action_hangup_a11y">End call</string>
+    <string name="call_action_talk">Talk</string>
+    <string name="call_action_talk_recording">Recording — release</string>
+    <string name="call_action_talk_a11y">Start voice turn (hold)</string>
+    <string name="call_action_talk_recording_a11y">Recording in progress — release to send</string>
+    <string name="call_action_screengrab">Screenshot</string>
+    <string name="call_action_screengrab_confirm">Confirm (3 s)</string>
+    <string name="call_action_screengrab_a11y">Send screenshot to the agent (confirmation required)</string>
+    <string name="call_action_screengrab_confirm_a11y">Confirm sending the screenshot — three seconds</string>
+    <string name="call_steer_on">Screen steering on</string>
+    <string name="call_steer_off">Screen steering off</string>
+    <string name="call_steer_cap_missing">Steering off</string>
+    <string name="call_steer_on_a11y">Agent may control the screen — tap to turn it off</string>
+    <string name="call_steer_off_a11y">Agent may not control the screen — tap to allow it</string>
+    <string name="call_channel_name">Calls</string>
+    <string name="call_channel_description">Incoming calls from your agents</string>
+    <!-- W23-10 (outbound lane): outgoing call — Besitzer calls the agent from the app -->
+    <string name="call_button_a11y">Call agent %1$s</string>
+    <string name="call_outgoing_klingeln">Ringing…</string>
+    <string name="call_outgoing_a11y">Outgoing call to %1$s — card with cancel</string>
+    <string name="call_action_cancel">Cancel</string>
+    <string name="call_action_cancel_a11y">Cancel the call</string>
+    <string name="call_history_outgoing_label">Outgoing call (%1$s)</string>
+    <string name="call_history_outgoing_a11y">Outgoing call ended, duration %1$s</string>
+    <string name="call_history_outgoing_missed">Outgoing call · No answer</string>
+    <string name="call_history_outgoing_missed_a11y">Outgoing call — no answer</string>
+    <!-- W21 ASSISTANT PACKAGE (G2/G5 card) -->
+    <string name="assistant_pkg_bubble_title">Overlay bubble over all apps</string>
+    <string name="assistant_pkg_bubble_ready_desc">Tap opens the voice input</string>
+    <string name="assistant_pkg_bubble_need_perm_desc">Permission missing — allow overlays for the bubble</string>
+    <string name="assistant_pkg_bubble_grant_action">Grant overlay permission</string>
+    <string name="assistant_pkg_bubble_grant_a11y">Grant overlay permission for the assistant bubble</string>
+    <string name="assistant_pkg_bubble_grant_unavailable">OEM route unavailable — look for the overlay permission in system settings</string>
+    <string name="assistant_pkg_screen_context_title">Screen context</string>
+    <string name="assistant_pkg_screen_context_desc">Consent per session — the agent may read the screen only with explicit permission</string>
+    <string name="assistant_pkg_screen_context_no_session">No session — consent will be asked again after the next agent start</string>
+    <string name="assistant_pkg_screen_context_grant_a11y">Screen context allowed for this session — tap to revoke</string>
+    <string name="assistant_pkg_screen_context_ask_a11y">Ask for screen context in this session — tap to allow</string>
+    <!-- PH-6/P24: history seal + full-text search index -->
+    <string name="history_seal_breach_title">History can’t be loaded</string>
+    <string name="history_seal_breach_body">The history file is missing a valid seal (at-rest protection) — loading is refused. After deletion a new, sealed history starts.</string>
+    <string name="history_seal_breach_action_clear">Delete history</string>
+    <string name="search_index_building">Search index building …</string>
+    <!-- F1 (18.11.2026): dashboard card "Scheduled tasks" (cron.status) -->
+    <string name="dash_cron_title">Scheduled tasks</string>
+    <string name="dash_cron_running">running</string>
+    <string name="dash_cron_planned">planned</string>
+    <string name="dash_cron_paused">paused</string>
+    <string name="dash_cron_overdue">overdue</string>
+    <string name="dash_cron_in_minutes">in %1$d min</string>
+    <string name="dash_cron_in_hours">in %1$d h</string>
+    <string name="dash_cron_ago_minutes">%1$d min ago</string>
+    <string name="dash_cron_ago_hours">%1$d h ago</string>
+    <!-- Singular rescue per count ("1 day" not "1 days", like the dash_days_ago plural) -->
+    <plurals name="dash_cron_in_days">
+        <item quantity="one">in %1$d day</item>
+        <item quantity="other">in %1$d days</item>
+    </plurals>
+    <plurals name="dash_cron_ago_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <!-- W23-11-App (Part 1): 5th tab "Scheduled tasks" — empty state +
+         generic fallback group (agent names come from presence, never
+         hardcoded). Tab label + title share dash_cron_title. -->
+    <string name="cron_screen_empty">No scheduled tasks yet</string>
+    <string name="cron_screen_empty_sub">They appear here per agent as soon as an agent gateway reports scheduled tasks.</string>
+    <string name="cron_group_unknown">Without agent assignment</string>
+    <!-- W26d (F5): the empty state per (empty) focus group (0 jobs). -->
+    <string name="cron_group_empty">No scheduled tasks — this agent manages cron but has none yet.</string>
+    <!-- W23-11-App (Part 2): per-row task deletion — confirmation dialog +
+         cron.remove reply channel (fail-soft snack on not-supported/error). -->
+    <string name="cron_delete_a11y">Delete task</string>
+    <string name="cron_delete_dialog_title">Delete task?</string>
+    <string name="cron_delete_dialog_text">“%1$s” will be removed permanently from the gateway — its next run is cancelled.</string>
+    <string name="cron_delete_confirm">Delete</string>
+    <string name="cron_removed_snack">Task deleted — the list will update.</string>
+    <string name="cron_remove_not_supported_snack">Deleting is not supported by this gateway.</string>
+    <string name="cron_remove_error_snack">Delete failed (%1$s).</string>
+    <string name="cron_remove_send_failed_snack">Delete not sent — no relay connection.</string>
+    <!-- W23-11-App (Part 3): completion notices — notification texts built
+         from the frames (agent.subagent_done / agent.idle_transition) +
+         toggles (Settings › App). Sub-stage status words ×3, unknown = raw. -->
+    <!-- W26-App: full cron management — pause/resume toggle + create dialog
+         (FAB per cap-gated: management elements only per reported agent.info caps,
+         version-fail-soft without fake offers).
+ -->
+    <string name="cron_pause_a11y">Pause task</string>
+    <string name="cron_resume_a11y">Resume task</string>
+    <string name="cron_paused_snack">Task paused — the list will update.</string>
+    <string name="cron_resumed_snack">Task resumed — the list will update.</string>
+    <string name="cron_toggle_not_supported_snack">Pause/resume is not supported by this gateway.</string>
+    <string name="cron_toggle_error_snack">Pause/resume failed (%1$s).</string>
+    <string name="cron_toggle_send_failed_snack">Requested action was not sent — no relay connection.</string>
+    <string name="cron_no_answer_snack">No reply from the gateway — no retry.</string>
+    <string name="cron_add_a11y">Create task</string>
+    <string name="cron_add_dialog_title">Create task</string>
+    <string name="cron_add_agent_label">Target agent</string>
+    <string name="cron_add_name_label">Name</string>
+    <string name="cron_add_name_error">A name is required (max. %1$d characters).</string>
+    <string name="cron_add_schedule_label">Schedule</string>
+    <string name="cron_add_mode_repeat">Repeat</string>
+    <string name="cron_add_mode_once">Once</string>
+    <string name="cron_add_cronexpr_label">Cron expression</string>
+    <string name="cron_add_cronexpr_hint">e.g. 0 9 * * 1-5 (5–7 fields)</string>
+    <string name="cron_add_expr_error">Cron expression invalid — e.g. 0 9 * * 1-5.</string>
+    <string name="cron_add_date_label">Date (YYYY-MM-DD)</string>
+    <string name="cron_add_time_label">Time (HH:MM)</string>
+    <string name="cron_add_date_error">Date invalid (YYYY-MM-DD).</string>
+    <string name="cron_add_time_error">Time invalid (HH:MM).</string>
+    <string name="cron_add_once_hint">Scheduled at: %1$s</string>
+    <string name="cron_add_prompt_label">Prompt</string>
+    <string name="cron_add_prompt_required">A prompt is required — it carries the job\'s task for the gateway (max. %1$d characters).</string>
+    <string name="cron_add_create">Create</string>
+    <string name="cron_add_created_snack">Task created — the list will update.</string>
+    <string name="cron_add_not_supported_snack">Creating tasks is not supported by this gateway.</string>
+    <string name="cron_add_error_snack">Creating the task failed (%1$s).</string>
+    <string name="cron_add_send_failed_snack">Creation not sent — no relay connection.</string>
+
+    <string name="notify_subagent_title">Sub-agent ready</string>
+    <string name="notify_subagent_body">%1$s (%2$s)</string>
+    <string name="notify_agent_body">%1$s is done</string>
+    <string name="cron_sub_status_completed">completed</string>
+    <string name="cron_sub_status_interrupted">interrupted</string>
+    <string name="cron_sub_status_failed">failed</string>
+    <string name="settings_notify_group">Agent completion notices</string>
+    <string name="settings_notify_subagent_title">Sub-agent finished</string>
+    <string name="settings_notify_subagent_sub">Notify when a sub-agent finishes its work.</string>
+    <string name="settings_notify_agent_title">Agent finished</string>
+    <string name="settings_notify_agent_sub">Notify when a main agent has no work left.</string>
+    <string name="call_screengrab_failed">Screenshot unreadable — RAM copy discarded.</string>
+    <string name="call_screengrab_failed_reason">Screenshot failed: %1$s</string>
+    <string name="call_screengrab_sent">Screenshot sent to agent — no copy was kept.</string>
+    <string name="call_screengrab_confirm_hint">Screenshot to agent — tap again within 3 s to confirm.</string>
+    <string name="call_screengrab_talk_failed">Voice turn failed: </string>
+    <string name="call_screengrab_cap_missing">Screenshot capability off — enable it in Settings › Capabilities.</string>
+    <!-- W22 MERGE (i18n): Assistant lane B — bubble service (G2) -->
+    <string name="assistant_bubble_a11y">Start assistant voice input</string>
+    <string name="assistant_bubble_channel_name">Assistant bubble</string>
+    <string name="assistant_bubble_channel_desc">Keeps the overlay bubble above all apps — tapping starts voice input</string>
+    <string name="assistant_bubble_notif_title">Assistant bubble active</string>
+    <string name="assistant_bubble_notif_text">Tap the bubble to start voice input</string>
+    <string name="assistant_pkg_bubble_toggle_a11y">Turn the overlay bubble above all apps on or off</string>
+    <string name="assistant_pkg_bubble_start_failed">The bubble could not start — permission or the system blocked it; try again.</string>
+    <string name="assistant_pkg_bubble_perm_pending">The overlay permission screen is open — the bubble activates when you return here.</string>
+    <string name="assistant_pkg_bubble_perm_unreachable">Overlay permission screen not reachable — system settings → apps → FlipsiBridge → display over other apps.</string>
+    <!-- W22 MERGE (i18n): Assistant lane B — mini panel + share dialog (G11) -->
+    <string name="assistant_panel_input_hint">Question or message …</string>
+    <string name="assistant_panel_default_name">Assistant</string>
+    <string name="assistant_panel_close_a11y">Close mini panel</string>
+    <string name="assistant_panel_chip_remove_a11y">Remove page context</string>
+    <string name="assistant_panel_mic">Mic</string>
+    <string name="assistant_panel_mic_a11y">Record a voice message</string>
+    <string name="assistant_panel_send">Send</string>
+    <string name="assistant_panel_send_a11y">Send to the active chat</string>
+    <string name="assistant_share_dialog_title">Send to FlipsiBridge</string>
+    <string name="assistant_share_chip_prefix">Page: %1$s</string>
+    <string name="assistant_share_no_url">No link in the shared content — the page actions need an address.</string>
+    <string name="assistant_share_action_send">Send to agent</string>
+    <string name="assistant_share_action_send_a11y">Send the shared content to the active chat</string>
+    <string name="assistant_share_action_ask">Ask about page</string>
+    <string name="assistant_share_action_ask_a11y">Ask a question about the shared page</string>
+    <string name="assistant_share_action_summarize">Summarize</string>
+    <string name="assistant_share_action_summarize_a11y">Have the shared page summarized</string>
+    <!-- W22 MERGE (i18n): lane E — OSS licenses screen (PH8-T7) -->
+    <string name="about_oss_title">Open-source licenses</string>
+    <string name="about_oss_entry_note">App dependencies with license and copyright</string>
+    <string name="oss_intro">Essential dependencies of the app (name — version — license, copyright below). Full license texts are in each project\'s source repository.</string>
+    <string name="oss_empty">No entries.</string>
+    <string name="oss_base_attribution">FlipsiBridge is based on hermes-android (MIT license). Copyright (c) 2026 Raul (hermes-android, original); Copyright (c) 2026 Fabian Kirchweger / TechFlipsi (FlipsiBridge modifications).</string>
+    <string name="oss_license_ref">Project version %1$s. The complete license (LICENSE file, MIT) is in the app\'s source repository.</string>
+    <!-- W22 MERGE (i18n): lane E — AGB gate, decline dialog (PH8-T6) -->
+    <string name="agb_accept_btn">Accept</string>
+    <string name="agb_decline_btn">Decline</string>
+    <string name="agb_decline_title">Exit app?</string>
+    <string name="agb_decline_text">FlipsiBridge can only be used with the terms of use and privacy notice accepted. Declining closes the app — nothing on your device is changed.</string>
+    <string name="agb_decline_exit">Exit</string>
+    <string name="agb_decline_stay">Keep reading</string>
+    <!-- W22 MERGE (i18n): lane C — global chat history search (PH-6) -->
+    <string name="chat_global_search_title">More matches in histories</string>
+    <string name="chat_global_search_searching">Searching histories…</string>
+    <string name="chat_global_search_index_building">Search index is being built…</string>
+    <string name="chat_global_search_no_index">No history indexed yet</string>
+    <string name="chat_global_search_empty">No further matches</string>
+    <string name="chat_global_search_capped">Trimmed — best matches first</string>
+    <string name="chat_global_search_building_partial">Index is still building — results may be incomplete</string>
+    <string name="chat_global_search_unknown_agent">Unknown agent</string>
+    <string name="chat_global_search_jump_label">Jump to this match</string>
+
+    <!-- W22 MERGE-2: call history + call settings + assistant share leftovers -->
+    <string name="call_stt_failed">Speech recognition failed — use the talk button</string>
+    <string name="call_stt_unavailable">Hands-free speech unavailable on this device — use the talk button</string>
+    <string name="call_stt_handsfree">Hands-free</string>
+    <string name="call_stt_handsfree_listening">Hands-free — listening</string>
+    <string name="call_stt_handsfree_a11y">Hands-free mode — tap for the talk button</string>
+    <string name="call_stt_handsfree_listening_a11y">Hands-free recognition active — tap for the talk button</string>
+    <string name="call_stt_long_a11y">Long-press for on-device hands-free speech</string>
+    <string name="call_history_bubble">Call (%1$s)</string>
+    <string name="call_history_bubble_a11y">Call ended, duration %1$s</string>
+    <string name="call_history_missed">Missed call · Tap to reply</string>
+    <string name="call_history_missed_a11y">Missed call — tap to reply in the chat</string>
+    <string name="call_missed_callback_draft">Please call me back.</string>
+    <string name="settings_call_title">Calls</string>
+    <string name="settings_call_record_title">Record call history</string>
+    <string name="settings_call_record_desc">Ended and missed calls appear in the chat history. Off: calls leave no trace.</string>
+    <string name="settings_call_record_a11y">Toggle call history recording</string>
+    <string name="assistant_assist_content_desc">Encrypted assistant bridge</string>
+    <string name="assistant_share_delivered_toast">Prepared in the chat — review and send it there</string>
+    <string name="assistant_share_ask_template">"Question about this page (%1$s): "</string>
+    <string name="assistant_share_summarize_template">"Briefly summarize the content of this page: %1$s"</string>
+
+    <!-- W24 (Tablet-Unterstützung): a11y-Label der Navigationsschiene (Lane-A-Grundlage; Rail-Bau folgt in Lane B). -->
+    <string name="rail_a11y">Primary navigation</string>
+    <!-- W26 (Audit: hardcoded DE notification texts — i18n) -->
+    <string name="chat_channel_name">Chat messages</string>
+    <string name="chat_channel_description">Incoming replies from your agents</string>
+    <string name="notify_chat_public_text">New message</string>
+    <string name="bridge_fg_channel_description">Keeps the bridge to the server alive</string>
+    <string name="bridge_fg_notification_text">Bridge active</string>
+    <string name="notify_boot_title">FlipsiBridge not active</string>
+    <string name="notify_boot_text">Open the app briefly after the restart to connect the bridge.</string>
+</resources>

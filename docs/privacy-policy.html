@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Datenschutzerklärung — FlipsiBridge (TechFlipsi)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0E1013; color:#E8EAED; font:16px/1.65 -apple-system,"Segoe UI",Roboto,sans-serif; max-width:860px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:1.6rem; } h2 { font-size:1.15rem; margin-top:2rem; color:#ED7931; }
+  .meta { color:#9BA3AE; font-size:.9rem; }
+  a { color:#ED7931; }
+  code { background:#1A1D23; padding:2px 6px; border-radius:6px; }
+  .pill { display:inline-block; background:#1A1D23; border:1px solid #2A2F38; border-radius:999px; padding:2px 12px; margin:4px 6px 4px 0; font-size:.85rem; }
+</style>
+</head>
+<body>
+<h1>Datenschutzerklärung</h1>
+<p class="meta">FlipsiBridge (Android-App) · TechFlipsi (Fabian Kirchweger) · Stand: 12.&nbsp;November&nbsp;2026 · Kontakt: <a href="mailto:fabian@kirchweger.de">fabian@kirchweger.de</a></p>
+
+<h2>Kurzfassung</h2>
+<p>FlipsiBridge ist eine Brücke zwischen <em>deinem eigenen</em> Android-Gerät und <em>deinem eigenen</em> KI-Assistenten-Server. Die App sammelt keine Daten für uns, verkauft nichts, zeigt keine Werbung an und überträgt nichts an uns oder Dritte. Alle Inhalte laufen Ende-zu-Ende-verschlüsselt zwischen dem Gerät und deinem eigenen Server.</p>
+
+<h2>1. Wer ist verantwortlich?</h2>
+<p>Fabian Kirchweger („TechFlipsi"), Österreich. Kontakt: <a href="mailto:fabian@kirchweger.de">fabian@kirchweger.de</a>. Für die Verarbeitung deiner Chat-Inhalte ist nicht TechFlipsi verantwortlich, sondern der Betreiber deines eigenen Koppel-Servers — in der Standard-Konstellation bist du das selbst.</p>
+
+<h2>2. Welche Daten verarbeitet die App?</h2>
+<span class="pill">Chatinhalte (lokal, E2E-verschlüsselt)</span>
+<span class="pill">Gerätestatus (Akku/WLAN/Standort der Gerätekopplung)</span>
+<span class="pill">Sprachnachrichten-/Datei-Chunks (lokal + dein Server)</span>
+<span class="pill">Sende-/Empfangs-Zeitstempel (lokal)</span>
+<p>Die App überträgt Chat- und Medieninhalte ausschließlich an den selbst betriebenen Koppel-Server („Relay"), dessen Adresse beim Einrichten selbst eingegeben wird (z.&nbsp;B. <code>https://dein-server:8766</code>). Diese Verbindung ist Ende-zu-Ende-verschlüsselt; der Server transportiert verschlüsselte Chunks und kann Inhalte nicht mitlesen. Es gibt keine Telemetrie, keine Crash-Reports an Google oder TechFlipsi, keine Analyse-Bibliotheken und keine Werbe-SDKs.</p>
+
+<h2>3. Berechtigungen und wofür sie gebraucht werden</h2>
+<p>Die App zeigt vor jeder sensiblen Berechtigung einen erklärenden Offenlegungsdialog mit ausdrücklicher Einwilligung („Nicht jetzt" ist immer gewählt möglich). Übersicht:</p>
+<ul>
+  <li><strong>Eingabehilfe (Accessibility):</strong> nur auf ausdrücklichen Befehl des Nutzers (z.&nbsp;B. „klick auf …"), um deine eigenen UI-Elemente zu bedienen; die App plant und initiiert keine Aktionen selbst.</li>
+  <li><strong>Benachrichtigungen (Notification-Listener):</strong> nur zum Auslesen auf Nutzerbefehl hin; Offenlegung vor der Freigabe.</li>
+  <li><strong>Mikrofon:</strong> für Sprachnotizen im Chat; die Aufnahme läuft in einem sichtbaren Vordergrund-Dienst.</li>
+  <li><strong>Standort (nur im Vordergrund):</strong> nur auf Befehl („wo bin ich"); kein Hintergrund-Standort.</li>
+  <li><strong>Kontakte:</strong> nur auf Befehl, um ein ausgewähltes Kontakt-Ergebnis zu liefern.</li>
+  <li><strong>Dateien/„Alle Dateien":</strong> als Dateimanager des Geräte-Eigentümers — Lese-/Sendefunktion für vom Nutzer gewählte Dateien.</li>
+  <li><strong>Health Connect:</strong> ausschließlich Lesezugriff auf freigegebene Gesundheitsdaten, nur mit separater Einwilligung.</li>
+</ul>
+
+<h2>4. Speicherdauer</h2>
+<p>Chatverlauf und Medien liegen auf deinem Gerät und deinem Server. Ein Offline-Spool hält eingereichte Nachrichten bis zu 24&nbsp;Stunden, bis der Empfänger wieder online ist. Auf unseren Servern speichern wir nichts aus deiner App-Nutzung; die Play-Rate-/Feedback-Daten verarbeitet Google nach dessen Bestimmungen.</p>
+
+<h2>5. Dritte</h2>
+<p>Nicht betroffen: keine Weitergabe an Werbe-Netzwerke, keine Datenbroker, keine Analyse-Dienste. Google Play verarbeitet Installations-/Abrechnungsdaten nach der <a href="https://policies.google.com/privacy">Google-Datenschutzerklärung</a>. Wenn du einen externen KPI-Server statt deines eigenen betreibst, gilt dessen Datenschutzerklärung.</p>
+
+<h2>6. Deine Rechte</h2>
+<p>Auskunft, Berichtigung, Löschung: da Inhalte nur bei dir (Gerät/Server) liegen, hast du die volle Kontrolle — App-Daten lassen sich über Systemeinstellungen („App-Daten löschen") oder Deinstallation entfernen. Anfragen an uns: <a href="mailto:fabian@kirchweger.de">fabian@kirchweger.de</a>.</p>
+
+<h2>7. Sicherheit</h2>
+<p>Ende-zu-Ende-Verschlüsselung mit Geräte-Schlüsselpaar (Double-Ratchet-Prinzip), Fingerabdruck-Abgleich bei der Kopplung, keine Klartext-Übertragung (TLS-nativ), keine Umgehung von FLAG_SECURE. Der Quellcode ist öffentlich einsehbar: <a href="https://github.com/TechFlipsi/FlipsiBridge">github.com/TechFlipsi/FlipsiBridge</a>.</p>
+
+<p class="meta">Diese Erklärung gilt für die über Google Play verteilte Play-Edition der App (Paket <code>at.flipsi.bridge.play</code>).</p>
+</body>
+</html>

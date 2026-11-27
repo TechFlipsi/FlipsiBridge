@@ -1,0 +1,559 @@
+package com.hermesandroid.bridge.ui
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.BuildConfig
+import com.hermesandroid.bridge.client.PairingHandshakePolicy
+import com.hermesandroid.bridge.client.RelayClient
+import com.hermesandroid.bridge.client.PinSource
+import com.hermesandroid.bridge.server.RelayProfile
+import com.hermesandroid.bridge.server.ServerProfiles
+import com.hermesandroid.bridge.server.ServerProfileRules
+import com.hermesandroid.bridge.ui.onboarding.OnboardingRules
+import com.hermesandroid.bridge.ui.onboarding.PassCodeField
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/**
+ * Welle 4 / App-Lane D — Multi-Server-Liste in Einstellungen → Server
+ * (Besitzer-Spec verbatim: „Relay-Liste in Einstellungen (+Server hinzufügen),
+ * je Server: URL+Code+Status+Letzt-Verbunden, Umschalten bewusst (Verbindung
+ * trennen/wechseln mit Bestätigung)“).
+ *
+ * Verband je Zeile (Singletons-Faser): der AKTIVE Eintrag zeigt den
+ * Live-Zustand der EINEN WebSocket-Kette (BridgeStatus), alle anderen sind
+ * „Getrennt“ (getragene Daten: URL + Letzt-Verbunden + Code je Vault).
+ * Umschalten = Bestätigungs-Dialog → ServerProfiles.connectViaProfile →
+ * bewusstes disconnect/connect im RelayClient — kein Multi-WS, die
+ * OkHttpClient-Fabrik (Lane-A-Pin-Verband) bleibt unangetastet.
+ *
+ * Code je Profil: Anzeige bewusst REDUCED-PASS (PassCodeField verborgen,
+ * Einblenden pro Tipp) — der Code wird beim Bearbeiten aus dem Vault gelesen
+ * (ServerProfiles.codeOf) und NIE geloggt.
+ *
+ * WELLE 16 / P21: KOMPAKTE ZEILEN-Form — [Status-Dot] Domain
+ * [Aktiv-Chip] + ICON-Buttons (Stift = Bearbeiten-Dialog, ✗ = Entfernen mit
+ * Bestätigung; contentDescription je Icon für TalkBack). Die große URL-Dar-
+ * stellung ENTfällt (volle URL nur im Bearbeiten-Dialog) und Inaktive-Kacheln
+ * öffnen per ZEILEN-TAP den Wechseln-Dialog (kein „Wechseln“-Textbutton mehr).
+ * Das alte extra „Server-Adresse“-Feld unter der Liste (P21-Nachtrag) wurde
+ * im BridgeScreen entfernt — Connect/Wechsel läuft EINDRUCKSICH über die
+ * Profil-Liste (connectViaProfile), kein toter Code-Faden.
+ *
+ * DRILL-ACKER (Profil-Wechsel-Beweis-Stellen, Emulator):
+ *  1. „+ Server hinzufügen“ → Dialog erscheint; URL-Plausi (leer → Fehler),
+ *     Code verborgen → Einblenden-Schalter zeigt Klartext.
+ *  2. TAP auf eine INAKTIVE Zeile → Bestätigung nennt ALT- und NEU-Label;
+ *     bestätigt → logcat `Connecting to ws://<neu…>` + Statuszeile wechselt auf
+ *     „Verbinde …“/„Verbunden“ NUR am neuen Eintrag.
+ *  3. Relay-Log: genau EIN `Phone connected` je Wechsel (kein Doppel-WS).
+ *  4. Bearbeiten (Stift) öffnet den Dialog mit voller URL + Code.
+ *  5. Aktives Profil löschen (✗ + Bestätigung) → Banner „Verbindung geschlossen“,
+ *     Zeilen bleiben, kein Auto-Connect (erfolgtes Umschalten erzeugt ihn wieder).
+ *  6. Kaltstart: Liste gezeichnet aus dem JSON; aktiver Eintrag = letzter
+ *     bestätigter Wechsel (serverUrl-Prefs).
+ */
+@Composable
+fun RelayServerListCard() {
+    val context = LocalContext.current
+    val profiles by ServerProfiles.profiles.collectAsState()
+    val activeId by ServerProfiles.activeId.collectAsState()
+    val status by BridgeStatus.state.collectAsState()
+
+    var editTarget by remember { mutableStateOf<RelayProfile?>(null) }
+    var addOpen by remember { mutableStateOf(false) }
+    var deleteTarget by remember { mutableStateOf<RelayProfile?>(null) }
+    var switchTarget by remember { mutableStateOf<RelayProfile?>(null) }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = FlipsiColors.Panel),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(stringResource(R.string.ms_title), fontWeight = FontWeight.SemiBold)
+            Text(
+                stringResource(R.string.ms_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = FlipsiColors.TextSecondary,
+            )
+            profiles.forEach { profile ->
+                RelayProfileRow(
+                    profile = profile,
+                    active = profile.id == activeId,
+                    liveStatus = status,
+                    onSwitchRequest = { switchTarget = profile },
+                    onEditRequest = { editTarget = profile },
+                    onDeleteRequest = { deleteTarget = profile },
+                )
+            }
+            OutlinedButton(
+                onClick = { addOpen = true },
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = FlipsiColors.TextPrimary),
+            ) {
+                Text(stringResource(R.string.ms_add), fontWeight = FontWeight.Medium)
+            }
+            // Welle 12b: übersprungener Assistent — Wieder-Einstieg
+            // über die Karte (Skip zurücknehmen → Wizard öffnet sofort).
+            if (ServerProfiles.isOnboardingSkipped() && profiles.isEmpty()) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = FlipsiColors.PanelElev),
+                    shape = MaterialTheme.shapes.large,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(
+                            stringResource(R.string.ms_resume_title),
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Text(
+                            stringResource(R.string.ms_resume_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.TextSecondary,
+                        )
+                        TextButton(onClick = { ServerProfiles.resumeOnboarding() }) {
+                            Text(stringResource(R.string.ms_resume_cta), color = FlipsiColors.Ember)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Umschalten BEWUSST: Bestätigung mit Alt/Neu-Benennung, dann disconnect/
+    //    connect über den Store (Singletons-Faser) ──
+    switchTarget?.let { target ->
+        val targetLabel = remember(target.id, profiles) {
+            profiles.firstOrNull { it.id == target.id }?.label ?: target.label
+        }
+        AlertDialog(
+            onDismissRequest = { switchTarget = null },
+            title = { Text(stringResource(R.string.ms_switch_title)) },
+            text = {
+                Column {
+                    Text(
+                        stringResource(
+                            R.string.ms_switch_text,
+                            profiles.firstOrNull { it.id == activeId }?.label ?: "—",
+                            targetLabel,
+                        ),
+                    )
+                    // W4-FIX-JAG2 (S7): Profilwechsel auf einen Host OHNE Pin-
+                    // Verband → sichtbare Warn im Bestätigungs-Dialog (kein
+                    // Verband-Mute, kein Zusatz-Dialogschritt — der Wechsel selbst
+                    // bleibt die eine Bestätigungs-Aktion). dashboard.lan (NSC-
+                    // Klartext-Ausnahme) ist ebensowenig gepinnt → Warn trifft zu.
+                    // hostOf statt URI-Parsing: scheme-los gespeicherte URLs
+                    // ("relay.example:8766") wären sonst false-negative Warn.
+                    val targetHost = ServerProfileRules.hostOf(target.url).trim().lowercase()
+                    if (targetHost.isNotBlank() && PinSource.pinsFor(targetHost) == null) {
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            stringResource(R.string.ms_switch_nopin_warn),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = FlipsiColors.SignalAmber,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        switchTarget = null
+                        // bewusstes Trennen des Alten + Connect aufs Neue —
+                        // Code adOption + FGS + RelayClient.connect im Store.
+                        ServerProfiles.connectViaProfile(context, target.id)
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = FlipsiColors.SignalRedText),
+                ) {
+                    Text(stringResource(R.string.ms_switch_confirm), fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { switchTarget = null }) {
+                    Text(stringResource(R.string.ms_cancel))
+                }
+            },
+        )
+    }
+
+    // ── Löschen mit Bestätigung (Code je Vault geht mit) ──
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(stringResource(R.string.ms_remove_title)) },
+            text = {
+                Text(stringResource(R.string.ms_remove_text, target.label))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleteTarget = null
+                        ServerProfiles.remove(target.id)
+                    },
+                    colors = ButtonDefaults.textButtonColors(contentColor = FlipsiColors.SignalRedText),
+                ) {
+                    Text(stringResource(R.string.ms_remove_confirm), fontWeight = FontWeight.SemiBold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text(stringResource(R.string.ms_cancel))
+                }
+            },
+        )
+    }
+
+    // ── Hinzufügen / Bearbeiten (ein Dialog, zwei Modi — gleiche Feld-Regeln) ──
+    if (addOpen) {
+        RelayProfileEditDialog(
+            title = stringResource(R.string.ms_add_title),
+            initial = null,
+            onDismiss = { addOpen = false },
+            onSave = { label, url, code, password ->
+                addOpen = false
+                // W17-F2: Passwort läuft NUR in den Profil-Vault (wenn der
+                // Server eines verlangt — Feld erscheint NUR dann).
+                ServerProfiles.add(label, url, code)
+                    .let { created ->
+                        if (!password.isNullOrBlank()) {
+                            ServerProfiles.writePassword(created.id, password)
+                        }
+                    }
+            },
+        )
+    }
+    editTarget?.let { target ->
+        RelayProfileEditDialog(
+            title = stringResource(R.string.ms_edit_title),
+            initial = target,
+            onDismiss = { editTarget = null },
+            onSave = { label, url, code, password ->
+                editTarget = null
+                // Code-Feld leer gelassen = UNVERÄNDERT (kein Vault-Löschen);
+                // Passwort ebenso (leer = unverändert, W17-F2).
+                ServerProfiles.update(
+                    target.id, label, url,
+                    code.takeIf { it.isNotBlank() },
+                    password.takeIf { it != null && PairingHandshakePolicy.passwordAllowed(it) },
+                )
+            },
+        )
+    }
+}
+
+@Composable
+private fun RelayProfileRow(
+    profile: RelayProfile,
+    active: Boolean,
+    liveStatus: BridgeStatus.ConnectionState,
+    onSwitchRequest: () -> Unit,
+    onEditRequest: () -> Unit,
+    onDeleteRequest: () -> Unit,
+) {
+    val (dot, chip) = when {
+        active && liveStatus is BridgeStatus.ConnectionState.CONNECTED ->
+            FlipsiColors.SignalGreen to stringResource(R.string.ms_active_chip)
+        active -> FlipsiColors.SignalAmber to stringResource(R.string.ms_active_chip)
+        else -> FlipsiColors.TextSecondary to stringResource(R.string.ms_inactive_chip)
+    }
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = if (active) FlipsiColors.PanelElev else FlipsiColors.Panel,
+        ),
+        shape = MaterialTheme.shapes.large,
+        modifier = Modifier
+            .fillMaxWidth()
+            // W16 P21: inaktive Kachel = Wechseln-Dialog per Zeilen-Tap ( TalkBack
+            // meldet die Aktion über das onClickLabel); aktiv = kein Tap-Verband.
+            .clickable(
+                enabled = !active,
+                onClickLabel = stringResource(R.string.ms_switch_confirm),
+            ) { onSwitchRequest() },
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = 52.dp)
+                .padding(start = 16.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(10.dp).background(dot, CircleShape))
+            Text(
+                profile.label,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = 10.dp)
+                    .weight(1f),
+            )
+            Text(
+                chip,
+                style = MaterialTheme.typography.labelSmall,
+                color = FlipsiColors.OnEmber,
+                modifier = Modifier
+                    .background(
+                        if (active) FlipsiColors.Ember else FlipsiColors.PanelElev,
+                        RoundedCornerShape(6.dp),
+                    )
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+            )
+            // P21: ICON-Buttons statt Text-Buttons — Stift = Bearbeiten-Dialog
+            // (volle URL + Code NUR dort), ✗ = Entfernen mit Bestätigung.
+            IconButton(onClick = onEditRequest) {
+                Icon(
+                    Icons.Filled.Edit,
+                    contentDescription = stringResource(R.string.ms_row_edit_a11y),
+                    tint = FlipsiColors.TextSecondary,
+                )
+            }
+            IconButton(onClick = onDeleteRequest) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = stringResource(R.string.ms_row_remove_a11y),
+                    tint = FlipsiColors.SignalRedText,
+                )
+            }
+        }
+    }
+}
+
+/** „Letzt-Verbunden“-Tracking bleibt im Store (ServerProfiles) gepflegt; die
+ *  kompakte W16-P21-Zeile zeigt es bewusst NICHT mehr (Besitzer-Format: eine Zeile). */
+
+/**
+ * Ein Dialog für +Server und Bearbeiten: Name (freiwillig), URL, Code
+ * (verborgen mit Einblenden). Code-Regeln wiederverwenden die Wizard-Regeln
+ * (OnboardingRules) — keine Zweit-Taxonomie.
+ *
+ * W17-F2 (Sauber-Feld): das Kopplungs-Passwort-Feld erscheint NUR, wenn der
+ * Server ein Passwort VERLANGT — das prüft ein Live-Probe GET /password_status
+ * (Bearer = Code, IO-Thread, kurze Sperre; null = Netz/Unbekannt → Feld bleibt
+ * zu und der Save läuft). Im Add-Modus wird der Probe beim ersten Save-Aufruf
+ * gefeuert (URL+Code sind erst da eingegeben), dann speichert der zweite
+ * Aufruf mit ausgefülltem Passwortfeld.
+ */
+@Composable
+private fun RelayProfileEditDialog(
+    title: String,
+    initial: RelayProfile?,
+    onDismiss: () -> Unit,
+    onSave: (label: String, url: String, code: String, password: String?) -> Unit,
+) {
+    var label by remember { mutableStateOf(initial?.label.orEmpty()) }
+    var urlText by remember(initial?.id) { mutableStateOf(initial?.url.orEmpty()) }
+    // Code: beim Bearbeiten aus dem JE-Profil-Vault (nie aus Logs), beim
+    // +Server leer starten. Leer-beim-Speichern = unverändert (Bearbeiten).
+    var codeText by remember(initial?.id) {
+        mutableStateOf(initial?.let { ServerProfiles.codeOf(it.id) }.orEmpty())
+    }
+    var urlError by remember { mutableStateOf(false) }
+    var codeBlankNote by remember { mutableStateOf(false) }
+
+    // W17-F2: Passwort-Verband des DIALOGS — pwRequired NUR nach Probe true.
+    var pwRequired by remember { mutableStateOf(false) }
+    var pwText by remember(initial?.id) { mutableStateOf("") }
+    var pwShortNote by remember { mutableStateOf(false) }
+    var probing by remember { mutableStateOf(false) }
+    var probedOnce by remember { mutableStateOf(false) }
+    val dialogScope = rememberCoroutineScope()
+
+    // Edit-Modus: Probe je Dialog-Open (URL+Code aus dem Profil/Vault).
+    // Add-Modus: Probe erst beim Save (URL+Code sind dort gerade eingegeben).
+    if (initial != null) {
+        LaunchedEffect(initial.id) {
+            val code = ServerProfiles.codeOf(initial.id)
+            if (initial.url.isBlank() || code.isBlank()) return@LaunchedEffect
+            val required = withContext(Dispatchers.IO) {
+                RelayClient.pairingPasswordStatus(initial.url, code)
+            }
+            pwRequired = required == true
+        }
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.ms_label_label)) },
+                )
+                OutlinedTextField(
+                    value = urlText,
+                    onValueChange = {
+                        urlText = it
+                        urlError = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    isError = urlError,
+                    label = { Text(stringResource(R.string.ms_url_label)) },
+                    placeholder = { Text(stringResource(R.string.onb_url_hint)) },
+                )
+                if (urlError) {
+                    Text(
+                        stringResource(R.string.ms_url_blank_error),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FlipsiColors.SignalRedText,
+                    )
+                }
+                PassCodeField(
+                    value = codeText,
+                    onValueChange = {
+                        codeText = it
+                        codeBlankNote = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = stringResource(R.string.ms_code_label),
+                )
+                if (codeBlankNote) {
+                    Text(
+                        stringResource(R.string.ms_code_note),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                }
+                // W17-F2: das Passwortfeld nur, wenn der Server verlangt —
+                // sonst bleibt die Kopplung reiner Code+URL (Sauber-Feld).
+                if (pwRequired) {
+                    PassCodeField(
+                        value = pwText,
+                        onValueChange = {
+                            pwText = it
+                            pwShortNote = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = stringResource(R.string.onb_pw_label),
+                    )
+                    Text(
+                        stringResource(R.string.onb_pw_needed_note),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = FlipsiColors.TextSecondary,
+                    )
+                    if (pwShortNote) {
+                        Text(
+                            stringResource(R.string.pw_min_error),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = FlipsiColors.SignalRedText,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !probing,
+                onClick = {
+                    val urlOk = !OnboardingRules.relayUrlProblem(urlText, BuildConfig.DEBUG)
+                    if (!urlOk) {
+                        urlError = true
+                        return@TextButton
+                    }
+                    if (codeText.isBlank() && initial == null) {
+                        // +Server ohne Code: bewusst erlaubt (Server ohne Token
+                        // koppelt später), aber sichtbar bemerkt — kein Speichern.
+                        codeBlankNote = true
+                        return@TextButton
+                    }
+                    if (pwRequired
+                        && pwText.isNotBlank()
+                        && !PairingHandshakePolicy.passwordAllowed(pwText)) {
+                        pwShortNote = true
+                        return@TextButton
+                    }
+                    fun doSave() = onSave(
+                        label.trim(),
+                        urlText.trim().trimEnd('/'),
+                        codeText.trim(),
+                        pwText.takeIf { pwRequired && it.isNotBlank() },
+                    )
+                    if (pwRequired || probedOnce) {
+                        doSave()
+                        return@TextButton
+                    }
+                    // Add-Modus: EIN Probe-Verband je Dialog-Run — verlangt der
+                    // Server ein Passwort, erscheint das Feld (kein Auto-Save);
+                    // sonst/nein → normaler Save. null (Netz/Unbekannt) = Save.
+                    probedOnce = true
+                    probing = true
+                    dialogScope.launch {
+                        val url = urlText.trim().trimEnd('/')
+                        val code = codeText.trim()
+                        val required = if (url.isBlank() || code.isBlank()) {
+                            null
+                        } else {
+                            withContext(Dispatchers.IO) {
+                                RelayClient.pairingPasswordStatus(url, code)
+                            }
+                        }
+                        probing = false
+                        pwRequired = required == true
+                        if (required != true) {
+                            doSave()
+                        }
+                    }
+                },
+            ) {
+                Text(stringResource(R.string.ms_save), fontWeight = FontWeight.SemiBold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.ms_cancel))
+            }
+        },
+    )
+}

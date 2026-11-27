@@ -1,0 +1,520 @@
+package com.hermesandroid.bridge.ui.chat
+
+import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
+import android.os.Build
+import android.provider.MediaStore
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import com.hermesandroid.bridge.R
+import com.hermesandroid.bridge.media.MediaProtocol
+import com.hermesandroid.bridge.ui.FlipsiColors
+import java.io.File
+
+/**
+ * WELLE-13 P8 (UI-Verband): Holen-Hook für eingehende Medien. Die eigentliche
+ * Download-Implementierung (Relay GET /media/{id}, E2E, Chunk-Frame) wird vom
+ * KOORDINATOR angebunden — die Chat-UI ruft nur [handler] mit
+ * (agentId, mediaId, onDone) auf. Vertrag für die Implementierung:
+ * onDone(path) mit lokal gecachtem Datei-Pfad bei Erfolg, onDone(null) bei
+ * Fehlschlag; Callback-Auslieferung auf dem Main-Thread (die Bubble-Zeile
+ * setzt nach dem Resultat direkt den UI-Zustand zurück). handler = null =
+ * Dienst (noch) nicht angebunden → ehrlicher Hinweis statt totem Button.
+ */
+object ChatMediaDownload {
+    @Volatile
+    var handler: ((agentId: String, mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null
+}
+
+/**
+ * W15 (I18n): Anzeige-Label je Media-Art als RESSOURCE (löst unter dem
+ * AppLanguageGate live in DE/EN auf). UI-Spiegel von MediaProtocol.kindLabel —
+ * jenes bleibt als stabile Protokoll-/Test-Kennung unangetastet (ChatMediaTest
+ * pinnt die deutschen Werte), nur die ANZEIGE läuft über diesen Umweg.
+ */
+@Composable
+internal fun mediaKindLabel(kind: String): String = when (kind) {
+    "image" -> stringResource(R.string.media_kind_image)
+    "video" -> stringResource(R.string.media_kind_video)
+    "voice" -> stringResource(R.string.media_voice_title)
+    else -> stringResource(R.string.media_kind_file)
+}
+
+/**
+ * MEDIA-T1: Media-Bubble-Inhalt je Art (in der MessageBubble-Surface).
+ *
+ * - image: Thumbnail (downgesampelte Dekodierung, app-private Datei) +
+ *   Tap → Full-Screen-Viewer (Dialog).
+ * - voice: WA-Sprachnachricht-Bubble (W16 B2, Fixliste 31 — rund Play/Pause,
+ *   gecachete Wellenform, Fortschritts-Fill, Dauer + verstrichene Sekunden;
+ *   Holen-Verband für eingehende Medien ohne lokale Datei unverändert).
+ * - file/video: Name + Größe + „In Downloads speichern“-Aktionszeile
+ *   (MediaStore.Downloads, API 29+; darunter: Hinweis auf App-Ordner).
+ * Klartext-Kontext: der Relay sieht nur Metadaten; die Datei liegt
+ * app-privat (hinter dem AppLock-Gate).
+ */
+@Composable
+internal fun MediaBubbleContent(
+    media: ChatMediaInfo,
+    fromAgent: Boolean,
+    text: String,
+    // WELLE-13 P8: Holen-Verband — null = kein Download-Dienst (ehrlicher
+    // Hinweis in der Voice-Zeile statt totem Button).
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
+) {
+    var viewerOpen by remember { mutableStateOf(false) }
+    val contentColor = if (fromAgent) FlipsiColors.TextPrimary else Color(0xFFFCE9DC)
+    val subColor = if (fromAgent) FlipsiColors.TextSecondary else Color(0xFFFCE9DC).copy(alpha = 0.8f)
+    // W15: Anzeige-Labels als Ressource (DE/EN) statt MediaProtocol-Literalen
+    // (MediaProtocol.kindLabel bleibt als stabile Protokoll-/Test-Kennung).
+    val kindLabel = mediaKindLabel(media.kind)
+    val photoTapA11y = stringResource(R.string.media_photo_tap_a11y, media.name)
+
+    Column(
+        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
+    ) {
+        when (media.kind) {
+            "image" -> {
+                val thumbnail = remember(media.localPath) {
+                    decodeImageThumbnail(media.localPath)
+                }
+                if (thumbnail != null) {
+                    Image(
+                        bitmap = thumbnail.asImageBitmap(),
+                        contentDescription = photoTapA11y,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .clickable { viewerOpen = true }
+                            .semantics {
+                                contentDescription = photoTapA11y
+                            },
+                    )
+                } else {
+                    MediaMetaLine(media, contentColor, subColor)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "${MediaProtocol.kindGlyph(media.kind)} ${media.name} · ${MediaProtocol.formatBytes(media.size)}",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = subColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            "voice" -> {
+                VoiceBubbleRow(
+                    media = media,
+                    fromAgent = fromAgent,
+                    contentColor = contentColor,
+                    subColor = subColor,
+                    onDownloadMedia = onDownloadMedia,
+                )
+            }
+            else -> {
+                // file / video: Name + Größe prominent, Speichern-Zeile darunter.
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        painterResource(R.drawable.ic_save),
+                        contentDescription = null,
+                        tint = contentColor,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Column {
+                        Text(
+                            media.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = contentColor,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "$kindLabel · ${MediaProtocol.formatBytes(media.size)}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = subColor,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                SaveToDownloadsRow(media = media, subColor = subColor)
+            }
+        }
+        // Text-Kontext (z. B. Beschriftung) bleibt unter dem Medium lesbar.
+        if (text.isNotBlank() && !text.startsWith("[")) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text,
+                style = MaterialTheme.typography.bodySmall,
+                color = subColor,
+            )
+        }
+    }
+
+    if (viewerOpen && media.kind == "image") {
+        FullscreenImageViewer(path = media.localPath, name = media.name, onDismiss = { viewerOpen = false })
+    }
+}
+
+/** Meta-Zeile (Fallback, wenn kein Thumbnail dekodierbar ist). */
+@Composable
+private fun MediaMetaLine(media: ChatMediaInfo, contentColor: Color, subColor: Color) {
+    Column {
+        Text(
+            "${MediaProtocol.kindGlyph(media.kind)} ${mediaKindLabel(media.kind)}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = contentColor,
+        )
+        Text(
+            "${media.name} · ${MediaProtocol.formatBytes(media.size)}",
+            style = MaterialTheme.typography.labelMedium,
+            color = subColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+/**
+ * MEDIA-T1 + W16 B2 (Fixliste 31): Sprachnachricht-Bubble im WA-Design.
+ *
+ * Der Holen-Pfad (localPath leer, WELLE-13 P8) bleibt unverändert: mediaId
+ * vorhanden + Download-Dienst → „Holen“-Button (Callback über [ChatMediaDownload],
+ * nach onDone(path) refüllt ChatScreen die Bubble); ohne Dienst/mediaId →
+ * ehrlicher Hinweis, nie ein toter Play-Button.
+ *
+ * Mit lokaler Datei rendert die Zeile [VoiceBubbleMedia] (runder Play/Pause-
+ * Knopf, gecachete Wellenform, Fortschritts-Fill, Dauer 0:21 + verstrichene
+ * Sekunden) — der alte MediaPlayer-je-Bubble-Zustand wanderte in
+ * [ChatVoicePlayback] (WA-Parität: eine laufende Wiedergabe je Chat, keine
+ * Doppel-Audio-Spuren zwischen Bubbles).
+ */
+@Composable
+private fun VoiceBubbleRow(
+    media: ChatMediaInfo,
+    fromAgent: Boolean,
+    contentColor: Color,
+    subColor: Color,
+    onDownloadMedia: ((mediaId: String, onDone: (String?) -> Unit) -> Unit)? = null,
+) {
+    // ── WELLE-13 P8: eingehende Medien ohne lokale Datei → Holen-Verband ──────
+    if (media.localPath.isBlank()) {
+        var fetching by remember(media.mediaId) { mutableStateOf(false) }
+        // Holen-Fehlschlag bleibt sichtbar („Nicht abrufbar — erneut holen").
+        var fetchFailed by remember(media.mediaId) { mutableStateOf(false) }
+        Row(
+            modifier = Modifier.heightIn(min = 48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (media.mediaId.isNotBlank() && onDownloadMedia != null) {
+                // Holen-Button: Tippen startet den Download des Mediums über
+                // den Koordinator-Hook; nach onDone(path) übernimmt ChatScreen
+                // die Bubble-Refill (Zeile wird zum normalen Player).
+                // W15: Button-/A11y-Texte als Ressource (DE/EN).
+                val fetchBtnA11y = if (fetching) stringResource(R.string.media_voice_fetching_a11y)
+                else stringResource(R.string.media_voice_fetch_a11y)
+                Text(
+                    if (fetching) stringResource(R.string.media_voice_fetching_btn)
+                    else stringResource(R.string.media_voice_fetch_btn),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (fetching) FlipsiColors.TextSecondary else FlipsiColors.Ember,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            if (fetching) FlipsiColors.PanelElev else FlipsiColors.EmberDim,
+                        )
+                        .clickable(enabled = !fetching) {
+                            fetching = true
+                            onDownloadMedia(media.mediaId) { path ->
+                                fetching = false
+                                if (path.isNullOrBlank()) {
+                                    // Ehrlicher Fehlschlag: Zeile bleibt mit
+                                    // Retry-Hinweis stehen (kein Fake-Player).
+                                    fetchFailed = true
+                                }
+                            }
+                        }
+                        .padding(horizontal = 14.dp, vertical = 16.dp)
+                        .semantics {
+                            contentDescription = fetchBtnA11y
+                        },
+                )
+                Spacer(Modifier.width(10.dp))
+                Column {
+                    Text(
+                        stringResource(R.string.media_voice_title),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = contentColor,
+                    )
+                    Text(
+                        if (fetchFailed) stringResource(R.string.media_voice_failed)
+                        else stringResource(R.string.media_voice_pending),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = subColor,
+                    )
+                }
+            } else {
+                // Kein Dienst / keine mediaId: ehrlicher Hinweis statt
+                // totem Play-Button (Checkliste K: kein stiller Fehler).
+                Text(
+                    if (media.mediaId.isBlank()) stringResource(R.string.media_voice_missing_file)
+                    else stringResource(R.string.media_voice_no_service),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = subColor,
+                )
+            }
+        }
+        return
+    }
+
+    // ── Datei vorhanden → WA-Sprachnachricht-Bubble (W16 B2, Fixliste 31) ─────
+    // Dauer einmal aus den Metadaten (Fehlschlag = 0 → Bubble zeigt bis zur
+    // ersten Wiedergabe „--:--“ und füllt dann aus der Playback-Dauer).
+    val localDurationMs = remember(media.localPath) { voiceDurationMs(media.localPath) }
+    VoiceBubbleMedia(
+        playbackKey = ChatVoicePlayback.mediaKey(media.localPath),
+        audioPath = media.localPath,
+        startDurationMs = localDurationMs,
+        fromAgent = fromAgent,
+        time = null, // Die Zeit steht in der Bubble-Metareihe unten-rechts (Punkt 2).
+    )
+}
+
+/** MEDIA-T1: „In Downloads speichern“-Zeile (MediaStore.Downloads, API 29+). */
+@Composable
+private fun SaveToDownloadsRow(media: ChatMediaInfo, subColor: Color) {
+    val context = LocalContext.current
+    var saved by remember { mutableStateOf(false) }
+    // W15: Texte als Ressource (DE/EN) — A11y vorab gelöst (semantics-Lambda
+    // ist kein Composable-Kontext).
+    val saveA11y = if (saved) stringResource(R.string.media_saved_a11y)
+    else stringResource(R.string.media_save_a11y)
+    Text(
+        if (saved) stringResource(R.string.media_saved_downloads)
+        else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) stringResource(R.string.media_save_downloads)
+        else stringResource(R.string.media_saved_app_folder, File(media.localPath).parent),
+        style = MaterialTheme.typography.labelMedium,
+        color = if (saved) FlipsiColors.SignalGreen else subColor,
+        modifier = Modifier
+            .clickable(enabled = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && !saved) {
+                saved = saveToDownloads(context, media.name, media.mime, media.localPath)
+            }
+            // HIG-W19: Touch-Ziel 48 dp (war ~24 dp) — Tap-Fläche = ganze Zeile.
+            .padding(vertical = 16.dp)
+            .semantics {
+                contentDescription = saveA11y
+            },
+    )
+}
+
+/**
+ * MEDIA-T1: Full-Screen-Bild-Viewer (Dialog, Tap außen schließt). Dekodierung
+ * mit Sampling-Schätzung (RAM-Schutz: nie das Original in voller Größe halten).
+ */
+@Composable
+internal fun FullscreenImageViewer(path: String, name: String, onDismiss: () -> Unit) {
+    val bitmap = remember(path) { decodeImageThumbnail(path, targetMin = 1280) }
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = FlipsiColors.PanelElev,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(12.dp),
+            ) {
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        // W15: Vollbild-A11y als Ressource (DE/EN).
+                        contentDescription = stringResource(R.string.media_photo_full_a11y, name),
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 620.dp)
+                            .clickable { onDismiss() },
+                    )
+                } else {
+                    Text(
+                        stringResource(R.string.media_image_load_failed),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = FlipsiColors.TextPrimary,
+                        modifier = Modifier.padding(24.dp),
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_close)) }
+            }
+        }
+    }
+}
+
+/**
+ * MEDIA-T1: Anhang-Auswahl (Foto/Video, Datei, Sprachnachricht) als
+ * AlertDialog — eine Aktion je Zeile, Touch-Ziele groß, deutsches Label.
+ */
+@Composable
+internal fun AttachSheet(
+    onPickImage: () -> Unit,
+    onPickFile: () -> Unit,
+    onVoiceToggle: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        // W15: Zeilen-/Titel-Texte als Ressource (DE/EN).
+        title = { Text(stringResource(R.string.media_attach_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    stringResource(R.string.media_attach_photo),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = FlipsiColors.TextPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDismiss(); onPickImage() }
+                        .padding(vertical = 12.dp),
+                )
+                Text(
+                    stringResource(R.string.media_kind_file),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = FlipsiColors.TextPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDismiss(); onPickFile() }
+                        .padding(vertical = 12.dp),
+                )
+                Text(
+                    stringResource(R.string.media_attach_voice_record),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = FlipsiColors.TextPrimary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 48.dp)
+                        .clickable { onDismiss(); onVoiceToggle() }
+                        .padding(vertical = 12.dp),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
+        },
+    )
+}
+
+// ── Helfer (Android, nicht JVM-getestet — Logik-Deckel in MediaProtocol) ───
+
+/** Bild dekodieren mit Sampling (RAM-Schutz; Ziel-Mindestauflösung px).
+ *  W4 (App-Lane C): internal — auch die Mediathek-Kacheln nutzen denselben
+ *  downgesampelten Dekoder (ein Thumbnail-Weg, keine Doppel-Logik). */
+internal fun decodeImageThumbnail(path: String, targetMin: Int = 640): android.graphics.Bitmap? {
+    if (path.isBlank()) return null
+    val file = File(path)
+    if (!file.exists()) return null
+    return runCatching {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= targetMin &&
+            bounds.outHeight / (sample * 2) >= targetMin
+        ) {
+            sample *= 2
+        }
+        BitmapFactory.decodeFile(
+            path,
+            BitmapFactory.Options().apply { inSampleSize = sample },
+        )
+    }.getOrNull()
+}
+
+/** Dauer einer Audio-Datei (MediaMetadataRetriever, 0 = unbekannt).
+ *  W4 (App-Lane C): internal — MediaTab-Player-Zeile liest dieselbe Dauer (statisch,
+ *  Reduced-Pass: kein Fortschritts-Ticker). */
+internal fun voiceDurationMs(path: String): Long = runCatching {
+    val retriever = MediaMetadataRetriever()
+    retriever.setDataSource(path)
+    val ms = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+    retriever.release()
+    ms
+}.getOrDefault(0L)
+
+/** mm:ss-Format für Voice-Dauern. */
+internal fun formatVoiceDuration(ms: Long): String {
+    val totalSeconds = ms / 1000
+    return String.format(
+        java.util.Locale.GERMANY, "%02d:%02d",
+        totalSeconds / 60, totalSeconds % 60,
+    )
+}
+
+/** Datei via MediaStore in Downloads sichern (API 29+); true = ok.
+ *  W4 (App-Lane C): internal — Datei-Zeilen der Mediathek sichern denselben Weg. */
+internal fun saveToDownloads(
+    context: android.content.Context,
+    name: String,
+    mime: String,
+    path: String,
+): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
+    return runCatching {
+        val bytes = File(path).readBytes()
+        val values = android.content.ContentValues().apply {
+            put(MediaStore.Downloads.DISPLAY_NAME, name.take(128))
+            put(MediaStore.Downloads.MIME_TYPE, mime.ifBlank { "application/octet-stream" })
+            put(MediaStore.Downloads.IS_PENDING, 1)
+        }
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+        resolver.openOutputStream(uri)?.use { it.write(bytes) }
+        values.clear()
+        values.put(MediaStore.Downloads.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
+        true
+    }.getOrDefault(false)
+}
