@@ -70,3 +70,10 @@ CORE-OS/
 scratch/
 *.pcap
 qa/**/shots/
+
+# Build-Artefakte / interne Upload-Tooling / interne Screens — NIE committen (Binärballast + private IP/Codes)
+/artifacts/
+/.claude/
+/.opencode/
+/play/
+/stitch-screens/
