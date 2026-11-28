@@ -132,7 +132,7 @@ except ImportError:  # pragma: no cover — nur ohne cryptography-Install
     _HAS_CRYPTO = False
 
 # ── PH-3: fb-v1-Protokoll-Parameter (Byte-exakter Vertrag: siehe
-# secrets-docs/PH3-KDF-FIXTURES-v1.md — Kotlin Welle 2 implementiert DAEGEN) ──
+# KDF-Testvektoren-Doku (intern) — Kotlin Welle 2 implementiert DAEGEN) ──
 _REPLAY_WINDOW = 100              # Counter-Fenster je Richtung
 _FRAME_MAX_AGE_MS = 10 * 60 * 1000  # Frame-Altersgrenze (Replay-Fenster 100 + 10 min)
 _SKIPPED_KEY_CACHE_MAX = 100      # OOO-Nachrichten-Cache (Cap = Replay-Bound)
